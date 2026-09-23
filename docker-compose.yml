@@ -48,12 +48,13 @@ services:
     container_name: stretor_nginx
     restart: unless-stopped
     ports:
-      - "${BACKEND_PORT:-8000}:80"
+      - "${HTTP_PORT:-80}:80"
     volumes:
       - ./backend:/var/www/backend
       - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf
     depends_on:
       - backend
+      - frontend
     networks:
       - stretor
 
@@ -64,8 +65,8 @@ services:
     container_name: stretor_frontend
     restart: unless-stopped
     working_dir: /app
-    ports:
-      - "${FRONTEND_PORT:-5173}:5173"
+    expose:
+      - "5173"
     volumes:
       - ./frontend:/app
       - /app/node_modules
