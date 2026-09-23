@@ -15,12 +15,15 @@ export default {
           700: '#4338ca',
           900: '#312e81',
         },
-        // Azul marinho profundo: base visual de toda a aplicação.
+        // Azul marinho profundo e saturado: base visual de toda a aplicação.
+        // Os tons escurecem conforme o número cresce, mantendo o azul vivo
+        // (sem o aspecto acinzentado/pastel) mesmo nas profundidades.
         navy: {
-          700: '#122a4d',
-          800: '#0d1f3c',
-          900: '#08152b',
-          950: '#040d1c',
+          600: '#1e3a8a',
+          700: '#172d6e',
+          800: '#112352',
+          900: '#0b1838',
+          950: '#060f24',
         },
       },
       keyframes: {

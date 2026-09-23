@@ -88,7 +88,7 @@ onUnmounted(() => {
       a mesma progressão.
     -->
     <div
-      class="absolute inset-0 bg-navy-950"
+      class="absolute inset-0 bg-navy-800"
       :style="{
         opacity: opacidadeFundo,
         backdropFilter: `blur(${opacidadeFundo * 8}px)`,

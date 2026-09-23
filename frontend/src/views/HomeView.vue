@@ -51,9 +51,12 @@ onMounted(() => {
 
       <!--
         O grid sobe por cima do carrossel conforme a rolagem, criando a
-        sensação de que o conteúdo "cobre" o destaque.
+        sensação de que o conteúdo "cobre" o destaque. O degradê começa na
+        mesma cor com que o carrossel termina (navy-950) e só então se abre
+        para o fundo da página, o que elimina a divisão reta entre os dois.
+        O meio permanece escuro para segurar capas claras na transição.
       -->
-      <div class="relative z-10 -mt-16 bg-gradient-to-b from-transparent to-navy-950/80">
+      <div class="relative z-10 -mt-24 bg-gradient-to-b from-navy-950 via-navy-950/80 to-transparent">
         <MovieGrid
           :filmes="movies.filmes"
           :titulo="tituloGrid"

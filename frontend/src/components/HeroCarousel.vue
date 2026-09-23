@@ -89,7 +89,7 @@ onUnmounted(() => clearInterval(autoplay))
     conforme a página rola.
   -->
   <section
-    class="relative -mt-20 h-[85vh] min-h-[32rem] w-full select-none overflow-hidden"
+    class="relative -mt-20 h-[100vh] min-h-[34rem] w-full select-none overflow-hidden"
   >
     <div
       class="relative h-full w-full cursor-grab active:cursor-grabbing"
@@ -121,23 +121,37 @@ onUnmounted(() => clearInterval(autoplay))
 
       <!-- Gradiente para dar contraste ao texto e fundir o carrossel com o fundo. -->
       <div
-        class="pointer-events-none absolute inset-0 bg-gradient-to-t from-navy-950 via-navy-950/40 to-navy-950/70"
+        class="pointer-events-none absolute inset-0 bg-gradient-to-t from-navy-950 via-navy-900/50 to-navy-800/40"
+      />
+
+      <!--
+        Esfumação inferior: uma faixa alta e suave que dissolve a base do
+        carrossel no fundo da página. O meio da faixa é bem escuro para que
+        capas claras do grid não transpareçam na zona de transição, e as
+        paradas intermediárias evitam que o degradê vire uma linha reta.
+      -->
+      <div
+        class="pointer-events-none absolute inset-x-0 bottom-0 h-64 bg-gradient-to-b from-transparent via-navy-950/80 to-navy-950"
       />
 
       <div
         v-if="slideAtual"
-        class="pointer-events-none absolute inset-x-0 bottom-24 mx-auto max-w-7xl px-6"
+        class="pointer-events-none absolute inset-x-0 bottom-36 mx-auto max-w-7xl px-6"
       >
         <h2 class="max-w-3xl text-4xl font-bold text-white drop-shadow-lg sm:text-5xl">
           {{ slideAtual.titulo }}
         </h2>
-        <p class="mt-3 max-w-2xl text-sm text-slate-200 line-clamp-3 sm:text-base">
+        <p class="mt-3 max-w-2xl text-sm text-slate-200 line-clamp-4 sm:text-base">
           {{ slideAtual.sinopse }}
         </p>
       </div>
     </div>
 
-    <div class="absolute inset-x-0 bottom-10 flex items-center justify-center gap-2">
+    <!--
+      Os indicadores ficam acima das camadas de degradê (z-20), senão a
+      esfumação inferior os encobre por serem renderizados depois no DOM.
+    -->
+    <div class="absolute inset-x-0 bottom-20 z-20 flex items-center justify-center gap-2">
       <button
         v-for="(_, indice) in slides"
         :key="indice"
