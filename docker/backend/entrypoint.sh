@@ -23,6 +23,12 @@ fi
 # Garante que o usuário stretor possa escrever em vendor/ (evita reinstalações em loop)
 chown -R stretor:stretor vendor 2>/dev/null || true
 
+# 2b. NUNCA rodar composer install em runtime: dependências vêm do build.
+#     Se o vendor estiver desatualizado, o correto é rebuildar a imagem.
+if [ ! -f composer.lock ]; then
+  echo "[backend] AVISO: composer.lock ausente. Rebuild a imagem para gerar um lock determinístico."
+fi
+
 # 3. APP_KEY
 if ! grep -q "^APP_KEY=base64:" .env; then
   echo "[backend] Gerando APP_KEY..."
