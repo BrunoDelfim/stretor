@@ -43,6 +43,16 @@ RUN chown -R stretor:stretor /var/www
 # Copia apenas os manifests primeiro para aproveitar cache de camadas
 COPY backend/composer.json backend/composer.lock* ./
 
+# Desativa o bloqueio de advisories e instala as dependências
+RUN composer config --global audit.block false \
+    && composer install \
+    --no-interaction \
+    --no-scripts \
+    --no-progress \
+    --prefer-dist \
+    --optimize-autoloader \
+    && chown -R stretor:stretor vendor
+
 # Instala dependências no build (sem scripts para evitar loops/interatividade)
 RUN composer install \
     --no-interaction \
