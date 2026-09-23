@@ -19,6 +19,20 @@ services:
     volumes:
       - ./backend:/var/www/backend
       - ./docker/backend/php.ini:/usr/local/etc/php/conf.d/custom.ini
+    environment:
+      - APP_ENV=${APP_ENV:-local}
+      - APP_DEBUG=${APP_DEBUG:-true}
+      - DB_CONNECTION=pgsql
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_DATABASE=${POSTGRES_DB:-stretor}
+      - DB_USERNAME=${POSTGRES_USER:-stretor}
+      - DB_PASSWORD=${POSTGRES_PASSWORD:-secret}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - CACHE_STORE=redis
+      - QUEUE_CONNECTION=redis
+      - SESSION_DRIVER=redis
     depends_on:
       init:
         condition: service_completed_successfully

@@ -40,11 +40,12 @@ WORKDIR /var/www/backend
 RUN addgroup -g 1000 -S stretor && adduser -u 1000 -S stretor -G stretor
 RUN chown -R stretor:stretor /var/www
 
+# su-exec para trocar de usuário no entrypoint
+RUN apk add --no-cache su-exec
+
 # Entrypoint de bootstrap
 COPY docker/backend/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
-
-USER stretor
 
 EXPOSE 9000
 

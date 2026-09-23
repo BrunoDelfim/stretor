@@ -5,6 +5,10 @@ cd /var/www/backend
 
 echo "[backend] Iniciando bootstrap..."
 
+# Garante que os diretórios de storage existam e sejam graváveis
+mkdir -p storage/framework/{cache/data,sessions,views} storage/logs bootstrap/cache
+chown -R stretor:stretor storage bootstrap/cache 2>/dev/null || true
+
 # 1. .env
 if [ ! -f .env ]; then
   echo "[backend] Criando .env a partir de .env.example"
@@ -30,7 +34,7 @@ mkdir -p storage/framework/{cache/data,sessions,views} storage/logs bootstrap/ca
 chmod -R ug+rwX storage bootstrap/cache || true
 
 # 5. Espera o Postgres
-echo "[backend] Aguardando Postgres..."
+echo "[backend] Aguardando Postgres em ${DB_HOST:-postgres}:${DB_PORT:-5432}..."
 until php -r "exit(@fsockopen(getenv('DB_HOST') ?: 'postgres', (int)(getenv('DB_PORT') ?: 5432)) ? 0 : 1);"; do
   sleep 2
 done
@@ -44,5 +48,5 @@ php artisan migrate --force --no-interaction
 php artisan config:clear >/dev/null 2>&1 || true
 php artisan route:clear >/dev/null 2>&1 || true
 
-echo "[backend] Bootstrap concluído. Iniciando php-fpm..."
-exec "$@"
+echo "[backend] Bootstrap concluído. Iniciando php-fpm como usuário stretor..."
+exec su-exec stretor "$@"
