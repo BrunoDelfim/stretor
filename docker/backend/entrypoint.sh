@@ -9,6 +9,13 @@ echo "[backend] Iniciando bootstrap..."
 mkdir -p storage/framework/{cache/data,sessions,views} storage/logs bootstrap/cache
 chown -R stretor:stretor storage bootstrap/cache 2>/dev/null || true
 
+# Garante que o diretório de logs do php-fpm exista e seja gravável pelo
+# usuário do pool (stretor). Necessário porque o volume pode sobrescrever
+# as permissões definidas no build da imagem.
+mkdir -p /var/log/php-fpm
+chown -R stretor:stretor /var/log/php-fpm 2>/dev/null || true
+chmod -R 775 /var/log/php-fpm 2>/dev/null || true
+
 # 1. .env
 if [ ! -f .env ]; then
   echo "[backend] Criando .env a partir de .env.example"

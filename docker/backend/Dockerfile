@@ -69,9 +69,17 @@ RUN composer config --global audit.block false \
 # su-exec para trocar de usuário no entrypoint
 RUN apk add --no-cache su-exec
 
-# Pool do php-fpm: roda como stretor e escuta em 0.0.0.0:9000
-# (o master roda como root para poder escrever em /proc/self/fd/2 e
-#  fazer o drop de privilégios por pool).
+# Diretório de logs do php-fpm, gravável pelo usuário stretor.
+# Evita o erro "failed to open error_log (/proc/self/fd/2): Permission denied"
+# quando o pool roda como usuário não-privilegiado.
+RUN mkdir -p /var/log/php-fpm \
+    && chown -R stretor:stretor /var/log/php-fpm \
+    && chmod -R 775 /var/log/php-fpm
+
+# Pool do php-fpm: roda como stretor e escuta em 0.0.0.0:9000.
+# O master roda como root apenas para fazer o drop de privilégios por pool.
+# Os logs são escritos em arquivos dentro de /var/log/php-fpm (gravável por
+# stretor) em vez de /proc/self/fd/2, que não é acessível ao usuário do pool.
 RUN { \
       echo '[www]'; \
       echo 'user = stretor'; \
@@ -86,8 +94,8 @@ RUN { \
       echo 'pm.max_spare_servers = 3'; \
       echo 'clear_env = no'; \
       echo 'catch_workers_output = yes'; \
-      echo 'access.log = /proc/self/fd/2'; \
-      echo 'php_admin_value[error_log] = /proc/self/fd/2'; \
+      echo 'access.log = /var/log/php-fpm/access.log'; \
+      echo 'php_admin_value[error_log] = /var/log/php-fpm/error.log'; \
       echo 'php_admin_flag[log_errors] = on'; \
     } > /usr/local/etc/php-fpm.d/zz-stretor.conf
 
