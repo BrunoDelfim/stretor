@@ -50,7 +50,6 @@ RUN if [ -f composer.lock ]; then \
            --no-interaction \
            --no-scripts \
            --no-progress \
-           --no-audit \
            --prefer-dist \
            --optimize-autoloader; \
        else \
@@ -58,7 +57,6 @@ RUN if [ -f composer.lock ]; then \
            --no-interaction \
            --no-scripts \
            --no-progress \
-           --no-audit \
            --prefer-dist \
            --optimize-autoloader; \
        fi \
