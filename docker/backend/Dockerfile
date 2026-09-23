@@ -66,6 +66,28 @@ RUN composer config --global audit.block false \
 # su-exec para trocar de usuário no entrypoint
 RUN apk add --no-cache su-exec
 
+# Pool do php-fpm: roda como stretor e escuta em 0.0.0.0:9000
+# (o master roda como root para poder escrever em /proc/self/fd/2 e
+#  fazer o drop de privilégios por pool).
+RUN { \
+      echo '[www]'; \
+      echo 'user = stretor'; \
+      echo 'group = stretor'; \
+      echo 'listen = 0.0.0.0:9000'; \
+      echo 'listen.owner = stretor'; \
+      echo 'listen.group = stretor'; \
+      echo 'pm = dynamic'; \
+      echo 'pm.max_children = 20'; \
+      echo 'pm.start_servers = 2'; \
+      echo 'pm.min_spare_servers = 1'; \
+      echo 'pm.max_spare_servers = 3'; \
+      echo 'clear_env = no'; \
+      echo 'catch_workers_output = yes'; \
+      echo 'access.log = /proc/self/fd/2'; \
+      echo 'php_admin_value[error_log] = /proc/self/fd/2'; \
+      echo 'php_admin_flag[log_errors] = on'; \
+    } > /usr/local/etc/php-fpm.d/zz-stretor.conf
+
 # Entrypoint de bootstrap
 COPY docker/backend/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh

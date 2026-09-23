@@ -54,5 +54,8 @@ php artisan migrate --force --no-interaction
 php artisan config:clear >/dev/null 2>&1 || true
 php artisan route:clear >/dev/null 2>&1 || true
 
-echo "[backend] Bootstrap concluído. Iniciando php-fpm como usuário stretor..."
-exec su-exec stretor "$@"
+echo "[backend] Bootstrap concluído. Iniciando php-fpm..."
+# NÃO usar su-exec aqui: o master do php-fpm precisa rodar como root para
+# escrever em /proc/self/fd/2 (stderr) e fazer o drop de privilégios por pool
+# (user = stretor em /usr/local/etc/php-fpm.d/zz-stretor.conf).
+exec "$@"
