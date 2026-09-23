@@ -29,10 +29,12 @@ if [ ! -f composer.lock ]; then
   echo "[backend] AVISO: composer.lock ausente. Rebuild a imagem para gerar um lock determinístico."
 fi
 
-# 3. APP_KEY
+# 3. APP_KEY (só gera se ainda não existir)
 if ! grep -q "^APP_KEY=base64:" .env; then
   echo "[backend] Gerando APP_KEY..."
   php artisan key:generate --force
+else
+  echo "[backend] APP_KEY já configurada, pulando."
 fi
 
 # 4. Permissões
@@ -46,9 +48,15 @@ until php -r "exit(@fsockopen(getenv('DB_HOST') ?: 'postgres', (int)(getenv('DB_
 done
 echo "[backend] Postgres disponível."
 
-# 6. Migrations (idempotente)
-echo "[backend] Rodando migrations..."
-php artisan migrate --force --no-interaction
+# 6. Migrations (idempotente, com sentinela para pular quando nada mudou)
+MIGRATION_SENTINEL="storage/framework/.migrations-done"
+if [ -f "$MIGRATION_SENTINEL" ] && [ -z "$(find database/migrations -newer "$MIGRATION_SENTINEL" -name '*.php' 2>/dev/null)" ]; then
+  echo "[backend] Nenhuma migration nova desde a última execução, pulando."
+else
+  echo "[backend] Rodando migrations..."
+  php artisan migrate --force --no-interaction
+  touch "$MIGRATION_SENTINEL"
+fi
 
 # 7. Cache de config/rotas (opcional em dev, mas seguro)
 php artisan config:clear >/dev/null 2>&1 || true

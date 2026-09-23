@@ -8,3 +8,8 @@ if [ ! -f .env ]; then
 else
   echo "[init] .env já existe, nada a fazer"
 fi
+
+# Sentinela: marca que o bootstrap já rodou com sucesso.
+# Em execuções seguintes, o init pode ser pulado (ver Makefile: up-fast).
+touch .bootstrap-done
+echo "[init] Bootstrap concluído."
