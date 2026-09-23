@@ -1,0 +1,116 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend/Dockerfile
+    container_name: stretor_backend
+    restart: unless-stopped
+    working_dir: /var/www/backend
+    volumes:
+      - ./backend:/var/www/backend
+      - ./docker/backend/php.ini:/usr/local/etc/php/conf.d/custom.ini
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - stretor
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: stretor_nginx
+    restart: unless-stopped
+    ports:
+      - "${BACKEND_PORT:-8000}:80"
+    volumes:
+      - ./backend:/var/www/backend
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      - backend
+    networks:
+      - stretor
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend/Dockerfile
+    container_name: stretor_frontend
+    restart: unless-stopped
+    working_dir: /app
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    ports:
+      - "${FRONTEND_PORT:-5173}:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - VITE_API_URL=${VITE_API_URL:-http://localhost:8000/api}
+      - VITE_MEDIA_SERVICE_URL=${VITE_MEDIA_SERVICE_URL:-http://localhost:3000}
+    networks:
+      - stretor
+
+  media-service:
+    build:
+      context: .
+      dockerfile: docker/media-service/Dockerfile
+    container_name: stretor_media_service
+    restart: unless-stopped
+    working_dir: /app
+    command: sh -c "npm install && npm run dev"
+    ports:
+      - "${MEDIA_SERVICE_PORT:-3000}:3000"
+    volumes:
+      - ./media-service:/app
+      - /app/node_modules
+      - media_storage:/app/storage
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - PORT=3000
+      - REDIS_URL=redis://redis:6379
+      - STORAGE_PATH=/app/storage
+    depends_on:
+      - redis
+    networks:
+      - stretor
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: stretor_postgres
+    restart: unless-stopped
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-stretor}
+      POSTGRES_USER: ${POSTGRES_USER:-stretor}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secret}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-stretor} -d ${POSTGRES_DB:-stretor}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - stretor
+
+  redis:
+    image: redis:7-alpine
+    container_name: stretor_redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks:
+      - stretor
+
+networks:
+  stretor:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  media_storage:
