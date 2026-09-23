@@ -1,3 +1,53 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/*
+ * O degradê fica no próprio body e com `background-attachment: fixed` para
+ * permanecer estático enquanto o conteúdo rola por cima — é o efeito pedido
+ * no layout da Home.
+ */
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply min-h-screen text-slate-100 antialiased;
+    background-color: #040d1c;
+    background-image: linear-gradient(180deg, #0d1f3c 0%, #08152b 45%, #040d1c 100%);
+    background-attachment: fixed;
+    background-repeat: no-repeat;
+    background-size: cover;
+  }
+
+  /* Scrollbar discreta, coerente com o fundo escuro. */
+  ::-webkit-scrollbar {
+    width: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #08152b;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #1e3a5f;
+    border-radius: 9999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #2b4d78;
+  }
+}
+
+@layer utilities {
+  /* Esconde a barra de rolagem em carrosséis horizontais. */
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+}

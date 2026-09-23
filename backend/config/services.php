@@ -12,4 +12,18 @@ return [
     'media_service' => [
         'url' => env('MEDIA_SERVICE_URL', 'http://media-service:3000'),
     ],
+
+    /*
+     * Integração com o catálogo mundial de filmes (TMDB).
+     * A chave fica exclusivamente no backend para não expor o token no browser.
+     * O idioma e a região padrão priorizam conteúdo em PT-BR / Brasil.
+     */
+    'tmdb' => [
+        'key' => env('TMDB_API_KEY'),
+        'base_url' => env('TMDB_BASE_URL', 'https://api.themoviedb.org/3'),
+        'image_url' => env('TMDB_IMAGE_URL', 'https://image.tmdb.org/t/p'),
+        'language' => env('TMDB_LANGUAGE', 'pt-BR'),
+        'region' => env('TMDB_REGION', 'BR'),
+        'cache_ttl' => (int) env('TMDB_CACHE_TTL', 3600),
+    ],
 ];

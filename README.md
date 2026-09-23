@@ -74,6 +74,11 @@ cd stretor
 cp .env.example .env
 ```
 
+> **Obrigatório:** preencha `TMDB_API_KEY` no `.env` com a sua chave da API do
+> [TMDB](https://www.themoviedb.org/settings/api). Sem ela a Home não carrega os
+> filmes e exibe uma mensagem de erro amigável. A chave fica apenas no backend e
+> nunca é exposta ao browser.
+
 ### 2. Subir os containers
 
 ```bash
@@ -123,6 +128,12 @@ docker compose exec backend php artisan queue:work
 
 - `GET /api/health` — health check da API
 - `GET /up` — health check do framework
+- `GET /api/v1/movies/popular` — filmes mais assistidos no Brasil (Home)
+- `GET /api/v1/movies/search?query=...` — busca por título (navbar)
+- `GET /api/v1/movies/{id}` — detalhes do filme (modal)
+
+> As respostas do TMDB são cacheadas no Redis (`TMDB_CACHE_TTL`, padrão 3600s)
+> para respeitar o rate limit da API e acelerar a Home.
 
 ### Media Service (Node)
 

@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Api\MovieController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/health', function () {
@@ -11,5 +12,9 @@ Route::get('/health', function () {
 });
 
 Route::prefix('v1')->group(function () {
-    // Rotas versionadas da API Stretor
+    Route::prefix('movies')->group(function () {
+        Route::get('/popular', [MovieController::class, 'populares']);
+        Route::get('/search', [MovieController::class, 'buscar']);
+        Route::get('/{id}', [MovieController::class, 'detalhes'])->whereNumber('id');
+    });
 });
