@@ -14,6 +14,9 @@
 
   body {
     @apply min-h-screen text-slate-100 antialiased;
+    /* Equivalente ao ::-webkit-scrollbar para o Firefox. */
+    scrollbar-width: thin;
+    scrollbar-color: #0b1838 transparent;
     background-color: #060f24;
     /*
      * Composição de degradês não uniformes: um brilho azul descentralizado
@@ -29,22 +32,26 @@
     background-size: cover;
   }
 
-  /* Scrollbar discreta, coerente com o fundo escuro. */
+  /*
+   * Scrollbar fina e discreta: o polegar usa um azul próximo do fundo da
+   * página, então ele aparece como um detalhe sutil em vez de um bloco claro
+   * que puxa a atenção.
+   */
   ::-webkit-scrollbar {
-    width: 10px;
+    width: 6px;
   }
 
   ::-webkit-scrollbar-track {
-    background: #060f24;
+    background: transparent;
   }
 
   ::-webkit-scrollbar-thumb {
-    background: #172d6e;
+    background: #0d2743;
     border-radius: 9999px;
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    background: #1e3a8a;
+    background: #112352;
   }
 }
 
