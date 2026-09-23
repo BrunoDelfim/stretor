@@ -45,9 +45,7 @@ COPY backend/composer.json backend/composer.lock* ./
 
 # Desativa o bloqueio de advisories e instala as dependências.
 # Se não houver composer.lock, gera um (update) para builds determinísticos.
-RUN composer config --global audit.block false \
-    && composer config --global policy.advisories.block false \
-    && if [ -f composer.lock ]; then \
+RUN if [ -f composer.lock ]; then \
          composer install \
            --no-interaction \
            --no-scripts \
