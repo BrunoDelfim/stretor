@@ -1,4 +1,14 @@
 services:
+  init:
+    image: alpine:3.20
+    container_name: stretor_init
+    working_dir: /workspace
+    volumes:
+      - ./:/workspace
+    command: sh /workspace/scripts/bootstrap.sh
+    networks:
+      - stretor
+
   backend:
     build:
       context: .
@@ -10,6 +20,8 @@ services:
       - ./backend:/var/www/backend
       - ./docker/backend/php.ini:/usr/local/etc/php/conf.d/custom.ini
     depends_on:
+      init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -38,7 +50,6 @@ services:
     container_name: stretor_frontend
     restart: unless-stopped
     working_dir: /app
-    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
     ports:
       - "${FRONTEND_PORT:-5173}:5173"
     volumes:
@@ -47,6 +58,15 @@ services:
     environment:
       - VITE_API_URL=${VITE_API_URL:-http://localhost:8000/api}
       - VITE_MEDIA_SERVICE_URL=${VITE_MEDIA_SERVICE_URL:-http://localhost:3000}
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5173 >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
     networks:
       - stretor
 
@@ -57,7 +77,6 @@ services:
     container_name: stretor_media_service
     restart: unless-stopped
     working_dir: /app
-    command: sh -c "npm install && npm run dev"
     ports:
       - "${MEDIA_SERVICE_PORT:-3000}:3000"
     volumes:
@@ -70,7 +89,16 @@ services:
       - REDIS_URL=redis://redis:6379
       - STORAGE_PATH=/app/storage
     depends_on:
-      - redis
+      init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     networks:
       - stretor
 

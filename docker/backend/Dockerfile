@@ -40,8 +40,13 @@ WORKDIR /var/www/backend
 RUN addgroup -g 1000 -S stretor && adduser -u 1000 -S stretor -G stretor
 RUN chown -R stretor:stretor /var/www
 
+# Entrypoint de bootstrap
+COPY docker/backend/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
 USER stretor
 
 EXPOSE 9000
 
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["php-fpm"]

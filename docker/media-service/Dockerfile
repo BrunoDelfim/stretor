@@ -19,6 +19,10 @@ COPY media-service/ ./
 
 RUN mkdir -p /app/storage /app/tmp
 
+COPY docker/media-service/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
 EXPOSE 3000
 
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["npm", "run", "dev"]
