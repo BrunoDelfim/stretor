@@ -13,7 +13,7 @@ WORKDIR /app
 
 COPY media-service/package*.json ./
 
-RUN npm install
+RUN npm ci
 
 COPY media-service/ ./
 
