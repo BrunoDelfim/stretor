@@ -14,6 +14,8 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     allowedHosts: true,
+    // O Vite roda atrás do Nginx (porta 80). O cliente HMR deve conectar
+    // na mesma porta pública do Nginx, não na 5173 interna.
     hmr: {
       clientPort: 80,
     },

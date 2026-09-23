@@ -68,6 +68,15 @@ Thumbs.db
 # --- Docker ---
 docker-compose.override.yml
 
+# --- Sentinelas de bootstrap ---
+# Marcam que o bootstrap/migrations já rodaram; são estado local, não código.
+.bootstrap-done
+backend/storage/framework/.migrations-done
+
+# --- Planejamento ---
+# Documentos de planejamento/arquitetura ficam fora do versionamento.
+plans/
+
 # --- Outros ---
 *.cache
 .cache/

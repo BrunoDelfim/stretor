@@ -21,12 +21,15 @@ Plataforma de processamento de mídia (vídeo/áudio) com arquitetura de micross
 
 | Serviço         | Stack                          | Porta padrão |
 |-----------------|--------------------------------|--------------|
-| `frontend`      | Vue 3 + Vite + Pinia + Tailwind| 5173         |
+| `frontend`      | Vue 3 + Vite + Pinia + Tailwind| 5173 (interna) |
 | `backend`       | Laravel 11 (PHP 8.3-FPM)       | 9000 (FPM)   |
-| `nginx`         | Nginx 1.27 Alpine              | 8000         |
+| `nginx`         | Nginx 1.27 Alpine              | **80**       |
 | `media-service` | Node.js 20 + FFmpeg            | 3000         |
 | `postgres`      | PostgreSQL 16                  | 5432         |
 | `redis`         | Redis 7 Alpine                 | 6379         |
+
+> **Acesso principal:** http://localhost (Nginx na porta 80 faz proxy para o
+> frontend Vite e para a API Laravel).
 
 ## Estrutura de Pastas
 
@@ -88,9 +91,12 @@ docker compose exec backend php artisan migrate
 
 ### 4. Acessar os serviços
 
-- Frontend: http://localhost:5173
-- API: http://localhost:8000/api/health
-- Media Service: http://localhost:3000/health
+Tudo é servido pelo Nginx na **porta 80**:
+
+- Aplicação (frontend + API): http://localhost
+- API health check: http://localhost/api/health
+- Media Service (via proxy): http://localhost/media/health
+- Media Service (direto): http://localhost:3000/health
 
 ### 5. Comandos úteis
 

@@ -1,0 +1,26 @@
+# Regras Globais do Projeto (Stack: Laravel, Vue, Node & Docker)
+
+## 1. Filosofia de Desenvolvimento e Progresso
+- **Desenvolvimento Progressivo:** Não faça tudo de uma vez. Vá por etapas: construa, valide se está funcionando perfeitamente, e só então avance para a próxima página ou funcionalidade.
+- **Documentação Simultânea:** Crie e atualize a documentação do projeto (`docs/` ou `README.md`) conforme o código vai sendo desenvolvido e estabilizado.
+
+## 2. Automação e Docker (Zero Configuração Manual)
+- **Setup Automatizado:** O sistema deve subir inteiramente via Docker (`docker compose up` / `build`) sem exigir configurações manuais a cada execução.
+- **Gerenciamento do .env:** A única ação manual permitida é a configuração do arquivo `.env` baseada no `.env.example`.
+- **Espelhamento e Obrigatoriedade:** O arquivo `.env.example` deve ser um espelho fiel do `.env` (contendo todas as chaves), mas sem os valores reais. Adicione comentários naturais e claros apenas nas variáveis obrigatórias.
+
+## 3. Padrões de Código e Comentários
+- **Idioma:** Todo o código, comentários, documentação e mensagens devem estar estritamente em **Português do Brasil (PT-BR)**.
+- **Comentários Naturais:** Proibido comentários óbvios (ex: `// retorna o usuário`). Se for comentar, faça de forma natural e humana, explicando o "porquê" de lógicas complexas ou decisões de arquitetura.
+- **Commits Naturais:** Os commits gerados devem ser limpos, descritivos e escritos em PT-BR, refletindo modificações profundas de forma coesa. Versionar sempre que houver uma entrega ou alteração estrutural relevante.
+
+## 4. Arquitetura e Estrutura de Pastas
+- **Backend (Laravel):** Deve seguir estritamente a separação por camadas utilizando **Services** (regras de negócio), **Controllers** (orquestração de requisições), **Models**, **Migrations** e **Seeds**.
+- **Frontend (Vue.js):** 
+  - Estrutura organizada com **Views** (páginas), **Serviços** (chamadas de API isoladas) e **Rotas** isoladas em arquivos próprios.
+  - **Componentização Rígida:** Não deve existir criação de componentes complexos diretamente dentro das views. Toda a interface reutilizável deve residir na pasta de `components`, onde os **componentes padrões** globais serão chamados e adaptados através de props/slots para atender às particularidades de cada tela.
+
+## 5. Integrações do Sistema
+- **Catálogo:** Integração com API de catálogo de filmes mundial.
+- **Torrents e Legendas:** Integração com as principais APIs de torrents do mercado, suporte a APIs de legendas próprias e rotinas para **extração de legendas diretamente dos arquivos de torrent**.
+- **Real-Debrid:** Integração completa com o serviço Real-Debrid para gerenciamento e cache de downloads.
