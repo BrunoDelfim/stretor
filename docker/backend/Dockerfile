@@ -40,6 +40,18 @@ WORKDIR /var/www/backend
 RUN addgroup -g 1000 -S stretor && adduser -u 1000 -S stretor -G stretor
 RUN chown -R stretor:stretor /var/www
 
+# Copia apenas os manifests primeiro para aproveitar cache de camadas
+COPY backend/composer.json backend/composer.lock* ./
+
+# Instala dependências no build (sem scripts para evitar loops/interatividade)
+RUN composer install \
+    --no-interaction \
+    --no-scripts \
+    --no-progress \
+    --prefer-dist \
+    --optimize-autoloader \
+    && chown -R stretor:stretor vendor
+
 # su-exec para trocar de usuário no entrypoint
 RUN apk add --no-cache su-exec
 

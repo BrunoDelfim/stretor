@@ -15,13 +15,13 @@ if [ ! -f .env ]; then
   cp .env.example .env
 fi
 
-# 2. Dependências PHP
-if [ ! -d vendor ] || [ ! -f vendor/autoload.php ]; then
-  echo "[backend] Instalando dependências (composer install)..."
-  composer install --no-interaction --prefer-dist --optimize-autoloader
-else
-  echo "[backend] vendor/ já existe, pulando composer install"
+# 2. Dependências PHP (instaladas no build da imagem)
+if [ ! -f vendor/autoload.php ]; then
+  echo "[backend] ERRO: vendor/ não encontrado. Rode 'docker compose build backend'."
+  exit 1
 fi
+# Garante que o usuário stretor possa escrever em vendor/ (evita reinstalações em loop)
+chown -R stretor:stretor vendor 2>/dev/null || true
 
 # 3. APP_KEY
 if ! grep -q "^APP_KEY=base64:" .env; then
