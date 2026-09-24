@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { moviesService } from '@/services/movies'
+import { LIMITE_DESTAQUES } from '@/constants/filmes'
 
 /**
  * Estado central dos filmes exibidos na Home.
@@ -27,8 +28,8 @@ export const useMoviesStore = defineStore('movies', () => {
 
   const emBusca = computed(() => termoBusca.value.trim().length > 0)
 
-  /** Destaques do carrossel: os 6 primeiros títulos populares. */
-  const destaques = computed(() => filmes.value.slice(0, 6))
+  /** Destaques do carrossel: os primeiros títulos populares. */
+  const destaques = computed(() => filmes.value.slice(0, LIMITE_DESTAQUES))
 
   /** Aplica os metadados de paginação devolvidos pelo backend. */
   function aplicarMeta(meta) {

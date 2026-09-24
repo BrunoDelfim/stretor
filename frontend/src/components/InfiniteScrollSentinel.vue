@@ -1,6 +1,7 @@
 <script setup>
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import MovieCardSkeleton from '@/components/MovieCardSkeleton.vue'
+import { MARGEM_SENTINELA, QUANTIDADE_SKELETONS } from '@/constants/ui'
 
 /**
  * Sentinela reutilizável de rolagem infinita.
@@ -33,12 +34,12 @@ const props = defineProps({
    */
   margem: {
     type: String,
-    default: '800px',
+    default: MARGEM_SENTINELA,
   },
   /** Quantidade de cards fantasma exibidos durante o carregamento. */
   quantidade: {
     type: Number,
-    default: 6,
+    default: QUANTIDADE_SKELETONS,
   },
 })
 

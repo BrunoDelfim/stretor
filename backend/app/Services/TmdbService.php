@@ -2,6 +2,11 @@
 
 namespace App\Services;
 
+use App\Enums\ClassificacaoIndicativa;
+use App\Enums\Genero;
+use App\Enums\TamanhoImagem;
+use App\Enums\TipoVideo;
+use App\Support\MensagensFilme;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
@@ -17,37 +22,6 @@ use RuntimeException;
  */
 class TmdbService
 {
-    private const GENEROS = [
-        28 => 'Ação',
-        12 => 'Aventura',
-        16 => 'Animação',
-        35 => 'Comédia',
-        80 => 'Crime',
-        99 => 'Documentário',
-        18 => 'Drama',
-        10751 => 'Família',
-        14 => 'Fantasia',
-        36 => 'História',
-        27 => 'Terror',
-        10402 => 'Música',
-        9648 => 'Mistério',
-        10749 => 'Romance',
-        878 => 'Ficção Científica',
-        10770 => 'Cinema TV',
-        53 => 'Suspense',
-        10752 => 'Guerra',
-        37 => 'Faroeste',
-    ];
-
-    private const CLASSIFICACOES = [
-        'L' => 'L',
-        '10' => '10',
-        '12' => '12',
-        '14' => '14',
-        '16' => '16',
-        '18' => '18',
-    ];
-
     /**
      * Filmes mais assistidos/populares do Brasil.
      *
@@ -323,13 +297,13 @@ class TmdbService
 
         return [
             'id' => $filme['id'] ?? null,
-            'titulo' => $filme['title'] ?? $filme['name'] ?? 'Título indisponível',
-            'sinopse' => $filme['overview'] ?: 'Sinopse não disponível para este título.',
-            'capa' => $this->montarImagem($filme['poster_path'] ?? null, 'w500'),
-            'backdrop' => $this->montarImagem($filme['backdrop_path'] ?? null, 'w1280'),
-            'backdrop_alta' => $this->montarImagem($filme['backdrop_path'] ?? null, 'original'),
+            'titulo' => $filme['title'] ?? $filme['name'] ?? MensagensFilme::TITULO_INDISPONIVEL,
+            'sinopse' => $filme['overview'] ?: MensagensFilme::SINOPSE_INDISPONIVEL,
+            'capa' => $this->montarImagem($filme['poster_path'] ?? null, TamanhoImagem::POSTER),
+            'backdrop' => $this->montarImagem($filme['backdrop_path'] ?? null, TamanhoImagem::BACKDROP),
+            'backdrop_alta' => $this->montarImagem($filme['backdrop_path'] ?? null, TamanhoImagem::ORIGINAL),
             'generos' => $generos,
-            'genero' => $generos[0] ?? 'Gênero não informado',
+            'genero' => $generos[0] ?? MensagensFilme::GENERO_NAO_INFORMADO,
             'classificacao' => $classificacao ?? $this->extrairClassificacao($filme, $releaseDates),
             'nota' => isset($filme['vote_average']) ? round((float) $filme['vote_average'], 1) : null,
             'ano' => $this->extrairAno($filme['release_date'] ?? null),
@@ -375,7 +349,7 @@ class TmdbService
 
         return array_values(array_filter(array_map(
             fn (array $ator) => $ator['name'] ?? null,
-            array_slice($elenco, 0, 5)
+            array_slice($elenco, 0, MensagensFilme::LIMITE_ELENCO)
         )));
     }
 
@@ -394,8 +368,8 @@ class TmdbService
 
         $trailers = array_values(array_filter(
             $resultados,
-            fn (array $video) => ($video['site'] ?? null) === 'YouTube'
-                && ($video['type'] ?? null) === 'Trailer'
+            fn (array $video) => ($video['site'] ?? null) === TipoVideo::YOUTUBE->value
+                && ($video['type'] ?? null) === TipoVideo::TRAILER->value
         ));
 
         if (empty($trailers)) {
@@ -421,7 +395,7 @@ class TmdbService
         // pelo id quando possível para manter a interface consistente.
         if (! empty($filme['genres']) && is_array($filme['genres'])) {
             return array_values(array_filter(array_map(
-                fn ($genero) => self::GENEROS[$genero['id'] ?? null] ?? ($genero['name'] ?? null),
+                fn ($genero) => Genero::rotuloPorId($genero['id'] ?? null) ?? ($genero['name'] ?? null),
                 $filme['genres']
             )));
         }
@@ -429,7 +403,7 @@ class TmdbService
         $ids = $filme['genre_ids'] ?? [];
 
         return array_values(array_filter(array_map(
-            fn ($id) => self::GENEROS[$id] ?? null,
+            fn ($id) => Genero::rotuloPorId($id),
             $ids
         )));
     }
@@ -445,7 +419,7 @@ class TmdbService
     private function extrairClassificacao(array $filme, ?array $releaseDates): string
     {
         if (isset($filme['adult']) && $filme['adult'] === true) {
-            return '18';
+            return ClassificacaoIndicativa::DEZOITO->rotulo();
         }
 
         $resultados = $releaseDates['results'] ?? [];
@@ -459,12 +433,12 @@ class TmdbService
                 $certificacao = trim((string) ($data['certification'] ?? ''));
 
                 if ($certificacao !== '') {
-                    return self::CLASSIFICACOES[$certificacao] ?? $certificacao;
+                    return ClassificacaoIndicativa::normalizar($certificacao);
                 }
             }
         }
 
-        return 'Não classificada';
+        return MensagensFilme::NAO_CLASSIFICADA;
     }
 
     private function extrairAno(?string $data): ?int
@@ -478,12 +452,12 @@ class TmdbService
         return $ano > 0 ? $ano : null;
     }
 
-    private function montarImagem(?string $caminho, string $tamanho): ?string
+    private function montarImagem(?string $caminho, TamanhoImagem $tamanho): ?string
     {
         if (empty($caminho)) {
             return null;
         }
 
-        return rtrim(config('services.tmdb.image_url'), '/')."/{$tamanho}{$caminho}";
+        return rtrim(config('services.tmdb.image_url'), '/')."/{$tamanho->value}{$caminho}";
     }
 }

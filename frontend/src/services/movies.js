@@ -1,5 +1,6 @@
 import axios from 'axios'
 import { useApiStore } from '@/stores/api'
+import { BASE_MOVIES, TIMEOUT_REQUISICAO_MS } from '@/constants/api'
 
 /**
  * Camada isolada de acesso aos endpoints de filmes.
@@ -9,8 +10,8 @@ function cliente() {
   const api = useApiStore()
 
   return axios.create({
-    baseURL: `${api.baseUrl}/v1/movies`,
-    timeout: 20000,
+    baseURL: `${api.baseUrl}${BASE_MOVIES}`,
+    timeout: TIMEOUT_REQUISICAO_MS,
   })
 }
 

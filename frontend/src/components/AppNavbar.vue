@@ -1,10 +1,12 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
+import { useDebounce } from '@/composables/useDebounce'
+import { useScrollSolidificacao } from '@/composables/useScrollSolidificacao'
+import { DEBOUNCE_BUSCA_MS } from '@/constants/ui'
 
 const emit = defineEmits(['buscar'])
 
 const termo = ref('')
-const scrollY = ref(0)
 const menuAberto = ref(false)
 const containerPerfil = ref(null)
 
@@ -16,31 +18,10 @@ const opcoesPerfil = [
   { rotulo: 'Sair', acao: 'sair' },
 ]
 
-// A navbar nasce totalmente transparente e vai ganhando cor aos poucos
-// conforme a página rola, até ficar sólida. O intervalo define em quantos
-// pixels de scroll a transição se completa.
-const INICIO_SOLIDIFICACAO = 20
-const FIM_SOLIDIFICACAO = 220
+// A navbar nasce transparente e vai ganhando cor conforme a página rola.
+const { opacidadeFundo, solidificada } = useScrollSolidificacao()
 
-const opacidadeFundo = computed(() => {
-  const progresso =
-    (scrollY.value - INICIO_SOLIDIFICACAO) / (FIM_SOLIDIFICACAO - INICIO_SOLIDIFICACAO)
-
-  return Math.min(1, Math.max(0, progresso))
-})
-
-const solidificada = computed(() => opacidadeFundo.value >= 1)
-
-function aoRolar() {
-  scrollY.value = window.scrollY
-}
-
-let debounce = null
-
-function aoDigitar() {
-  clearTimeout(debounce)
-  debounce = setTimeout(() => emit('buscar', termo.value), 400)
-}
+const aoDigitar = useDebounce(() => emit('buscar', termo.value), DEBOUNCE_BUSCA_MS)
 
 function limpar() {
   termo.value = ''
@@ -65,15 +46,11 @@ function aoClicarFora(evento) {
 }
 
 onMounted(() => {
-  aoRolar()
-  window.addEventListener('scroll', aoRolar, { passive: true })
   document.addEventListener('click', aoClicarFora)
 })
 
 onUnmounted(() => {
-  window.removeEventListener('scroll', aoRolar)
   document.removeEventListener('click', aoClicarFora)
-  clearTimeout(debounce)
 })
 </script>
 

@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { INTERVALO_AUTOPLAY_MS, TOTAL_INDICADORES_CARROSSEL } from '@/constants/ui'
 
 const props = defineProps({
   filmes: {
@@ -10,24 +11,22 @@ const props = defineProps({
 
 const emit = defineEmits(['selecionar'])
 
-const TOTAL_INDICADORES = 6
-const INTERVALO_AUTOPLAY = 7000
-
 const indiceAtual = ref(0)
 
 let autoplay = null
 
-// Garante sempre 6 posições no carrossel, mesmo com poucos filmes carregados.
+// Garante sempre o número fixo de posições no carrossel, mesmo com poucos
+// filmes carregados — as posições vazias viram placeholders no template.
 const slides = computed(() => {
-  const base = props.filmes.slice(0, TOTAL_INDICADORES)
+  const base = props.filmes.slice(0, TOTAL_INDICADORES_CARROSSEL)
 
-  return Array.from({ length: TOTAL_INDICADORES }, (_, indice) => base[indice] ?? null)
+  return Array.from({ length: TOTAL_INDICADORES_CARROSSEL }, (_, indice) => base[indice] ?? null)
 })
 
 const slideAtual = computed(() => slides.value[indiceAtual.value])
 
 function irPara(indice) {
-  indiceAtual.value = (indice + TOTAL_INDICADORES) % TOTAL_INDICADORES
+  indiceAtual.value = (indice + TOTAL_INDICADORES_CARROSSEL) % TOTAL_INDICADORES_CARROSSEL
   reiniciarAutoplay()
 }
 
@@ -37,7 +36,7 @@ function proximo() {
 
 function reiniciarAutoplay() {
   clearInterval(autoplay)
-  autoplay = setInterval(proximo, INTERVALO_AUTOPLAY)
+  autoplay = setInterval(proximo, INTERVALO_AUTOPLAY_MS)
 }
 
 function selecionar() {
