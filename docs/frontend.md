@@ -106,20 +106,24 @@ estado de erro, em vez de deixar a tela preta sem aviso.
 
 ### Desistência de uma fonte
 
-[`iniciarPlayer()`](../frontend/src/components/PlayerOverlay.vue:93) devolve um
-booleano: `true` só quando o player está montado e o HLS anexado. A espera pelo
-evento `ready` do Plyr tem um teto (`TIMEOUT_PLYR_READY_MS`) porque o evento nem
-sempre dispara — sem ele, a função travava e o fluxo de fontes parava junto.
+A fonte é considerada **vencedora assim que a playlist fica pronta no servidor**
+(`status === 'pronto'` com `playlist` preenchido), em
+[`aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:255). Montar o
+player é um passo separado: [`iniciarPlayer()`](../frontend/src/components/PlayerOverlay.vue:93)
+não devolve mais booleano e não decide mais o destino da fonte.
 
-Em [`aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:269), a fonte
-só é considerada vencedora quando `iniciarPlayer` devolve `true`. Se devolver
-`false`, a sessão é encerrada e o loop avança para a próxima fonte. Cada fonte
-tem um limite próprio (`TIMEOUT_FONTE_MS`, 90 s) em vez dos 5 minutos anteriores:
-com várias fontes na fila, uma fonte morta prendia o usuário por minutos.
+Essa separação corrigiu um problema sério: antes, condicionar o sucesso ao
+retorno de `iniciarPlayer` fazia uma falha de montagem do Plyr (evento `ready`
+que não dispara, `player.media` nulo) descartar uma fonte perfeitamente válida —
+o fluxo queimava a lista inteira de fontes por um problema de UI.
 
-Ao descartar uma fonte,
-[`limparSessaoAtual()`](../frontend/src/components/PlayerOverlay.vue:297) faz
-duas limpezas que antes faltavam:
+Cada fonte tem um limite próprio (`TIMEOUT_FONTE_MS`, 90 s) em vez dos 5 minutos
+anteriores: com várias fontes na fila, uma fonte morta prendia o usuário por
+minutos.
+
+Ao descartar uma fonte por falha real (timeout ou `status === 'erro'`),
+[`limparSessaoAtual()`](../frontend/src/components/PlayerOverlay.vue:304) faz
+duas limpezas:
 
 1. **Destrói o `hls.js`** (`destruirPlayer()`). Sem isso, a instância antiga
    continuava viva tentando recarregar a playlist de uma sessão já apagada.
@@ -129,6 +133,10 @@ duas limpezas que antes faltavam:
 2. **Volta o estado para `preparando`**, desmontando o container do vídeo. O
    Plyr, ao ser destruído, deixa para trás um `<video>` desanexado; sem
    desmontar, a próxima fonte reutilizava um elemento inválido.
+
+O erro fatal do `hls.js` é tratado à parte: ele apenas exibe a mensagem de falha
+na UI, sem mexer no fluxo de fontes — que já terminou quando a playlist ficou
+pronta.
 
 A URL da playlist é validada em
 [`urlPlaylist()`](../frontend/src/services/streaming.js:76) antes de chegar ao

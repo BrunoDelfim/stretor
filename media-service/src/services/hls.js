@@ -106,7 +106,7 @@ export function iniciarConversao({ arquivo, diretorio, modo, progressoDownload, 
   /**
    * Executa uma passada do FFmpeg a partir de `inicioSegmento` segundos.
    *
-   * A primeira passada cria a playlist; as seguintes usam `-hls_flags
+   * A primeira passada cria a playlist; as de retomada usam `-hls_flags
    * append_list` para continuar a numeração dos segmentos sem sobrescrever os
    * anteriores.
    */
@@ -114,32 +114,42 @@ export function iniciarConversao({ arquivo, diretorio, modo, progressoDownload, 
     if (controle.parado) return
 
     const comando = ffmpeg(arquivo)
+    const retomando = controle.inicioSegmento > 0
 
     // Retomar exige buscar no ponto exato onde a passada anterior parou.
-    if (controle.inicioSegmento > 0) {
+    if (retomando) {
       comando.inputOptions([`-ss ${controle.inicioSegmento}`])
     }
 
     aplicarModo(comando, modo)
 
+    const opcoes = [
+      // HLS com segmentos curtos: o player começa antes de o filme inteiro
+      // estar convertido, que é o ponto do streaming em tempo real.
+      '-f hls',
+      `-hls_time ${DURACAO_SEGMENTO}`,
+      `-hls_list_size ${SEGMENTOS_NA_JANELA}`,
+      '-hls_segment_type mpegts',
+      `-hls_segment_filename ${padraoSegmento}`,
+      // `event` mantém todos os segmentos na playlist e faz o FFmpeg declarar
+      // `#EXT-X-PLAYLIST-TYPE:EVENT`. Sem isso o hls.js enxerga a playlist como
+      // transmissão ao vivo e nunca libera a reprodução.
+      '-hls_playlist_type event',
+      '-movflags +faststart',
+    ]
+
+    /*
+     * `append_list` só faz sentido na retomada: ela manda o FFmpeg continuar a
+     * numeração dentro de uma playlist já existente. Na primeira passada, a
+     * flag impedia o FFmpeg de escrever o cabeçalho da playlist corretamente e
+     * a deixava sem `#EXT-X-ENDLIST`, o que prendia o player em buffering.
+     */
+    if (retomando) {
+      opcoes.push('-hls_flags append_list')
+    }
+
     comando
-      .outputOptions([
-        // HLS com segmentos curtos: o player começa antes de o filme inteiro
-        // estar convertido, que é o ponto do streaming em tempo real.
-        '-f hls',
-        `-hls_time ${DURACAO_SEGMENTO}`,
-        `-hls_list_size ${SEGMENTOS_NA_JANELA}`,
-        // `event` mantém todos os segmentos na playlist, permitindo voltar no
-        // filme. Por isso não usamos `delete_segments`: ele apagaria justamente
-        // os trechos já assistidos, quebrando o retrocesso do player.
-        '-hls_flags append_list',
-        '-hls_segment_type mpegts',
-        `-hls_segment_filename ${padraoSegmento}`,
-        // Sem isso o FFmpeg espera o arquivo inteiro para escrever o primeiro
-        // segmento, o que anula o propósito do streaming ao vivo.
-        '-hls_playlist_type event',
-        '-movflags +faststart',
-      ])
+      .outputOptions(opcoes)
       .output(playlist)
       .on('start', (linha) => logger.info('[hls] conversão iniciada:', linha))
       .on('progress', (progresso) => {
@@ -162,7 +172,12 @@ export function iniciarConversao({ arquivo, diretorio, modo, progressoDownload, 
           .then(executarPassada)
           .catch((motivo) => logger.error('[hls] conversão abandonada:', motivo.message))
       })
-      .on('end', () => logger.info('[hls] conversão concluída'))
+      .on('end', () => {
+        logger.info('[hls] conversão concluída')
+        // A playlist só é considerada completa quando declara o fim. Sem essa
+        // tag o hls.js continua esperando segmentos que nunca virão.
+        finalizarPlaylist(playlist)
+      })
 
     controle.comando = comando
     comando.run()
@@ -201,6 +216,26 @@ function ultimoSegmentoEmSegundos(playlist, atual) {
 }
 
 /**
+ * Anexa `#EXT-X-ENDLIST` à playlist, declarando que não virão mais segmentos.
+ *
+ * O FFmpeg não escreve essa tag sozinho quando a conversão termina em uma
+ * passada de retomada. Sem ela, o hls.js trata a playlist como transmissão ao
+ * vivo e fica em buffering indefinidamente.
+ */
+function finalizarPlaylist(playlist) {
+  try {
+    const conteudo = fs.readFileSync(playlist, 'utf8')
+
+    if (conteudo.includes('#EXT-X-ENDLIST')) return
+
+    fs.appendFileSync(playlist, '\n#EXT-X-ENDLIST\n')
+    logger.info('[hls] playlist finalizada com #EXT-X-ENDLIST')
+  } catch (erro) {
+    logger.warn('[hls] falha ao finalizar a playlist:', erro.message)
+  }
+}
+
+/**
  * Espera o torrent baixar mais dados antes de retomar a conversão.
  *
  * Se o download já terminou, não há o que esperar: devolvemos na hora para que
@@ -214,8 +249,16 @@ function aguardarMaisDados(progressoDownload, timeoutMs = 120000) {
     const verificar = () => {
       const progresso = progressoDownload?.() ?? 1
 
-      // Exigimos um avanço real no download, não apenas a passagem do tempo.
-      if (progresso >= 1 || progresso > progressoInicial + 0.01) {
+      /*
+       * Exigir 1% de avanço é rígido demais para torrents lentos: um arquivo de
+       * vários GB precisa de dezenas de MB para cruzar essa marca, e a conversão
+       * ficava parada esperando. Aceitamos também um avanço absoluto pequeno,
+       * que já dá ao FFmpeg o que processar.
+       */
+      const avancouPercentual = progresso > progressoInicial + 0.01
+      const avancouAbsoluto = progresso - progressoInicial >= 0.0005
+
+      if (progresso >= 1 || avancouPercentual || avancouAbsoluto) {
         return resolve(true)
       }
 
@@ -223,7 +266,7 @@ function aguardarMaisDados(progressoDownload, timeoutMs = 120000) {
         return reject(new Error('O download estagnou e a conversão não pôde continuar.'))
       }
 
-      setTimeout(verificar, 1000)
+      setTimeout(verificar, 500)
     }
 
     verificar()

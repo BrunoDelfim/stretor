@@ -79,30 +79,28 @@ function destruirPlayer() {
 }
 
 /**
- * Inicia a reprodução do HLS.
+ * Monta o player e anexa o HLS.
  *
  * Entregamos ao Plyr apenas uma fonte que ele já sabe consumir. Onde o
  * navegador não toca HLS nativamente (Chrome/Firefox), o hls.js faz a ponte;
  * no Safari o próprio Plyr usa o suporte nativo.
  *
- * Devolve `true` somente quando o player está de fato montado e o HLS anexado.
- * Qualquer saída antecipada devolve `false` para o chamador seguir para a
- * próxima fonte — antes, a função não sinalizava falha e o fluxo tratava como
- * sucesso, prendendo o overlay numa fonte que nunca ia reproduzir.
+ * Esta função NÃO decide se a fonte é boa. A fonte já foi validada quando a
+ * playlist ficou pronta no servidor; montar o player é um passo separado. Antes
+ * ela devolvia um booleano que o chamador usava para descartar a fonte, e uma
+ * falha de montagem (evento `ready` que não dispara, `player.media` nulo)
+ * jogava fora uma fonte perfeitamente válida — o fluxo queimava a lista inteira
+ * de fontes por um problema de UI.
  */
 async function iniciarPlayer(url) {
-  if (!url) return false
+  if (!url) return
 
   urlPlaylist.value = url
 
   /*
-   * O container do vídeo está sob `v-if="estado === 'reproduzindo'"`.
-   *
-   * Se mantivéssemos o estado em `preparando` (como antes), o container nem
-   * entrava no DOM: o `nextTick` rodava, `elementoVideo` continuava `null` e a
-   * função devolvia `false`. O chamador então entendia que a fonte falhou e
-   * apagava uma sessão que já estava pronta — repetindo isso para cada fonte da
-   * lista. O estado precisa ser `reproduzindo` para o container existir.
+   * O container do vídeo está sob `v-if="estado === 'reproduzindo'"`. O estado
+   * precisa ser esse para o container existir; se ficar em `preparando`, o
+   * `nextTick` roda, `elementoVideo` continua `null` e nada monta.
    */
   estado.value = 'reproduzindo'
   mensagem.value = 'Iniciando o player...'
@@ -112,7 +110,11 @@ async function iniciarPlayer(url) {
 
   const video = elementoVideo.value
 
-  if (!video) return false
+  if (!video) {
+    estado.value = 'erro'
+    erro.value = 'Não foi possível preparar o player.'
+    return
+  }
 
   /*
    * O Plyr precisa ser criado ANTES de anexarmos o HLS.
@@ -150,18 +152,17 @@ async function iniciarPlayer(url) {
     player.once('ready', finalizar)
   })
 
-  if (cancelado) return false
+  if (cancelado) return
 
   const midia = player.media
 
   if (!midia) {
-    // O container já está montado (estado `reproduzindo`), mas sem mídia o
-    // `<video>` fica sem fonte e o navegador passa a resolver a base do
-    // documento como mídia — a origem da requisição nua `/media/sessao/<hash>`.
-    // Desmontamos o container antes de devolver a falha.
+    // Sem mídia o `<video>` fica sem fonte e o navegador passa a resolver a base
+    // do documento como mídia — a origem da requisição nua `/media/sessao/<hash>`.
     destruirPlayer()
-    estado.value = 'preparando'
-    return false
+    estado.value = 'erro'
+    erro.value = 'Não foi possível preparar o player.'
+    return
   }
 
   if (midia.canPlayType('application/vnd.apple.mpegurl')) {
@@ -170,8 +171,9 @@ async function iniciarPlayer(url) {
   } else if (Hls.isSupported()) {
     instanciaHls = new Hls({ enableWorker: true })
 
-    // Sem isso, uma falha de rede ou de playlist deixaria o overlay preso no
-    // estado "preparando" com a tela preta, sem qualquer aviso ao usuário.
+    // Uma falha fatal aqui é de reprodução, não de fonte: a playlist existe e
+    // foi servida. Avisamos o usuário sem mexer no fluxo de fontes, que já
+    // terminou quando a playlist ficou pronta.
     instanciaHls.on(Hls.Events.ERROR, (_evento, dados) => {
       if (!dados.fatal) return
 
@@ -184,11 +186,10 @@ async function iniciarPlayer(url) {
   } else {
     erro.value = 'Seu navegador não suporta a reprodução deste vídeo.'
     estado.value = 'erro'
-    return false
+    return
   }
 
-  // O Plyr já está montado e o HLS anexado: agora sim o overlay pode sair de
-  // cena e dar lugar ao vídeo.
+  // O Plyr já está montado e o HLS anexado: o overlay pode sair de cena.
   estado.value = 'reproduzindo'
   mensagem.value = ''
 
@@ -196,8 +197,6 @@ async function iniciarPlayer(url) {
   // usuário clicou em "Assistir", a interação já existe — tentamos o play e
   // ignoramos a rejeição, deixando os controles disponíveis para o clique.
   player.play()?.catch(() => {})
-
-  return true
 }
 
 /**
@@ -215,11 +214,6 @@ async function tentarFontes(fontes) {
     tentativaAtual.value = indice + 1
     estado.value = 'tentando'
     mensagem.value = `Tentando fonte ${indice + 1} de ${fontes.length}...`
-
-    // Garante que o container do vídeo da tentativa anterior saia do DOM antes
-    // de montarmos um novo. Sem isso, o Plyr destruído deixava para trás um
-    // `<video>` desanexado e a próxima fonte reutilizava um elemento inválido.
-    await nextTick()
 
     try {
       const sessao = await streamingService.criarSessao(fonte.magnet, props.filme.id)
@@ -249,8 +243,9 @@ async function tentarFontes(fontes) {
 /**
  * Aguarda o desfecho de uma única fonte.
  *
- * Devolve `pronto` quando a reprodução começou, ou `falhou` para o chamador
- * seguir para a próxima fonte.
+ * Devolve `pronto` quando a playlist ficou disponível no servidor, ou `falhou`
+ * para o chamador seguir para a próxima fonte. A montagem do player não entra
+ * nessa decisão: uma vez que a playlist existe, a fonte é válida.
  */
 function aguardarFonte() {
   const inicio = Date.now()
@@ -276,14 +271,15 @@ function aguardarFonte() {
 
         if (status.status === 'pronto' && status.playlist) {
           const url = streamingService.urlPlaylist(status.playlist)
-          const iniciou = await iniciarPlayer(url)
 
-          // Só consideramos a fonte vencedora se o player realmente montou.
-          // Caso contrário, encerramos a sessão e deixamos o loop avançar.
-          if (!iniciou) {
-            await limparSessaoAtual()
-            return resolve('falhou')
-          }
+          /*
+           * A fonte está boa: a playlist existe e foi servida pelo servidor.
+           * Montar o player é um passo separado — se falhar, o erro é de UI e
+           * não pode descartar uma fonte válida. Antes, condicionar o sucesso
+           * ao retorno de `iniciarPlayer` fazia o fluxo queimar a lista inteira
+           * de fontes por uma falha de montagem do Plyr.
+           */
+          iniciarPlayer(url).catch(() => {})
 
           return resolve('pronto')
         }

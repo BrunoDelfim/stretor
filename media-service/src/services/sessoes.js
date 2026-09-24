@@ -190,9 +190,13 @@ function escolherArquivoDeVideo(torrent) {
 /**
  * Aguarda o arquivo ter dados suficientes para o FFmpeg começar a ler.
  *
+ * O mínimo era 5 MB, o que dava pouca margem: o FFmpeg produzia dois ou três
+ * segmentos e já batia na fronteira do download, interrompendo a passada. Com
+ * 20 MB ele mantém uma folga confortável à frente do ponto de leitura.
+ *
  * @param {import('webtorrent').TorrentFile} arquivo
  */
-function aguardarDadosIniciais(arquivo, minimoBytes = 5 * 1024 * 1024, timeoutMs = 60000) {
+function aguardarDadosIniciais(arquivo, minimoBytes = 20 * 1024 * 1024, timeoutMs = 60000) {
   const inicio = Date.now()
 
   return new Promise((resolve, reject) => {

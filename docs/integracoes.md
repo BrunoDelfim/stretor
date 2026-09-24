@@ -83,6 +83,18 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   aborta ao alcançar a fronteira do download (código 183). Isso não é falha: o
   supervisor espera o torrent avançar e retoma a conversão de onde parou,
   anexando os novos segmentos à mesma playlist.
+- **`append_list` só na retomada**: a flag `-hls_flags append_list` existe para
+  continuar uma playlist já criada. Usá-la na primeira passada impedia o FFmpeg
+  de escrever o cabeçalho corretamente e deixava a playlist sem
+  `#EXT-X-ENDLIST` — o `hls.js` então tratava o stream como transmissão ao vivo
+  e nunca liberava a reprodução (player abria parado). Agora a flag é aplicada
+  apenas quando `inicioSegmento > 0`, e a tag `#EXT-X-ENDLIST` é anexada ao
+  final da conversão.
+- **Margem de dados antes de converter**: o mínimo de dados baixados para
+  iniciar o FFmpeg subiu de 5 MB para 20 MB. Com 5 MB a conversão produzia dois
+  ou três segmentos e já batia na fronteira do download, interrompendo a
+  passada. O critério de retomada também aceita um avanço absoluto pequeno
+  (0,05%), não só 1%, para torrents lentos.
 
 ### Endereço do media-service no frontend
 
