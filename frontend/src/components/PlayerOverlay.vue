@@ -370,7 +370,7 @@ onUnmounted(() => {
     <Transition name="fade">
       <div
         v-if="aberto"
-        class="fixed inset-0 z-[70] flex flex-col items-center justify-center bg-black/95 p-4"
+        class="fixed inset-0 z-[70] flex flex-col items-center justify-center bg-black p-4"
       >
         <button
           type="button"

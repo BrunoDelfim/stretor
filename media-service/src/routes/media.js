@@ -72,13 +72,26 @@ router.post('/sessao', (req, res, next) => {
   }
 })
 
-/** Estado atual da sessão — alimenta as mensagens de progresso do overlay. */
+/**
+ * Estado atual da sessão — alimenta as mensagens de progresso do overlay.
+ *
+ * O `no-store` é obrigatório aqui. O Express habilita ETag por padrão, e como
+ * o status fica idêntico entre dois polls seguidos (mesmo `status`, mesma
+ * `mensagem`), o navegador passava a responder `304 Not Modified` com corpo
+ * vazio. O axios então entregava `data` vazio, `status.status` virava
+ * `undefined` e o frontend nunca enxergava o `pronto` — o overlay ficava
+ * preso no polling para sempre.
+ */
 router.get('/sessao/:id/status', (req, res) => {
   const sessao = obterSessao(req.params.id)
 
   if (!sessao) {
     return res.status(404).json({ error: 'Sessão não encontrada.' })
   }
+
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate')
+  res.setHeader('Pragma', 'no-cache')
+  res.setHeader('Expires', '0')
 
   res.json(sessao)
 })

@@ -28,6 +28,17 @@ process.on('unhandledRejection', (motivo) => {
 const app = express()
 const PORT = process.env.PORT || 3000
 
+/*
+ * O ETag do Express é incompatível com o polling de status.
+ *
+ * O endpoint de status devolve o mesmo JSON enquanto a conversão não avança
+ * (mesmo `status`, mesma `mensagem`). Com ETag ligado, o navegador respondia
+ * `304 Not Modified` com corpo vazio; o axios entregava `data` vazio e o
+ * frontend nunca enxergava o `pronto`, ficando preso no polling. Sessões são
+ * efêmeras por natureza — nada aqui deve ser cacheado.
+ */
+app.set('etag', false)
+
 // Sessões de reprodução são efêmeras: se o player fechar sem avisar (aba
 // fechada, rede caiu), o torrent e o FFmpeg ficariam vivos para sempre. A
 // varredura periódica devolve esses recursos ao sistema.

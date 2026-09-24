@@ -54,6 +54,18 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   sem grupos de captura correspondentes, então o `proxy_pass` montava
   `/api/media/sessao//` e o Express respondia 404. A correção usa grupos
   nomeados (`?<sessao_id>`, `?<recurso>`) referenciados por nome.
+- **Ordem das locations no Nginx**: locations por regex são avaliadas na ordem
+  em que aparecem e a primeira que casa vence. A regra específica dos segmentos
+  (`proxy_buffering off`) estava **depois** da genérica `/media/(.*)`, então
+  nunca era alcançada e os segmentos eram acumulados pelo buffer do proxy. A
+  específica agora vem primeiro.
+- **ETag no endpoint de status**: o Express habilita ETag por padrão. Como o
+  status fica idêntico entre dois polls seguidos (mesmo `status`, mesma
+  `mensagem`), o navegador respondia `304 Not Modified` com corpo vazio. O axios
+  entregava `data` vazio, `status.status` virava `undefined` e o frontend nunca
+  enxergava o `pronto` — o overlay ficava preso no polling para sempre. O ETag
+  foi desligado globalmente (`app.set('etag', false)`) e o endpoint de status
+  envia `Cache-Control: no-store`.
 
 - **uTP desligado** (`new WebTorrent({ utp: false })`): o módulo nativo
   `utp-native` provoca *segfault* (SIGSEGV) neste container, derrubando o
