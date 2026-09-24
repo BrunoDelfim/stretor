@@ -69,7 +69,7 @@ onUnmounted(() => {
       >
         <button
           type="button"
-          class="absolute right-4 top-4 z-10 flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white transition hover:bg-white/20"
+          class="absolute left-4 top-4 z-10 flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white transition hover:bg-white/20"
           aria-label="Fechar trailer"
           @click="fechar"
         >
