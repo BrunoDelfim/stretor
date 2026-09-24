@@ -54,6 +54,29 @@ carregar no momento.". Durante uma busca ativa a rolagem infinita não é aciona
 O teto de páginas (`TMDB_MAX_PAGES`) é decidido no backend — veja
 [API](api.md). O frontend apenas respeita o `has_more` que recebe.
 
+## Player de reprodução
+
+O botão "Assistir" abre o componente
+[`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:1), um overlay
+em tela cheia que conduz todo o fluxo de reprodução. Ele passa por quatro
+estados visíveis:
+
+1. **Procurando** — busca as fontes de torrent no backend.
+2. **Tentando** — percorre as fontes em ordem ("tentando fonte 2 de 7"), já que
+   dificilmente o filme terá fonte dublada logo na primeira tentativa.
+3. **Preparando** — a fonte conectou e o vídeo está sendo convertido; a mensagem
+   acompanha o momento (conectando, convertendo o áudio, convertendo o vídeo).
+4. **Reproduzindo** — a playlist está pronta e o player é liberado.
+
+O player é o **Plyr**, que recebe apenas uma fonte HLS válida
+(`application/x-mpegURL`). Onde o navegador não toca HLS nativamente
+(Chrome/Firefox), o `hls.js` faz a ponte; no Safari o suporte é nativo. Nada no
+player é manipulado por dentro — ele só consome a fonte entregue.
+
+Fechar o overlay encerra a sessão no media-service, liberando o torrent e o
+processo de conversão. O polling do status usa os intervalos definidos em
+[`ui.js`](../frontend/src/constants/ui.js:1).
+
 ## Skeletons de carregamento
 
 Enquanto uma página está sendo buscada, o grid exibe cards fantasma no lugar dos

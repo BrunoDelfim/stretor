@@ -40,15 +40,44 @@ flowchart LR
     A[Navegador] --> B[Nginx :80]
     B -->|/| C[Frontend Vite :5173]
     B -->|/api| D[Backend Laravel :9000]
+    B -->|/media| H[Media Service :3000]
     D -->|cache| E[Redis :6379]
     D -->|dados| F[PostgreSQL :5432]
     D -->|catalogo| G[TMDB API]
-    D -->|midia| H[Media Service :3000]
+    D -->|fontes| I[Provedor de Torrents]
+    H -->|torrent| J[Rede P2P]
+    H -->|conversao| K[FFmpeg HLS]
 ```
 
 O Nginx é o único ponto exposto. Ele decide, pelo caminho da URL, se a requisição
-vai para o frontend (SPA) ou para a API. O backend, por sua vez, fala com o
-PostgreSQL (dados), o Redis (cache) e o media-service (processamento de mídia).
+vai para o frontend (SPA), para a API ou para o media-service. O backend, por sua
+vez, fala com o PostgreSQL (dados), o Redis (cache), o TMDB (catálogo) e o
+provedor de torrents (fontes). O media-service conecta na rede P2P e converte o
+vídeo para HLS com o FFmpeg.
+
+## Fluxo de reprodução
+
+Ao clicar em "Assistir", o frontend pede as fontes ao backend e cria uma sessão
+no media-service. A sessão conecta o torrent, escolhe o arquivo de vídeo, decide
+o modo de conversão (remux, áudio ou vídeo) e publica o HLS que o Plyr consome.
+
+```mermaid
+flowchart TD
+    A[PlayerOverlay] --> B[Backend: fontes de torrent]
+    B --> C[Media Service: cria sessao]
+    C --> D[WebTorrent conecta a fonte]
+    D --> E[FFmpeg converte para HLS]
+    E --> F[Playlist m3u8]
+    F --> G[Plyr reproduz]
+```
+
+Os segmentos HLS são servidos pelo Nginx com `proxy_buffering off`, para que o
+player receba cada segmento assim que a conversão o produz.
+
+O Express monta as rotas do media-service em `/api/media`, enquanto o prefixo
+público é `/media`. O Nginx reescreve `/media/*` para `/api/media/*` no próprio
+`proxy_pass` (com grupo capturado na `location`), pois o `rewrite ... break` não
+altera a URI enviada ao upstream.
 
 ## Estrutura de pastas
 

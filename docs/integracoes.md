@@ -21,11 +21,41 @@ A integração com o catálogo mundial de filmes usa a API do
 O Redis guarda o cache das respostas do TMDB. É o que evita bater na API externa
 a cada carregamento da Home.
 
-## Torrents e Legendas — roadmap
+## Torrents — implementado (parcial)
 
-Previsto nas regras do projeto, ainda não implementado:
+A busca de fontes de torrent já funciona: ao clicar em "Assistir", o backend
+consulta o provedor configurado (`TORRENTS_BASE_URL`, padrão `https://yts.gg`) e
+devolve a lista ordenada por prioridade — dublado em PT-BR primeiro.
 
-- Integração com as principais APIs de torrents do mercado.
+- Regras de negócio em [`TorrentService.php`](../backend/app/Services/TorrentService.php:1).
+- O provedor fica isolado atrás de um contrato normalizado: trocar de API
+  significa reescrever apenas a normalização.
+- A busca prioriza o `imdb_id` (mais preciso que o título, que traz remakes).
+  Quando só há o título, os resultados são filtrados pelo ano do filme.
+- O YTS devolve em `url` um link de download, não uma lista de trackers; o
+  serviço completa o magnet com anunciadores públicos para o WebTorrent achar
+  peers.
+- Respostas cacheadas no Redis (`TORRENTS_CACHE_TTL`, padrão 1800s).
+- O motor de torrent roda no media-service (biblioteca `webtorrent`), que
+  conecta a fonte e serve o vídeo convertido em HLS.
+
+### Ajustes obrigatórios no media-service
+
+Dois problemas de ambiente foram encontrados na validação e já estão tratados:
+
+- **uTP desligado** (`new WebTorrent({ utp: false })`): o módulo nativo
+  `utp-native` provoca *segfault* (SIGSEGV) neste container, derrubando o
+  serviço inteiro. TCP, DHT e trackers continuam ativos e são suficientes.
+- **Patch do webtorrent** (`patches/webtorrent+2.8.5.patch`): a versão 2.8.5
+  chama `arr2hex(infoHash)` esperando um `Uint8Array`, mas o `parse-torrent` 11.x
+  devolve string — o processo morria com `ERR_INVALID_ARG_TYPE`. O patch aceita
+  os dois formatos e é reaplicado automaticamente pelo `postinstall`
+  (`patch-package`).
+
+### Legendas — roadmap
+
+Ainda não implementado:
+
 - Suporte a APIs de legendas próprias.
 - Rotinas para **extração de legendas diretamente dos arquivos de torrent**.
 
