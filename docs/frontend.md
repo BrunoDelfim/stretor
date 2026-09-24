@@ -74,25 +74,28 @@ O player é o **Plyr**, que recebe apenas uma fonte HLS válida
 
 ### Ordem de inicialização do player
 
-A ordem importa e já causou três bugs visíveis: o Plyr abria com altura mínima e
-controles inertes, o overlay sumia antes do player aparecer, e os segmentos
-paravam de ser requisitados. Todos vinham de montar as peças na ordem errada.
+A ordem importa e já causou vários bugs visíveis: o Plyr abria com altura mínima
+e controles inertes, o overlay sumia antes do player aparecer, os segmentos
+paravam de ser requisitados e — o mais grave — uma fonte já pronta era descartada
+em sequência até esgotar a lista.
 
 O fluxo correto, implementado em
-[`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:98):
+[`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:93):
 
-1. O container do vídeo usa **`v-if`** (não `v-show`), então o elemento só existe
-   no DOM quando deve aparecer. Com `v-show`, o Plyr media um elemento com
-   `display: none` e montava o wrapper com 0×0.
-2. `await nextTick()` garante que o `<video>` já está renderizado e visível.
-3. **O Plyr é criado primeiro**, e só depois o HLS é anexado — no evento `ready`,
+1. O container do vídeo usa **`v-if="estado === 'reproduzindo'"`** (não `v-show`),
+   então o elemento só existe no DOM quando deve aparecer. Com `v-show`, o Plyr
+   media um elemento com `display: none` e montava o wrapper com 0×0.
+2. O estado é levado a `reproduzindo` **antes** do `nextTick`. Esse ponto já foi
+   a causa de um loop: mantendo o estado em `preparando`, o container nem entrava
+   no DOM, `elementoVideo` continuava `null` e `iniciarPlayer` devolvia `false` —
+   o chamador entendia que a fonte falhou e apagava uma sessão que já estava
+   pronta, repetindo isso para cada fonte da lista.
+3. `await nextTick()` garante que o `<video>` já está renderizado e visível.
+4. **O Plyr é criado primeiro**, e só depois o HLS é anexado — no evento `ready`,
    sobre `player.media`. Ao ser instanciado, o Plyr move o `<video>` para dentro
    do próprio wrapper; se o `hls.js` já estivesse anexado, essa movimentação
    quebrava a associação com o MediaSource, os segmentos deixavam de ser
    requisitados e o player tentava carregar a fonte por conta própria.
-4. O estado só muda para `reproduzindo` **depois** que o Plyr está montado e o
-   HLS anexado. Antes disso o overlay permanece com a mensagem "Iniciando o
-   player...", evitando a tela preta intermediária.
 5. O `play()` é chamado explicitamente — a rejeição por política de autoplay é
    ignorada, deixando os controles disponíveis.
 
@@ -103,16 +106,29 @@ estado de erro, em vez de deixar a tela preta sem aviso.
 
 ### Desistência de uma fonte
 
-[`iniciarPlayer()`](../frontend/src/components/PlayerOverlay.vue:94) devolve um
+[`iniciarPlayer()`](../frontend/src/components/PlayerOverlay.vue:93) devolve um
 booleano: `true` só quando o player está montado e o HLS anexado. A espera pelo
 evento `ready` do Plyr tem um teto (`TIMEOUT_PLYR_READY_MS`) porque o evento nem
 sempre dispara — sem ele, a função travava e o fluxo de fontes parava junto.
 
-Em [`aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:258), a fonte
+Em [`aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:269), a fonte
 só é considerada vencedora quando `iniciarPlayer` devolve `true`. Se devolver
 `false`, a sessão é encerrada e o loop avança para a próxima fonte. Cada fonte
 tem um limite próprio (`TIMEOUT_FONTE_MS`, 90 s) em vez dos 5 minutos anteriores:
 com várias fontes na fila, uma fonte morta prendia o usuário por minutos.
+
+Ao descartar uma fonte,
+[`limparSessaoAtual()`](../frontend/src/components/PlayerOverlay.vue:297) faz
+duas limpezas que antes faltavam:
+
+1. **Destrói o `hls.js`** (`destruirPlayer()`). Sem isso, a instância antiga
+   continuava viva tentando recarregar a playlist de uma sessão já apagada.
+   Como o `hls.js` resolve caminhos relativos contra a base do documento,
+   sobrava uma requisição nua `/media/sessao/<hash>` — sem `/playlist.m3u8` —
+   que o Express não tem rota para atender (o `Cannot GET` no log do Nginx).
+2. **Volta o estado para `preparando`**, desmontando o container do vídeo. O
+   Plyr, ao ser destruído, deixa para trás um `<video>` desanexado; sem
+   desmontar, a próxima fonte reutilizava um elemento inválido.
 
 A URL da playlist é validada em
 [`urlPlaylist()`](../frontend/src/services/streaming.js:76) antes de chegar ao

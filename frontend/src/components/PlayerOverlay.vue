@@ -94,14 +94,20 @@ async function iniciarPlayer(url) {
   if (!url) return false
 
   urlPlaylist.value = url
-  // O overlay de carregamento só pode sumir quando o Plyr estiver montado.
-  // Mudar para `reproduzindo` aqui deixava a tela preta por alguns segundos,
-  // porque o `<video>` existe mas o player ainda não foi criado.
-  estado.value = 'preparando'
+
+  /*
+   * O container do vídeo está sob `v-if="estado === 'reproduzindo'"`.
+   *
+   * Se mantivéssemos o estado em `preparando` (como antes), o container nem
+   * entrava no DOM: o `nextTick` rodava, `elementoVideo` continuava `null` e a
+   * função devolvia `false`. O chamador então entendia que a fonte falhou e
+   * apagava uma sessão que já estava pronta — repetindo isso para cada fonte da
+   * lista. O estado precisa ser `reproduzindo` para o container existir.
+   */
+  estado.value = 'reproduzindo'
   mensagem.value = 'Iniciando o player...'
 
-  // O container do vídeo usa `v-if`, então ele só existe no DOM após o Vue
-  // processar a mudança de estado. Sem esperar, `elementoVideo` seria nulo.
+  // Agora sim o container existe; esperamos o Vue aplicá-lo ao DOM.
   await nextTick()
 
   const video = elementoVideo.value
@@ -148,7 +154,15 @@ async function iniciarPlayer(url) {
 
   const midia = player.media
 
-  if (!midia) return false
+  if (!midia) {
+    // O container já está montado (estado `reproduzindo`), mas sem mídia o
+    // `<video>` fica sem fonte e o navegador passa a resolver a base do
+    // documento como mídia — a origem da requisição nua `/media/sessao/<hash>`.
+    // Desmontamos o container antes de devolver a falha.
+    destruirPlayer()
+    estado.value = 'preparando'
+    return false
+  }
 
   if (midia.canPlayType('application/vnd.apple.mpegurl')) {
     // Safari e iOS tocam HLS nativamente.
@@ -201,6 +215,11 @@ async function tentarFontes(fontes) {
     tentativaAtual.value = indice + 1
     estado.value = 'tentando'
     mensagem.value = `Tentando fonte ${indice + 1} de ${fontes.length}...`
+
+    // Garante que o container do vídeo da tentativa anterior saia do DOM antes
+    // de montarmos um novo. Sem isso, o Plyr destruído deixava para trás um
+    // `<video>` desanexado e a próxima fonte reutilizava um elemento inválido.
+    await nextTick()
 
     try {
       const sessao = await streamingService.criarSessao(fonte.magnet, props.filme.id)
@@ -288,6 +307,24 @@ async function limparSessaoAtual() {
     clearTimeout(timerStatus)
     timerStatus = null
   }
+
+  /*
+   * A instância do hls.js precisa morrer junto com a sessão. Sem isso, ao
+   * descartar uma fonte e seguir para a próxima, o Hls antigo continuava vivo
+   * tentando recarregar a playlist de uma sessão já apagada. Como ele resolve
+   * os caminhos relativos contra a base do documento, sobrava uma requisição
+   * nua `/media/sessao/<hash>` — sem `/playlist.m3u8` — que o Express não tem
+   * rota para atender.
+   */
+  destruirPlayer()
+
+  /*
+   * O container do vídeo está sob `v-if="estado === 'reproduzindo'"`. Ao voltar
+   * o estado para `preparando`, o Vue desmonta o container e descarta o
+   * `<video>` que o Plyr havia manipulado. A próxima fonte então monta um
+   * elemento novo, em vez de reaproveitar um nó desanexado.
+   */
+  estado.value = 'preparando'
 
   if (sessaoId) {
     try {
