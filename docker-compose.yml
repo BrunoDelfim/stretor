@@ -84,8 +84,8 @@ services:
       - ./frontend:/app
       - /app/node_modules
     environment:
-      - VITE_API_URL=${VITE_API_URL:-http://localhost:8000/api}
-      - VITE_MEDIA_SERVICE_URL=${VITE_MEDIA_SERVICE_URL:-http://localhost:3000}
+      - VITE_API_URL=${VITE_API_URL:-http://localhost/api}
+      - VITE_MEDIA_SERVICE_URL=${VITE_MEDIA_SERVICE_URL:-http://localhost/media}
     depends_on:
       init:
         condition: service_completed_successfully

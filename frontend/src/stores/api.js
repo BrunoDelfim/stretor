@@ -9,9 +9,33 @@ import { ref } from 'vue'
  * problemas de CORS e de porta. As variáveis VITE_* permitem sobrescrever
  * quando o frontend roda isolado (ex.: `npm run dev` fora do Docker).
  */
+
+/**
+ * Normaliza a base do media-service para o caminho onde o Express realmente
+ * monta as rotas (`/api/media`).
+ *
+ * O media-service pode ser acessado por dois caminhos: pelo proxy do Nginx
+ * (`/media`, que reescreve para `/api/media`) ou direto na porta do Node
+ * (`http://localhost:3000`, sem prefixo algum). Se a variável apontar para a
+ * porta crua, as chamadas chegariam em `/sessao` e o Express responderia
+ * "Cannot POST /sessao". Aqui garantimos que o prefixo exista nos dois casos.
+ */
+function normalizarBaseMedia(url) {
+  const base = (url || '/media').replace(/\/+$/, '')
+
+  // Já veio com o prefixo correto (ex.: alguém apontou direto para o Node).
+  if (base.endsWith('/api/media')) return base
+
+  // Caminho relativo do Nginx: o proxy cuida da reescrita.
+  if (base === '/media') return base
+
+  // Porta crua do Node (ex.: http://localhost:3000): falta o prefixo.
+  return `${base}/api/media`
+}
+
 export const useApiStore = defineStore('api', () => {
   const baseUrl = ref(import.meta.env.VITE_API_URL || '/api')
-  const mediaServiceUrl = ref(import.meta.env.VITE_MEDIA_SERVICE_URL || '/media')
+  const mediaServiceUrl = ref(normalizarBaseMedia(import.meta.env.VITE_MEDIA_SERVICE_URL))
 
   return { baseUrl, mediaServiceUrl }
 })
