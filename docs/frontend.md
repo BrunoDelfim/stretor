@@ -70,8 +70,55 @@ estados visíveis:
 
 O player é o **Plyr**, que recebe apenas uma fonte HLS válida
 (`application/x-mpegURL`). Onde o navegador não toca HLS nativamente
-(Chrome/Firefox), o `hls.js` faz a ponte; no Safari o suporte é nativo. Nada no
-player é manipulado por dentro — ele só consome a fonte entregue.
+(Chrome/Firefox), o `hls.js` faz a ponte; no Safari o suporte é nativo.
+
+### Ordem de inicialização do player
+
+A ordem importa e já causou três bugs visíveis: o Plyr abria com altura mínima e
+controles inertes, o overlay sumia antes do player aparecer, e os segmentos
+paravam de ser requisitados. Todos vinham de montar as peças na ordem errada.
+
+O fluxo correto, implementado em
+[`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:98):
+
+1. O container do vídeo usa **`v-if`** (não `v-show`), então o elemento só existe
+   no DOM quando deve aparecer. Com `v-show`, o Plyr media um elemento com
+   `display: none` e montava o wrapper com 0×0.
+2. `await nextTick()` garante que o `<video>` já está renderizado e visível.
+3. **O Plyr é criado primeiro**, e só depois o HLS é anexado — no evento `ready`,
+   sobre `player.media`. Ao ser instanciado, o Plyr move o `<video>` para dentro
+   do próprio wrapper; se o `hls.js` já estivesse anexado, essa movimentação
+   quebrava a associação com o MediaSource, os segmentos deixavam de ser
+   requisitados e o player tentava carregar a fonte por conta própria.
+4. O estado só muda para `reproduzindo` **depois** que o Plyr está montado e o
+   HLS anexado. Antes disso o overlay permanece com a mensagem "Iniciando o
+   player...", evitando a tela preta intermediária.
+5. O `play()` é chamado explicitamente — a rejeição por política de autoplay é
+   ignorada, deixando os controles disponíveis.
+
+O CSS do componente força `.plyr` e `.plyr__video-wrapper` a ocuparem 100% da
+altura do container com `aspect-video`; sem isso o wrapper não herda a área e o
+vídeo colapsa. Falhas fatais do `hls.js` são capturadas e levam o overlay ao
+estado de erro, em vez de deixar a tela preta sem aviso.
+
+### Desistência de uma fonte
+
+[`iniciarPlayer()`](../frontend/src/components/PlayerOverlay.vue:94) devolve um
+booleano: `true` só quando o player está montado e o HLS anexado. A espera pelo
+evento `ready` do Plyr tem um teto (`TIMEOUT_PLYR_READY_MS`) porque o evento nem
+sempre dispara — sem ele, a função travava e o fluxo de fontes parava junto.
+
+Em [`aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:258), a fonte
+só é considerada vencedora quando `iniciarPlayer` devolve `true`. Se devolver
+`false`, a sessão é encerrada e o loop avança para a próxima fonte. Cada fonte
+tem um limite próprio (`TIMEOUT_FONTE_MS`, 90 s) em vez dos 5 minutos anteriores:
+com várias fontes na fila, uma fonte morta prendia o usuário por minutos.
+
+A URL da playlist é validada em
+[`urlPlaylist()`](../frontend/src/services/streaming.js:76) antes de chegar ao
+player. Sem o prefixo público `/media`, o `hls.js` resolveria os caminhos
+relativos contra a origem do frontend e o Nginx entregaria o `index.html` — o
+navegador passava a baixar imagens em vez dos segmentos.
 
 Fechar o overlay encerra a sessão no media-service, liberando o torrent e o
 processo de conversão. O polling do status usa os intervalos definidos em

@@ -43,6 +43,18 @@ devolve a lista ordenada por prioridade — dublado em PT-BR primeiro.
 
 Problemas de ambiente e de streaming encontrados na validação, já tratados:
 
+- **Rota dos segmentos HLS**: o FFmpeg escreve `segmento-N.ts` e a playlist os
+  referencia de forma relativa. O player resolve esse nome sobre a URL da
+  playlist, chegando em `/media/sessao/<id>/segmento-N.ts`. A rota do Express
+  precisa receber o arquivo direto (`/sessao/:id/:arquivo`), sem o nível
+  intermediário `/segmento/` — caso contrário o player recebe 404 e o vídeo não
+  toca. As rotas específicas (`/status`, `/playlist.m3u8`) são registradas antes
+  da genérica para não serem capturadas por ela.
+- **Regex do Nginx com grupos nomeados**: a regra dos segmentos usava `$1`/`$2`
+  sem grupos de captura correspondentes, então o `proxy_pass` montava
+  `/api/media/sessao//` e o Express respondia 404. A correção usa grupos
+  nomeados (`?<sessao_id>`, `?<recurso>`) referenciados por nome.
+
 - **uTP desligado** (`new WebTorrent({ utp: false })`): o módulo nativo
   `utp-native` provoca *segfault* (SIGSEGV) neste container, derrubando o
   serviço inteiro. TCP, DHT e trackers continuam ativos e são suficientes.
@@ -63,10 +75,27 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
 ### Endereço do media-service no frontend
 
 O Express monta as rotas em `/api/media`, mas o Nginx expõe o serviço em
-`/media` e reescreve o prefixo. Se `VITE_MEDIA_SERVICE_URL` apontar para a porta
-crua do Node (`http://localhost:3000`), as chamadas chegariam em `/sessao` e o
-Express responderia `Cannot POST /sessao`. O store de API normaliza a base para
-garantir o prefixo correto nos dois casos.
+`/media` e reescreve o prefixo. Existem, portanto, **dois prefixos distintos**:
+
+| Camada | Prefixo | Quem usa |
+| --- | --- | --- |
+| Público (Nginx) | `/media` | `VITE_MEDIA_SERVICE_URL` |
+| Interno (Express) | `/api/media` | rotas do media-service |
+
+O store de API ([`api.js`](../frontend/src/stores/api.js:23)) normaliza a base
+para que os dois cenários funcionem:
+
+- **Porta crua do Node** (`http://localhost:3000`): falta o prefixo interno, que
+  é acrescentado → `http://localhost:3000/api/media`.
+- **Prefixo público** (`/media` ou `http://localhost/media`): o Nginx já reescreve
+  para `/api/media`, então nada é acrescentado.
+
+Atenção ao segundo caso: tratar `http://localhost/media` como "porta crua"
+gerava o caminho duplicado `/api/media/api/media/sessao`, e o Express respondia
+`Cannot POST /api/media/api/media/sessao`. Como o overlay percorre as fontes em
+sequência ([`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:165)),
+o erro se repetia uma vez por fonte — daí a rajada de requisições com o mesmo
+404.
 
 ### Legendas — roadmap
 

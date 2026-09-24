@@ -102,8 +102,15 @@ router.get('/sessao/:id/playlist.m3u8', (req, res) => {
   fs.createReadStream(playlist).pipe(res)
 })
 
-/** Segmentos de vídeo da playlist. */
-router.get('/sessao/:id/segmento/:arquivo', (req, res) => {
+/**
+ * Segmentos de vídeo da playlist.
+ *
+ * O FFmpeg escreve os segmentos como `segmento-N.ts` e a playlist os referencia
+ * de forma relativa. O player resolve esse nome sobre a URL da playlist, o que
+ * resulta em `/sessao/<id>/segmento-N.ts` — por isso a rota recebe o arquivo
+ * direto, sem o nível intermediário `/segmento/`.
+ */
+router.get('/sessao/:id/:arquivo', (req, res) => {
   const diretorio = diretorioSessao(req.params.id)
 
   if (!diretorio) {

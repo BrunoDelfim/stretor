@@ -30,5 +30,19 @@ export const QUANTIDADE_SKELETONS = 6
 /** Intervalo entre as consultas de status da sessão de reprodução, em ms. */
 export const INTERVALO_STATUS_SESSAO_MS = 1500
 
-/** Tempo máximo aguardando a sessão ficar pronta, em ms (5 minutos). */
-export const TIMEOUT_SESSAO_MS = 5 * 60 * 1000
+/**
+ * Tempo máximo aguardando uma única fonte ficar pronta, em ms (90 segundos).
+ *
+ * Antes usávamos 5 minutos por fonte. Com várias fontes na fila, uma fonte
+ * morta prendia o usuário por minutos antes de tentar a próxima. Noventa
+ * segundos cobrem com folga a conexão do torrent e o buffer inicial do HLS.
+ */
+export const TIMEOUT_FONTE_MS = 90 * 1000
+
+/**
+ * Tempo máximo aguardando o Plyr emitir o evento `ready`, em ms.
+ *
+ * O Plyr pode montar sem disparar o evento (elemento já controlado, erro
+ * interno). Sem esse limite, a espera travava o fluxo de fontes para sempre.
+ */
+export const TIMEOUT_PLYR_READY_MS = 8000

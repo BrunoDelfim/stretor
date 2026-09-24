@@ -68,14 +68,28 @@ export const streamingService = {
   /**
    * Monta a URL absoluta da playlist HLS.
    *
-   * O status devolve o caminho relativo; o Plyr precisa da URL completa para
-   * buscar a playlist e os segmentos.
+   * O status devolve o caminho no formato interno do Express
+   * (`/api/media/sessao/<id>/playlist.m3u8`), mas a base do media-service já
+   * aponta para o prefixo público (`/media` ou `http://localhost/media`).
+   * Precisamos remover o prefixo interno para não duplicá-lo na URL final.
+   *
+   * A URL é validada antes de sair daqui: se o prefixo público não estiver
+   * presente, o hls.js resolveria os caminhos relativos contra a origem do
+   * frontend e o Nginx entregaria o `index.html` — o navegador passava a baixar
+   * imagens em vez dos segmentos. Melhor falhar cedo e deixar o fluxo tentar a
+   * próxima fonte.
    */
   urlPlaylist(caminho) {
     if (!caminho) return null
 
     const api = useApiStore()
+    const url = `${api.mediaServiceUrl}${caminho.replace(/^\/api\/media/, '')}`
 
-    return `${api.mediaServiceUrl}${caminho.replace(/^\/api\/media/, '')}`
+    if (!/\/media\/sessao\/[^/]+\/playlist\.m3u8$/.test(url)) {
+      console.error('[streaming] URL de playlist inválida:', url)
+      return null
+    }
+
+    return url
   },
 }

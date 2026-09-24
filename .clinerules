@@ -1,6 +1,7 @@
 # Regras Globais do Projeto (Stack: Laravel, Vue, Node & Docker)
 
 ## 1. Filosofia de Desenvolvimento e Progresso
+- FALE TUDO EM PORTUGUÊS DO BRASIL INICIALMENTE.
 - **Desenvolvimento Progressivo:** Não faça tudo de uma vez. Vá por etapas: construa, valide se está funcionando perfeitamente, e só então avance para a próxima página ou funcionalidade.
 - **Documentação Simultânea:** Crie e atualize a documentação do projeto (`docs/` ou `README.md`) conforme o código vai sendo desenvolvido e estabilizado.
 

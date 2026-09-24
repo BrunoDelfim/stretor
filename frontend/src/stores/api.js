@@ -15,19 +15,24 @@ import { ref } from 'vue'
  * monta as rotas (`/api/media`).
  *
  * O media-service pode ser acessado por dois caminhos: pelo proxy do Nginx
- * (`/media`, que reescreve para `/api/media`) ou direto na porta do Node
- * (`http://localhost:3000`, sem prefixo algum). Se a variável apontar para a
- * porta crua, as chamadas chegariam em `/sessao` e o Express responderia
- * "Cannot POST /sessao". Aqui garantimos que o prefixo exista nos dois casos.
+ * (prefixo público `/media`, que reescreve para `/api/media`) ou direto na
+ * porta do Node (`http://localhost:3000`, sem prefixo algum). Se a variável
+ * apontar para a porta crua, as chamadas chegariam em `/sessao` e o Express
+ * responderia "Cannot POST /sessao". Aqui garantimos que o prefixo exista nos
+ * dois casos — e, principalmente, que ele não seja duplicado.
  */
 function normalizarBaseMedia(url) {
   const base = (url || '/media').replace(/\/+$/, '')
 
-  // Já veio com o prefixo correto (ex.: alguém apontou direto para o Node).
+  // Já veio com o prefixo interno do Express (ex.: alguém apontou direto para
+  // o Node em http://localhost:3000/api/media).
   if (base.endsWith('/api/media')) return base
 
-  // Caminho relativo do Nginx: o proxy cuida da reescrita.
-  if (base === '/media') return base
+  // Prefixo público do Nginx, seja relativo (`/media`) ou absoluto
+  // (`http://localhost/media`). O proxy cuida da reescrita para `/api/media`,
+  // então não podemos acrescentar nada — fazer isso gerava o caminho
+  // duplicado `/api/media/api/media/sessao`.
+  if (/\/media$/.test(base)) return base
 
   // Porta crua do Node (ex.: http://localhost:3000): falta o prefixo.
   return `${base}/api/media`
