@@ -5,6 +5,7 @@ import InfiniteScrollSentinel from '@/components/InfiniteScrollSentinel.vue'
 import LoadingOverlay from '@/components/LoadingOverlay.vue'
 import MovieGrid from '@/components/MovieGrid.vue'
 import MovieModal from '@/components/MovieModal.vue'
+import PlayerOverlay from '@/components/PlayerOverlay.vue'
 import { moviesService } from '@/services/movies'
 import { useMoviesStore } from '@/stores/movies'
 
@@ -12,6 +13,10 @@ const movies = useMoviesStore()
 
 const filmeSelecionado = ref(null)
 const carregandoDetalhes = ref(false)
+
+// Filme em reprodução. Enquanto preenchido, o PlayerOverlay cobre a tela e
+// conduz a busca de fontes, a conversão e a reprodução.
+const filmeEmReproducao = ref(null)
 
 const tituloGrid = computed(() =>
   movies.emBusca ? `Resultados para "${movies.termoBusca}"` : 'Filmes mais assistidos no Brasil'
@@ -47,6 +52,20 @@ async function abrirModal(filme) {
 function fecharModal() {
   filmeSelecionado.value = null
   carregandoDetalhes.value = false
+}
+
+/**
+ * Abre o player para o filme escolhido.
+ *
+ * O modal permanece montado por baixo: ao fechar o player, o usuário volta
+ * exatamente ao ponto em que estava.
+ */
+function assistir(filme) {
+  filmeEmReproducao.value = filme
+}
+
+function fecharPlayer() {
+  filmeEmReproducao.value = null
 }
 
 onMounted(() => {
@@ -110,6 +129,9 @@ onMounted(() => {
       :filme="filmeSelecionado"
       :carregando-detalhes="carregandoDetalhes"
       @fechar="fecharModal"
+      @assistir="assistir"
     />
+
+    <PlayerOverlay :filme="filmeEmReproducao" @fechar="fecharPlayer" />
   </div>
 </template>

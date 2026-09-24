@@ -26,3 +26,9 @@ export const MARGEM_SENTINELA = '800px'
 
 /** Quantidade de cards fantasma exibidos durante o carregamento. */
 export const QUANTIDADE_SKELETONS = 6
+
+/** Intervalo entre as consultas de status da sessão de reprodução, em ms. */
+export const INTERVALO_STATUS_SESSAO_MS = 1500
+
+/** Tempo máximo aguardando a sessão ficar pronta, em ms (5 minutos). */
+export const TIMEOUT_SESSAO_MS = 5 * 60 * 1000
