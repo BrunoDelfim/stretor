@@ -120,6 +120,25 @@ player. Sem o prefixo público `/media`, o `hls.js` resolveria os caminhos
 relativos contra a origem do frontend e o Nginx entregaria o `index.html` — o
 navegador passava a baixar imagens em vez dos segmentos.
 
+### Conteúdo de fundo durante a reprodução
+
+O player cobre a tela, mas nada abaixo dele é desmontado automaticamente. Sem
+cuidado, a Home continua trabalhando por baixo e baixando imagens do TMDB — o
+que competia com os segmentos do vídeo e aparecia como "imagens entre as
+status".
+
+Três medidas em [`HomeView.vue`](../frontend/src/views/HomeView.vue:92) mantêm o
+fundo quieto enquanto o player está aberto:
+
+1. O [`HeroCarousel`](../frontend/src/components/HeroCarousel.vue:5) recebe
+   `:pausado` e limpa o `setInterval` do autoplay. Sem isso, ele trocava de slide
+   a cada 7 s e baixava um backdrop novo a cada troca.
+2. O [`MovieModal`](../frontend/src/components/MovieModal.vue:118) recebe `null`
+   como filme, então o `backdrop_alta` (resolução original, a imagem mais pesada)
+   sai do DOM. `filmeSelecionado` é preservado e o modal volta ao fechar.
+3. O bloco do grid fica `invisible`, evitando que re-renders disparem novas
+   capas.
+
 Fechar o overlay encerra a sessão no media-service, liberando o torrent e o
 processo de conversão. O polling do status usa os intervalos definidos em
 [`ui.js`](../frontend/src/constants/ui.js:1).

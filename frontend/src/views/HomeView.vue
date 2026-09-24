@@ -92,6 +92,7 @@ onMounted(() => {
       <HeroCarousel
         v-if="!movies.emBusca"
         :filmes="movies.destaques"
+        :pausado="filmeEmReproducao !== null"
         @selecionar="abrirModal"
       />
 
@@ -102,7 +103,10 @@ onMounted(() => {
         para o fundo da página, o que elimina a divisão reta entre os dois.
         O meio permanece escuro para segurar capas claras na transição.
       -->
-      <div class="relative z-10 -mt-24 bg-gradient-to-b from-navy-950 via-navy-950/80 to-transparent">
+      <div
+        class="relative z-10 -mt-24 bg-gradient-to-b from-navy-950 via-navy-950/80 to-transparent"
+        :class="{ invisible: filmeEmReproducao !== null }"
+      >
         <MovieGrid
           :filmes="movies.filmes"
           :titulo="tituloGrid"
@@ -125,8 +129,13 @@ onMounted(() => {
       </div>
     </template>
 
+    <!--
+      Durante a reprodução o modal sai de cena: ele segura o `backdrop_alta` em
+      resolução original, a imagem mais pesada da tela. `filmeSelecionado` é
+      preservado, então ao fechar o player o modal volta como estava.
+    -->
     <MovieModal
-      :filme="filmeSelecionado"
+      :filme="filmeEmReproducao ? null : filmeSelecionado"
       :carregando-detalhes="carregandoDetalhes"
       @fechar="fecharModal"
       @assistir="assistir"

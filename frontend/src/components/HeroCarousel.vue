@@ -1,11 +1,18 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { INTERVALO_AUTOPLAY_MS, TOTAL_INDICADORES_CARROSSEL } from '@/constants/ui'
 
 const props = defineProps({
   filmes: {
     type: Array,
     default: () => [],
+  },
+  // Enquanto o player estiver aberto, o carrossel precisa parar: cada troca de
+  // slide baixa um backdrop novo do TMDB, e isso continuava acontecendo atrás
+  // do overlay, competindo com os segmentos do vídeo.
+  pausado: {
+    type: Boolean,
+    default: false,
   },
 })
 
@@ -36,6 +43,9 @@ function proximo() {
 
 function reiniciarAutoplay() {
   clearInterval(autoplay)
+
+  if (props.pausado) return
+
   autoplay = setInterval(proximo, INTERVALO_AUTOPLAY_MS)
 }
 
@@ -44,6 +54,10 @@ function selecionar() {
 
   emit('selecionar', slideAtual.value)
 }
+
+// Pausar e retomar conforme o player abre e fecha. Sem isso, o intervalo
+// seguiria trocando os slides (e baixando imagens) por baixo do overlay.
+watch(() => props.pausado, reiniciarAutoplay)
 
 onMounted(reiniciarAutoplay)
 onUnmounted(() => clearInterval(autoplay))
