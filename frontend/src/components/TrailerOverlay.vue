@@ -1,8 +1,5 @@
 <script setup>
-import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
-import Plyr from 'plyr'
-import 'plyr/dist/plyr.css'
-import { IDIOMA_LEGENDA, IDIOMA_PADRAO } from '@/constants/filmes'
+import { computed, onUnmounted, watch } from 'vue'
 
 const props = defineProps({
   // Chave do vídeo no YouTube, como devolvida pelo backend.
@@ -14,104 +11,21 @@ const props = defineProps({
     type: String,
     default: '',
   },
-  // Idioma do áudio do trailer escolhido pelo backend (ex.: 'pt', 'en').
-  idioma: {
-    type: String,
-    default: null,
-  },
-  // Idioma da legenda a pedir ao YouTube, ou null para abrir sem legenda.
-  legenda: {
-    type: String,
-    default: null,
-  },
 })
 
 const emit = defineEmits(['fechar'])
 
 const aberto = computed(() => Boolean(props.trailer))
 
-const elementoVideo = ref(null)
-let player = null
-
 /*
- * O Plyr usa a IFrame Player API do YouTube — o mesmo embed gratuito, sem chave
- * nem cota. Não consultamos a Data API, então não há como listar as faixas de
- * legenda: pedimos a preferência via `cc_lang_pref` e o próprio YouTube liga a
- * legenda se o vídeo tiver aquela faixa, ignorando se não tiver.
+ * O player ocupa a tela inteira, então pedimos ao YouTube que esconda os
+ * vídeos relacionados (rel=0) e reduza a própria marca (modestbranding=1).
+ * Sem isso o overlay parece um embed qualquer em vez de um player de streaming.
  */
-const opcoes = computed(() => ({
-  provider: 'youtube',
-  youtube: {
-    noCookie: true,
-    rel: 0,
-    showinfo: 0,
-    // A interface do player acompanha o idioma padrão do projeto.
-    hl: IDIOMA_PADRAO,
-    ...(props.legenda ? { cc_lang_pref: props.legenda } : {}),
-  },
-  controls: [
-    'play-large',
-    'play',
-    'progress',
-    'current-time',
-    'mute',
-    'volume',
-    'captions',
-    'settings',
-    'fullscreen',
-  ],
-  settings: ['captions', 'quality', 'speed'],
-  captions: { active: Boolean(props.legenda), language: props.legenda ?? IDIOMA_LEGENDA },
-  tooltips: { controls: true, seek: true },
-  i18n: {
-    restart: 'Reiniciar',
-    play: 'Reproduzir',
-    pause: 'Pausar',
-    seek: 'Buscar',
-    volume: 'Volume',
-    mute: 'Silenciar',
-    unmute: 'Ativar som',
-    enterFullscreen: 'Tela cheia',
-    exitFullscreen: 'Sair da tela cheia',
-    captions: 'Legendas',
-    settings: 'Configurações',
-    speed: 'Velocidade',
-    quality: 'Qualidade',
-    normal: 'Normal',
-  },
-}))
-
-function destruirPlayer() {
-  if (player) {
-    player.destroy()
-    player = null
-  }
-}
-
-/*
- * O Plyr precisa do elemento já no DOM para se acoplar. Como o overlay só é
- * montado quando há trailer, esperamos o próximo tick após a abertura e então
- * inicializamos; ao fechar, destruímos para não deixar instância viva entre
- * aberturas.
- */
-watch(
-  aberto,
-  async (estaAberto) => {
-    if (estaAberto) {
-      document.body.style.overflow = 'hidden'
-      window.addEventListener('keydown', aoTeclar)
-
-      await nextTick()
-
-      if (elementoVideo.value) {
-        player = new Plyr(elementoVideo.value, opcoes.value)
-      }
-    } else {
-      window.removeEventListener('keydown', aoTeclar)
-      destruirPlayer()
-    }
-  },
-  { immediate: true }
+const trailerUrl = computed(() =>
+  props.trailer
+    ? `https://www.youtube.com/embed/${props.trailer}?autoplay=1&rel=0&modestbranding=1`
+    : null
 )
 
 function fechar() {
@@ -122,9 +36,26 @@ function aoTeclar(evento) {
   if (evento.key === 'Escape') fechar()
 }
 
+/*
+ * O modal de filme já trava a rolagem enquanto está aberto. Aqui apenas
+ * reforçamos o bloqueio e o removemos ao desmontar, para que fechar o trailer
+ * não libere a rolagem por baixo do modal que continua aberto.
+ */
+watch(
+  aberto,
+  (estaAberto) => {
+    if (estaAberto) {
+      document.body.style.overflow = 'hidden'
+      window.addEventListener('keydown', aoTeclar)
+    } else {
+      window.removeEventListener('keydown', aoTeclar)
+    }
+  },
+  { immediate: true }
+)
+
 onUnmounted(() => {
   window.removeEventListener('keydown', aoTeclar)
-  destruirPlayer()
 })
 </script>
 
@@ -148,26 +79,19 @@ onUnmounted(() => {
         </button>
 
         <!--
-          O Plyr assume este contêiner e monta os controles por cima do embed do
-          YouTube. O iframe interno é o que o Plyr controla via IFrame Player
-          API; a proporção 16:9 é mantida pelo próprio player.
+          O player mantém a proporção 16:9 e cresce até o limite da tela, sem
+          nunca estourar a altura disponível — é o mesmo comportamento dos
+          players de streaming em tela cheia.
         -->
-        <div class="w-full max-w-6xl overflow-hidden rounded-lg bg-black shadow-2xl shadow-black">
-          <div
-            ref="elementoVideo"
-            class="plyr__video-embed"
-            data-plyr-provider="youtube"
-            :data-plyr-embed-id="trailer"
-          >
-            <iframe
-              :src="`https://www.youtube-nocookie.com/embed/${trailer}?origin=${encodeURIComponent(
-                typeof window !== 'undefined' ? window.location.origin : ''
-              )}`"
-              :title="titulo ? `Trailer de ${titulo}` : 'Trailer'"
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-              allowfullscreen
-            />
-          </div>
+        <div class="aspect-video w-full max-w-6xl overflow-hidden rounded-lg bg-black shadow-2xl shadow-black">
+          <iframe
+            v-if="trailerUrl"
+            :src="trailerUrl"
+            :title="titulo ? `Trailer de ${titulo}` : 'Trailer'"
+            class="h-full w-full"
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+            allowfullscreen
+          />
         </div>
       </div>
     </Transition>
@@ -183,15 +107,5 @@ onUnmounted(() => {
 .fade-enter-from,
 .fade-leave-to {
   opacity: 0;
-}
-
-/*
- * O Plyr traz o próprio tema, mas ele nasce com a cor de destaque padrão. Aqui
- * alinhamos ao azul da marca para o player não destoar do restante da interface.
- */
-:deep(.plyr) {
-  --plyr-color-main: #112352;
-  --plyr-video-background: #000;
-  --plyr-font-family: inherit;
 }
 </style>

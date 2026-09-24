@@ -252,8 +252,6 @@ onUnmounted(() => {
     <TrailerOverlay
       :trailer="trailerAberto ? filme?.trailer : null"
       :titulo="filme?.titulo"
-      :idioma="filme?.trailer_idioma"
-      :legenda="filme?.trailer_legenda"
       @fechar="trailerAberto = false"
     />
   </Teleport>

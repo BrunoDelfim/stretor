@@ -56,31 +56,16 @@ O teto de páginas (`TMDB_MAX_PAGES`) é decidido no backend — veja
 
 ## Player de trailer em tela cheia
 
-O botão "Ver trailer" do modal não embute o vídeo no meio do conteúdo — o que
-empurrava os botões de ação para baixo. Agora ele abre o componente
+O botão "Ver trailer" do modal não embute mais o vídeo no meio do conteúdo — o
+que empurrava os botões de ação para baixo. Agora ele abre o componente
 [`TrailerOverlay.vue`](../frontend/src/components/TrailerOverlay.vue:1), um
-overlay em tela cheia no estilo dos streamings, com o player centralizado, fundo
-escuro e botão de fechar.
+overlay em tela cheia no estilo dos streamings, com o player 16:9 centralizado,
+fundo escuro e botão de fechar.
 
 O modal de filme permanece montado por baixo, então fechar o trailer (pelo
 botão, pelo `Esc` ou clicando no fundo) devolve o usuário ao modal exatamente
 onde ele estava. O iframe do YouTube só é montado após o clique, evitando
 carregar cookies de terceiros a cada abertura do modal.
-
-### Player e idioma
-
-Os controles são do **Plyr**, que se acopla ao embed do YouTube — a IFrame Player
-API, gratuita e sem chave. Não usamos a YouTube Data API (a que exige chave e
-cota), então nada aqui tem custo.
-
-O backend escolhe o trailer priorizando PT-BR, depois inglês e, por fim, o idioma
-original, e informa o idioma do áudio e a intenção de legenda. A legenda abre
-desligada quando o áudio já está em PT-BR; em outro idioma pedimos legenda em
-PT-BR via `cc_lang_pref`, e o próprio YouTube liga a faixa se ela existir. Como o
-YouTube não expõe as faixas de áudio e legenda para players externos, a troca de
-áudio continua dependendo do menu nativo — a estrutura fica pronta para, quando
-houver arquivo real de vídeo via media-service, o mesmo player assumir áudio e
-legenda de verdade.
 
 ## Skeletons de carregamento
 
