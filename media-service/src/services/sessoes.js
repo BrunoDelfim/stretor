@@ -92,20 +92,27 @@ async function prepararSessao(sessao) {
     throw new Error('A fonte não contém um arquivo de vídeo reconhecido.')
   }
 
-  // O FFmpeg precisa de dados no disco para começar. Priorizamos o arquivo de
-  // vídeo para que o WebTorrent baixe primeiro o que interessa.
+  // `arquivo.path` é relativo à pasta do torrent (ex.: "Filme (1999)/filme.mp4"),
+  // não ao sistema de arquivos. Sem juntar com `torrent.path`, o FFmpeg procura
+  // o arquivo no diretório de trabalho do processo e falha com "No such file".
+  const caminho = path.join(torrent.path, arquivo.path)
+
+  // Muitos MP4 de torrent guardam o cabeçalho (`moov`) no fim do arquivo. Se
+  // baixarmos só o começo, o ffprobe lê lixo e falha. Por isso pedimos primeiro
+  // o trecho final, que é pequeno e traz os metadados, e só depois priorizamos
+  // o começo para a reprodução sequencial.
+  priorizarFinal(torrent, arquivo)
+
+  const analise = await analisarComEspera(caminho, arquivo)
+
+  // Cabeçalho lido: agora o que importa é o início, de onde o FFmpeg lê em
+  // ordem. O WebTorrent passa a baixar do começo para frente.
   arquivo.select()
 
   await aguardarDadosIniciais(arquivo)
 
   sessao.status = 'convertendo'
   sessao.mensagem = 'Preparando a conversão...'
-
-  // `arquivo.path` é relativo à pasta do torrent (ex.: "Filme (1999)/filme.mp4"),
-  // não ao sistema de arquivos. Sem juntar com `torrent.path`, o FFmpeg procura
-  // o arquivo no diretório de trabalho do processo e falha com "No such file".
-  const caminho = path.join(torrent.path, arquivo.path)
-  const analise = await analisarArquivo(caminho)
 
   logger.info(
     `[sessao ${sessao.id}] modo=${analise.modo} video=${analise.videoCodec} audio=${analise.audioCodec}`
@@ -117,6 +124,9 @@ async function prepararSessao(sessao) {
     arquivo: caminho,
     diretorio: sessao.diretorio,
     modo: analise.modo,
+    // O supervisor da conversão precisa saber o quanto já baixou para decidir
+    // quando retomar depois de bater na fronteira do download.
+    progressoDownload: () => arquivo.progress,
     aoProgredir: (progresso) => {
       sessao.progresso = progresso
     },
@@ -202,6 +212,74 @@ function aguardarDadosIniciais(arquivo, minimoBytes = 5 * 1024 * 1024, timeoutMs
   })
 }
 
+/**
+ * Pede ao WebTorrent que baixe primeiro o trecho final do arquivo.
+ *
+ * O átomo `moov` de um MP4 pode estar no fim, e é ele que descreve os streams.
+ * Baixar o final antes do começo custa poucos megabytes e evita ficar preso
+ * esperando o filme inteiro só para ler os metadados.
+ *
+ * @param {import('webtorrent').Torrent} torrent
+ * @param {import('webtorrent').TorrentFile} arquivo
+ */
+function priorizarFinal(torrent, arquivo) {
+  const { pieceLength } = torrent
+  const inicio = arquivo._startPiece
+  const fim = arquivo._endPiece
+
+  // Reservamos uma janela no fim do arquivo. Se o arquivo for menor que a
+  // janela, priorizamos ele inteiro.
+  const janela = Math.max(1, Math.ceil((2 * 1024 * 1024) / pieceLength))
+  const inicioJanela = Math.max(inicio, fim - janela + 1)
+
+  torrent.select(inicioJanela, fim, 10)
+}
+
+/**
+ * Analisa o arquivo insistindo até o cabeçalho ficar legível.
+ *
+ * Alguns MP4 trazem o átomo `moov` no fim do arquivo, então o ffprobe só
+ * consegue ler os metadados depois que o torrent baixou aquele trecho. Como
+ * não dá para saber de antemão quanto falta, tentamos de novo a cada segundo
+ * até conseguir — o download segue em paralelo.
+ *
+ * @param {string} caminho caminho absoluto do arquivo no disco
+ * @param {import('webtorrent').TorrentFile} arquivo arquivo do torrent
+ */
+async function analisarComEspera(caminho, arquivo, timeoutMs = 120000) {
+  const inicio = Date.now()
+  let ultimoErro = null
+
+  while (Date.now() - inicio < timeoutMs) {
+    try {
+      const analise = await analisarArquivo(caminho)
+
+      // Um cabeçalho lido pela metade devolve os streams sem os codecs. Aceitar
+      // isso faria o FFmpeg "concluir" sem gerar segmento nenhum, então só
+      // consideramos a análise válida quando vídeo e áudio foram identificados.
+      if (analise.videoCodec && analise.audioCodec) {
+        return analise
+      }
+
+      ultimoErro = new Error('cabeçalho incompleto')
+    } catch (erro) {
+      ultimoErro = erro
+    }
+
+    // Se o torrent já terminou e ainda assim não lemos o cabeçalho, não há
+    // mais o que esperar: o arquivo está corrompido ou não é um vídeo válido.
+    if (arquivo.progress >= 1) {
+      break
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+  }
+
+  throw new Error(
+    `Não foi possível ler o cabeçalho do vídeo: ${ultimoErro?.message || 'formato desconhecido'}`
+  )
+}
+
 /** Mensagem exibida no overlay conforme o modo de conversão. */
 function mensagemDoModo(modo) {
   if (modo === 'remux') return 'Ajustando o contêiner do vídeo...'
@@ -258,7 +336,9 @@ export function encerrarSessao(id) {
   }
 
   try {
-    sessao.comando?.kill('SIGKILL')
+    // O supervisor da conversão pode ter uma passada em andamento ou estar
+    // esperando mais dados; `parar` cobre os dois casos.
+    sessao.comando?.parar()
   } catch (erro) {
     logger.warn(`[sessao ${id}] falha ao encerrar a conversão:`, erro.message)
   }

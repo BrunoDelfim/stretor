@@ -41,7 +41,7 @@ devolve a lista ordenada por prioridade — dublado em PT-BR primeiro.
 
 ### Ajustes obrigatórios no media-service
 
-Dois problemas de ambiente foram encontrados na validação e já estão tratados:
+Problemas de ambiente e de streaming encontrados na validação, já tratados:
 
 - **uTP desligado** (`new WebTorrent({ utp: false })`): o módulo nativo
   `utp-native` provoca *segfault* (SIGSEGV) neste container, derrubando o
@@ -51,6 +51,22 @@ Dois problemas de ambiente foram encontrados na validação e já estão tratado
   devolve string — o processo morria com `ERR_INVALID_ARG_TYPE`. O patch aceita
   os dois formatos e é reaplicado automaticamente pelo `postinstall`
   (`patch-package`).
+- **Cabeçalho no fim do arquivo**: muitos MP4 de torrent guardam o átomo `moov`
+  no final. O serviço prioriza esse trecho no WebTorrent antes de ler os
+  metadados, e só aceita a análise quando vídeo e áudio foram identificados —
+  um cabeçalho lido pela metade faria o FFmpeg "concluir" sem gerar segmento.
+- **Conversão supervisionada**: o FFmpeg lê o arquivo como se fosse local e
+  aborta ao alcançar a fronteira do download (código 183). Isso não é falha: o
+  supervisor espera o torrent avançar e retoma a conversão de onde parou,
+  anexando os novos segmentos à mesma playlist.
+
+### Endereço do media-service no frontend
+
+O Express monta as rotas em `/api/media`, mas o Nginx expõe o serviço em
+`/media` e reescreve o prefixo. Se `VITE_MEDIA_SERVICE_URL` apontar para a porta
+crua do Node (`http://localhost:3000`), as chamadas chegariam em `/sessao` e o
+Express responderia `Cannot POST /sessao`. O store de API normaliza a base para
+garantir o prefixo correto nos dois casos.
 
 ### Legendas — roadmap
 

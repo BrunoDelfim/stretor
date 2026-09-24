@@ -80,54 +80,154 @@ export function decidirModo(videoCodec, audioCodec) {
 /**
  * Inicia a conversão para HLS, publicando os segmentos conforme ficam prontos.
  *
+ * O FFmpeg lê o arquivo do torrent como um arquivo local comum, então ele
+ * avança até a "fronteira" do que já foi baixado e aborta com erro. Isso não é
+ * uma falha real: é o comportamento esperado de um download em andamento. Por
+ * isso a conversão é supervisionada — quando o FFmpeg para por falta de dados,
+ * esperamos o torrent avançar e retomamos de onde paramos, anexando os novos
+ * segmentos à mesma playlist.
+ *
  * @param {object} opcoes
  * @param {string} opcoes.arquivo caminho do arquivo de vídeo
  * @param {string} opcoes.diretorio pasta onde a playlist e os segmentos serão escritos
  * @param {string} opcoes.modo modo de conversão (`remux`, `audio` ou `video`)
+ * @param {() => number} [opcoes.progressoDownload] progresso do torrent (0 a 1)
  * @param {(progresso: object) => void} [opcoes.aoProgredir] callback de progresso
- * @returns {import('fluent-ffmpeg').FfmpegCommand}
+ * @returns {{parar: () => void}}
  */
-export function iniciarConversao({ arquivo, diretorio, modo, aoProgredir }) {
+export function iniciarConversao({ arquivo, diretorio, modo, progressoDownload, aoProgredir }) {
   fs.mkdirSync(diretorio, { recursive: true })
 
   const playlist = path.join(diretorio, 'playlist.m3u8')
   const padraoSegmento = path.join(diretorio, 'segmento-%d.ts')
 
-  const comando = ffmpeg(arquivo)
+  const controle = { parado: false, comando: null, inicioSegmento: 0 }
 
-  aplicarModo(comando, modo)
+  /**
+   * Executa uma passada do FFmpeg a partir de `inicioSegmento` segundos.
+   *
+   * A primeira passada cria a playlist; as seguintes usam `-hls_flags
+   * append_list` para continuar a numeração dos segmentos sem sobrescrever os
+   * anteriores.
+   */
+  const executarPassada = () => {
+    if (controle.parado) return
 
-  comando
-    .outputOptions([
-      // HLS com segmentos curtos: o player começa antes de o filme inteiro
-      // estar convertido, que é o ponto do streaming em tempo real.
-      '-f hls',
-      `-hls_time ${DURACAO_SEGMENTO}`,
-      `-hls_list_size ${SEGMENTOS_NA_JANELA}`,
-      // `event` mantém todos os segmentos na playlist, permitindo voltar no
-      // filme. Por isso não usamos `delete_segments`: ele apagaria justamente
-      // os trechos já assistidos, quebrando o retrocesso do player.
-      '-hls_flags append_list',
-      '-hls_segment_type mpegts',
-      `-hls_segment_filename ${padraoSegmento}`,
-      // Sem isso o FFmpeg espera o arquivo inteiro para escrever o primeiro
-      // segmento, o que anula o propósito do streaming ao vivo.
-      '-hls_playlist_type event',
-      '-movflags +faststart',
-    ])
-    .output(playlist)
-    .on('start', (linha) => logger.info('[hls] conversão iniciada:', linha))
-    .on('progress', (progresso) => {
-      aoProgredir?.({
-        percentual: progresso.percent ?? null,
-        tempoProcessado: progresso.timemark ?? null,
+    const comando = ffmpeg(arquivo)
+
+    // Retomar exige buscar no ponto exato onde a passada anterior parou.
+    if (controle.inicioSegmento > 0) {
+      comando.inputOptions([`-ss ${controle.inicioSegmento}`])
+    }
+
+    aplicarModo(comando, modo)
+
+    comando
+      .outputOptions([
+        // HLS com segmentos curtos: o player começa antes de o filme inteiro
+        // estar convertido, que é o ponto do streaming em tempo real.
+        '-f hls',
+        `-hls_time ${DURACAO_SEGMENTO}`,
+        `-hls_list_size ${SEGMENTOS_NA_JANELA}`,
+        // `event` mantém todos os segmentos na playlist, permitindo voltar no
+        // filme. Por isso não usamos `delete_segments`: ele apagaria justamente
+        // os trechos já assistidos, quebrando o retrocesso do player.
+        '-hls_flags append_list',
+        '-hls_segment_type mpegts',
+        `-hls_segment_filename ${padraoSegmento}`,
+        // Sem isso o FFmpeg espera o arquivo inteiro para escrever o primeiro
+        // segmento, o que anula o propósito do streaming ao vivo.
+        '-hls_playlist_type event',
+        '-movflags +faststart',
+      ])
+      .output(playlist)
+      .on('start', (linha) => logger.info('[hls] conversão iniciada:', linha))
+      .on('progress', (progresso) => {
+        aoProgredir?.({
+          percentual: progresso.percent ?? null,
+          tempoProcessado: progresso.timemark ?? null,
+        })
       })
-    })
-    .on('error', (erro) => logger.error('[hls] falha na conversão:', erro.message))
-    .on('end', () => logger.info('[hls] conversão concluída'))
-    .run()
+      .on('error', (erro) => {
+        if (controle.parado) return
 
-  return comando
+        logger.warn('[hls] passada interrompida:', erro.message)
+
+        // O FFmpeg parou porque alcançou o fim dos dados baixados. Avançamos o
+        // ponto de retomada para o último segmento produzido e esperamos o
+        // torrent baixar mais antes de tentar de novo.
+        controle.inicioSegmento = ultimoSegmentoEmSegundos(playlist, controle.inicioSegmento)
+
+        aguardarMaisDados(progressoDownload)
+          .then(executarPassada)
+          .catch((motivo) => logger.error('[hls] conversão abandonada:', motivo.message))
+      })
+      .on('end', () => logger.info('[hls] conversão concluída'))
+
+    controle.comando = comando
+    comando.run()
+  }
+
+  executarPassada()
+
+  return {
+    parar: () => {
+      controle.parado = true
+      try {
+        controle.comando?.kill('SIGKILL')
+      } catch {
+        // O processo já pode ter terminado sozinho.
+      }
+    },
+  }
+}
+
+/**
+ * Descobre até que segundo da linha do tempo a conversão já produziu segmentos.
+ *
+ * Cada segmento tem duração fixa, então a quantidade de `.ts` na playlist dá o
+ * ponto exato de retomada. Usamos o maior valor entre o que já sabíamos e o que
+ * a playlist mostra, para nunca retroceder.
+ */
+function ultimoSegmentoEmSegundos(playlist, atual) {
+  try {
+    const conteudo = fs.readFileSync(playlist, 'utf8')
+    const segmentos = (conteudo.match(/\.ts/g) ?? []).length
+
+    return Math.max(atual, segmentos * DURACAO_SEGMENTO)
+  } catch {
+    return atual
+  }
+}
+
+/**
+ * Espera o torrent baixar mais dados antes de retomar a conversão.
+ *
+ * Se o download já terminou, não há o que esperar: devolvemos na hora para que
+ * a última passada processe o restante do arquivo.
+ */
+function aguardarMaisDados(progressoDownload, timeoutMs = 120000) {
+  const inicio = Date.now()
+  const progressoInicial = progressoDownload?.() ?? 0
+
+  return new Promise((resolve, reject) => {
+    const verificar = () => {
+      const progresso = progressoDownload?.() ?? 1
+
+      // Exigimos um avanço real no download, não apenas a passagem do tempo.
+      if (progresso >= 1 || progresso > progressoInicial + 0.01) {
+        return resolve(true)
+      }
+
+      if (Date.now() - inicio > timeoutMs) {
+        return reject(new Error('O download estagnou e a conversão não pôde continuar.'))
+      }
+
+      setTimeout(verificar, 1000)
+    }
+
+    verificar()
+  })
 }
 
 /**
