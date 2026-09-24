@@ -44,3 +44,9 @@ export const LIMITE_DESTAQUES = 6
 
 /** Quantidade de nomes do elenco exibidos no modal. */
 export const LIMITE_ELENCO = 5
+
+/** Idioma padrão da interface e das legendas do trailer. */
+export const IDIOMA_PADRAO = 'pt-BR'
+
+/** Código curto do idioma usado ao pedir legendas ao YouTube. */
+export const IDIOMA_LEGENDA = 'pt'

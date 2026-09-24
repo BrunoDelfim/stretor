@@ -50,8 +50,23 @@ vazias indefinidamente.
 ### Detalhes do filme
 
 O endpoint de detalhes enriquece o payload com `duracao` (ex.: `2h 19min`),
-`elenco` (5 principais atores) e `trailer` (chave do YouTube), usados pelo modal
-para exibir o botão "Assistir", o trailer sob demanda e os créditos.
+`elenco` (5 principais atores) e os dados do trailer, usados pelo modal para
+exibir o botão "Assistir", o player de trailer e os créditos.
+
+O trailer é escolhido priorizando o idioma: PT-BR primeiro, depois inglês e, por
+fim, o idioma original. Dentro de cada idioma, o trailer oficial tem preferência.
+Três campos compõem o contrato:
+
+| Campo | Descrição |
+|-------|-----------|
+| `trailer` | Chave do vídeo no YouTube, ou `null` se não houver trailer. |
+| `trailer_idioma` | Idioma do áudio escolhido (ex.: `pt`, `en`), ou `null`. |
+| `trailer_legenda` | Idioma da legenda a pedir ao player (ex.: `pt`), ou `null` para abrir sem legenda. |
+
+A legenda fica desligada quando o áudio já está em PT-BR — legendar o que se ouve
+seria redundante. Em qualquer outro idioma pedimos legenda em PT-BR; o próprio
+player do YouTube liga a faixa se ela existir e ignora se não existir, sem
+consulta a API paga.
 
 ## Media Service (Node)
 

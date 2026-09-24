@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onUnmounted, ref, watch } from 'vue'
 import SkeletonBlock from '@/components/SkeletonBlock.vue'
+import TrailerOverlay from '@/components/TrailerOverlay.vue'
 
 const props = defineProps({
   filme: {
@@ -17,13 +18,12 @@ const emit = defineEmits(['fechar', 'assistir', 'adicionar-lista', 'curtir'])
 
 const aberto = computed(() => props.filme !== null)
 
-// O trailer só é montado quando o usuário pede, para não carregar o iframe
-// do YouTube (e seus cookies) toda vez que o modal abre.
-const trailerVisivel = ref(false)
+// O trailer abre em um overlay de tela cheia, montado só quando o usuário
+// pede — assim o iframe do YouTube (e seus cookies) não carrega a cada abertura
+// do modal.
+const trailerAberto = ref(false)
 
-const trailerUrl = computed(() =>
-  props.filme?.trailer ? `https://www.youtube.com/embed/${props.filme.trailer}?autoplay=1` : null
-)
+const temTrailer = computed(() => Boolean(props.filme?.trailer))
 
 function fechar() {
   emit('fechar')
@@ -66,7 +66,7 @@ watch(
 watch(
   () => props.filme?.id,
   () => {
-    trailerVisivel.value = false
+    trailerAberto.value = false
   }
 )
 
@@ -180,17 +180,6 @@ onUnmounted(() => {
                 <p class="text-sm text-slate-300">{{ filme.elenco.join(', ') }}</p>
               </div>
 
-              <!-- Trailer sob demanda: o iframe só existe após o clique. -->
-              <div v-if="trailerVisivel && trailerUrl" class="aspect-video w-full overflow-hidden rounded-lg bg-black">
-                <iframe
-                  :src="trailerUrl"
-                  title="Trailer"
-                  class="h-full w-full"
-                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                  allowfullscreen
-                />
-              </div>
-
               <!-- Ações principais ficam ao final do conteúdo, após as informações. -->
               <div class="flex flex-wrap items-center gap-3 pt-1">
                 <button
@@ -205,12 +194,12 @@ onUnmounted(() => {
                 </button>
 
                 <button
-                  v-if="trailerUrl"
+                  v-if="temTrailer"
                   type="button"
                   class="inline-flex items-center gap-2 rounded-lg border border-white/25 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-white/10"
-                  @click="trailerVisivel = !trailerVisivel"
+                  @click="trailerAberto = true"
                 >
-                  {{ trailerVisivel ? 'Fechar trailer' : 'Ver trailer' }}
+                  Ver trailer
                 </button>
 
                 <!--
@@ -255,6 +244,18 @@ onUnmounted(() => {
         </div>
       </div>
     </Transition>
+
+    <!--
+      O overlay fica fora do bloco do modal (mas no mesmo Teleport) para
+      sobrepor tudo, inclusive o próprio modal, que permanece montado por baixo.
+    -->
+    <TrailerOverlay
+      :trailer="trailerAberto ? filme?.trailer : null"
+      :titulo="filme?.titulo"
+      :idioma="filme?.trailer_idioma"
+      :legenda="filme?.trailer_legenda"
+      @fechar="trailerAberto = false"
+    />
   </Teleport>
 </template>
 

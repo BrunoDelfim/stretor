@@ -295,6 +295,8 @@ class TmdbService
     ): array {
         $generos = $this->mapearGeneros($filme);
 
+        $trailer = $this->extrairTrailer($filme['videos'] ?? null);
+
         return [
             'id' => $filme['id'] ?? null,
             'titulo' => $filme['title'] ?? $filme['name'] ?? MensagensFilme::TITULO_INDISPONIVEL,
@@ -309,8 +311,28 @@ class TmdbService
             'ano' => $this->extrairAno($filme['release_date'] ?? null),
             'duracao' => $this->formatarDuracao($filme['runtime'] ?? null),
             'elenco' => $this->extrairElenco($filme['credits'] ?? null),
-            'trailer' => $this->extrairTrailer($filme['videos'] ?? null),
+            'trailer' => $trailer['chave'],
+            'trailer_idioma' => $trailer['idioma'],
+            'trailer_legenda' => $this->idiomaLegenda($trailer['idioma']),
         ];
+    }
+
+    /**
+     * Decide se o trailer deve abrir com legenda e em qual idioma.
+     *
+     * O TMDB não informa as faixas de legenda do vídeo do YouTube, então a
+     * decisão parte do idioma do áudio: se o trailer já está em PT-BR, legendar
+     * seria redundante e a legenda fica desligada (null). Em qualquer outro
+     * idioma pedimos legenda em PT-BR — o próprio player do YouTube liga a faixa
+     * se ela existir e simplesmente ignora se não existir, sem custo de API.
+     */
+    private function idiomaLegenda(?string $idiomaAudio): ?string
+    {
+        if ($idiomaAudio === null || $idiomaAudio === TipoVideo::IDIOMA_PREFERIDO) {
+            return null;
+        }
+
+        return TipoVideo::IDIOMA_PREFERIDO;
     }
 
     /**
@@ -354,16 +376,23 @@ class TmdbService
     }
 
     /**
-     * Procura o trailer oficial no YouTube. Preferimos o trailer oficial
-     * publicado no canal do YouTube e, na ausência dele, qualquer vídeo do tipo
-     * Trailer — o modal só precisa da chave para montar a URL de embed.
+     * Procura o trailer no YouTube priorizando o idioma.
+     *
+     * A ordem de preferência é PT-BR, depois inglês e, por fim, qualquer idioma
+     * (o original do filme). Dentro de cada idioma, o trailer oficial tem
+     * prioridade sobre os demais. Devolvemos também o idioma escolhido, porque o
+     * frontend usa esse dado para decidir sobre a legenda.
+     *
+     * @return array{chave: string|null, idioma: string|null}
      */
-    private function extrairTrailer(?array $videos): ?string
+    private function extrairTrailer(?array $videos): array
     {
+        $vazio = ['chave' => null, 'idioma' => null];
+
         $resultados = $videos['results'] ?? [];
 
         if (empty($resultados)) {
-            return null;
+            return $vazio;
         }
 
         $trailers = array_values(array_filter(
@@ -373,15 +402,40 @@ class TmdbService
         ));
 
         if (empty($trailers)) {
-            return null;
+            return $vazio;
         }
 
-        $oficial = array_values(array_filter(
-            $trailers,
-            fn (array $video) => ($video['official'] ?? false) === true
-        ));
+        // A ordem dos idiomas define a preferência; o `null` no fim garante que
+        // qualquer trailer sirva como último recurso, mesmo em idioma inesperado.
+        foreach ([TipoVideo::IDIOMA_PREFERIDO, TipoVideo::IDIOMA_FALLBACK, null] as $idioma) {
+            $candidatos = $idioma === null
+                ? $trailers
+                : array_values(array_filter(
+                    $trailers,
+                    fn (array $video) => ($video['iso_639_1'] ?? null) === $idioma
+                ));
 
-        return ($oficial[0]['key'] ?? $trailers[0]['key'] ?? null) ?: null;
+            if (empty($candidatos)) {
+                continue;
+            }
+
+            $oficial = array_values(array_filter(
+                $candidatos,
+                fn (array $video) => ($video['official'] ?? false) === true
+            ));
+
+            $escolhido = $oficial[0] ?? $candidatos[0];
+            $chave = $escolhido['key'] ?? null;
+
+            if ($chave) {
+                return [
+                    'chave' => $chave,
+                    'idioma' => $escolhido['iso_639_1'] ?? null,
+                ];
+            }
+        }
+
+        return $vazio;
     }
 
     /**
