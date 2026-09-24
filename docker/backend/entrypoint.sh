@@ -30,11 +30,45 @@ if [ ! -f .env ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 2. Dependências PHP (instaladas no build da imagem)
+# 1.1. Sincroniza variáveis sensíveis vindas do ambiente do container
 # ---------------------------------------------------------------------------
+# O .env do backend nasce do .env.example (sem segredos). As chaves reais são
+# injetadas pelo docker-compose como variáveis de ambiente. O Laravel lê o
+# ambiente com prioridade sobre o .env, mas deixar o arquivo desatualizado
+# confunde quem inspeciona o container e quebra ferramentas que leem o .env
+# diretamente (ex.: artisan tinker). Aqui espelhamos essas chaves no arquivo.
+sync_env_var() {
+  key="$1"
+  value="$2"
+  [ -z "$value" ] && return 0
+
+  if grep -q "^${key}=" .env; then
+    # Substitui a linha preservando o restante do arquivo.
+    escaped=$(printf '%s' "$value" | sed 's/[&|]/\\&/g')
+    sed -i "s|^${key}=.*|${key}=${escaped}|" .env
+  else
+    printf '\n%s=%s\n' "$key" "$value" >> .env
+  fi
+}
+
+sync_env_var "TMDB_API_KEY" "${TMDB_API_KEY:-}"
+sync_env_var "TMDB_LANGUAGE" "${TMDB_LANGUAGE:-}"
+sync_env_var "TMDB_REGION" "${TMDB_REGION:-}"
+sync_env_var "MEDIA_SERVICE_URL" "${MEDIA_SERVICE_URL:-}"
+
+# ---------------------------------------------------------------------------
+# 2. Dependências PHP
+# ---------------------------------------------------------------------------
+# Normalmente o vendor/ já vem do build da imagem. Se o volume sobrescreveu o
+# diretório ou o build foi feito sem as dependências, instalamos aqui para que
+# um simples 'docker compose up' deixe o ambiente pronto, sem passos manuais.
 if [ ! -f vendor/autoload.php ]; then
-  echo "[backend] ERRO FATAL: vendor/ não encontrado. Rode 'docker compose build backend'."
-  exit 1
+  echo "[backend] vendor/ ausente. Instalando dependências com composer..."
+  if [ -f composer.lock ]; then
+    composer install --no-interaction --no-scripts --no-progress --prefer-dist --optimize-autoloader
+  else
+    composer update --no-interaction --no-scripts --no-progress --prefer-dist --optimize-autoloader
+  fi
 fi
 chown -R stretor:stretor vendor 2>/dev/null || true
 

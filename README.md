@@ -66,6 +66,11 @@ Para rodar **com Docker** (recomendado):
 
 ## Como subir o ambiente
 
+O ambiente sobe inteiro com **um único comando**. A única configuração manual
+permitida é o arquivo `.env` — todo o resto (dependências, chave da aplicação,
+migrations e instalação de pacotes do frontend) acontece automaticamente nos
+entrypoints dos containers.
+
 ### 1. Clonar e configurar variáveis
 
 ```bash
@@ -85,16 +90,23 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-### 3. Instalar dependências do backend
+Pronto. Nesta única etapa o sistema executa, de forma automática e idempotente:
 
-```bash
-docker compose exec backend composer install
-docker compose exec backend cp .env.example .env
-docker compose exec backend php artisan key:generate
-docker compose exec backend php artisan migrate
-```
+| Etapa | Onde acontece |
+|-------|---------------|
+| Criação do `.env` raiz (se ausente) | serviço `init` → [`scripts/bootstrap.sh`](scripts/bootstrap.sh:1) |
+| Criação do `.env` do backend | [`docker/backend/entrypoint.sh`](docker/backend/entrypoint.sh:1) |
+| Espelhamento de `TMDB_API_KEY` e demais chaves no `.env` do backend | [`docker/backend/entrypoint.sh`](docker/backend/entrypoint.sh:1) |
+| `composer install` (se `vendor/` ausente) | [`docker/backend/entrypoint.sh`](docker/backend/entrypoint.sh:1) |
+| Geração da `APP_KEY` | [`docker/backend/entrypoint.sh`](docker/backend/entrypoint.sh:1) |
+| `php artisan migrate` | [`docker/backend/entrypoint.sh`](docker/backend/entrypoint.sh:1) |
+| `npm install` do frontend | [`docker/frontend/entrypoint.sh`](docker/frontend/entrypoint.sh:1) |
+| `npm install` do media-service | [`docker/media-service/entrypoint.sh`](docker/media-service/entrypoint.sh:1) |
 
-### 4. Acessar os serviços
+> As etapas são idempotentes: subir novamente não reinstala nem reexecuta o que
+> já está pronto. Para forçar tudo do zero, use `make fresh`.
+
+### 3. Acessar os serviços
 
 Tudo é servido pelo Nginx na **porta 80**:
 
@@ -103,7 +115,7 @@ Tudo é servido pelo Nginx na **porta 80**:
 - Media Service (via proxy): http://localhost/media/health
 - Media Service (direto): http://localhost:3000/health
 
-### 5. Comandos úteis
+### 4. Comandos úteis
 
 ```bash
 # Ver logs
@@ -115,12 +127,18 @@ docker compose down
 # Parar e remover volumes (apaga dados)
 docker compose down -v
 
-# Rodar migrations
+# Recomeçar do zero (remove volumes e refaz o bootstrap)
+make fresh
+
+# Rodar migrations manualmente (normalmente desnecessário: é automático)
 docker compose exec backend php artisan migrate
 
 # Rodar queue worker
 docker compose exec backend php artisan queue:work
 ```
+
+> As migrations rodam sozinhas na subida do backend. O comando manual existe
+> apenas para casos pontuais de diagnóstico.
 
 ## Endpoints iniciais
 
