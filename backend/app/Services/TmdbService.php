@@ -297,6 +297,10 @@ class TmdbService
 
         return [
             'id' => $filme['id'] ?? null,
+            // O imdb_id é o identificador mais preciso para a busca de fontes de
+            // torrent: o título sozinho gera falsos positivos (remakes, títulos
+            // traduzidos). Só existe no endpoint de detalhes.
+            'imdb_id' => $filme['imdb_id'] ?? null,
             'titulo' => $filme['title'] ?? $filme['name'] ?? MensagensFilme::TITULO_INDISPONIVEL,
             'sinopse' => $filme['overview'] ?: MensagensFilme::SINOPSE_INDISPONIVEL,
             'capa' => $this->montarImagem($filme['poster_path'] ?? null, TamanhoImagem::POSTER),

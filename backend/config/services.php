@@ -30,4 +30,17 @@ return [
         // procura algo específico usa a busca, que consulta o catálogo inteiro.
         'max_pages' => (int) env('TMDB_MAX_PAGES', 25),
     ],
+
+    /*
+     * Provedor de torrents usado na busca de fontes para reprodução.
+     * O provedor fica isolado no TorrentService — trocar a API significa mexer
+     * apenas na normalização, sem afetar o contrato consumido pelo frontend.
+     */
+    'torrents' => [
+        // O domínio principal do YTS (yts.mx) é bloqueado por DNS em vários
+        // provedores de hospedagem. O espelho yts.gg responde com o mesmo
+        // contrato da API v2, então é ele que fica como padrão.
+        'base_url' => env('TORRENTS_BASE_URL', 'https://yts.gg'),
+        'cache_ttl' => (int) env('TORRENTS_CACHE_TTL', 1800),
+    ],
 ];
