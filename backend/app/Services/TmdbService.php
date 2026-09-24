@@ -92,8 +92,10 @@ class TmdbService
      */
     public function detalhes(int $id): array
     {
+        // Além das datas de lançamento (classificação), trazemos vídeos e
+        // créditos para o modal exibir trailer e elenco sem novas requisições.
         $payload = $this->requisitar("/movie/{$id}", [
-            'append_to_response' => 'release_dates',
+            'append_to_response' => 'release_dates,videos,credits',
         ]);
 
         return $this->normalizarFilme($payload, $payload['release_dates'] ?? null);
@@ -269,7 +271,81 @@ class TmdbService
             'classificacao' => $classificacao ?? $this->extrairClassificacao($filme, $releaseDates),
             'nota' => isset($filme['vote_average']) ? round((float) $filme['vote_average'], 1) : null,
             'ano' => $this->extrairAno($filme['release_date'] ?? null),
+            'duracao' => $this->formatarDuracao($filme['runtime'] ?? null),
+            'elenco' => $this->extrairElenco($filme['credits'] ?? null),
+            'trailer' => $this->extrairTrailer($filme['videos'] ?? null),
         ];
+    }
+
+    /**
+     * Converte a duração em minutos para o formato "2h 15min".
+     * Devolve null quando o TMDB não informa o runtime (comum em lançamentos).
+     */
+    private function formatarDuracao(?int $minutos): ?string
+    {
+        if (empty($minutos) || $minutos <= 0) {
+            return null;
+        }
+
+        $horas = intdiv($minutos, 60);
+        $restante = $minutos % 60;
+
+        if ($horas === 0) {
+            return "{$restante}min";
+        }
+
+        return $restante > 0 ? "{$horas}h {$restante}min" : "{$horas}h";
+    }
+
+    /**
+     * Seleciona os principais nomes do elenco para exibição no modal.
+     *
+     * @param  array<string, mixed>|null  $credits
+     * @return array<int, string>
+     */
+    private function extrairElenco(?array $credits): array
+    {
+        $elenco = $credits['cast'] ?? [];
+
+        if (empty($elenco)) {
+            return [];
+        }
+
+        return array_values(array_filter(array_map(
+            fn (array $ator) => $ator['name'] ?? null,
+            array_slice($elenco, 0, 5)
+        )));
+    }
+
+    /**
+     * Procura o trailer oficial no YouTube. Preferimos o trailer oficial
+     * publicado no canal do YouTube e, na ausência dele, qualquer vídeo do tipo
+     * Trailer — o modal só precisa da chave para montar a URL de embed.
+     */
+    private function extrairTrailer(?array $videos): ?string
+    {
+        $resultados = $videos['results'] ?? [];
+
+        if (empty($resultados)) {
+            return null;
+        }
+
+        $trailers = array_values(array_filter(
+            $resultados,
+            fn (array $video) => ($video['site'] ?? null) === 'YouTube'
+                && ($video['type'] ?? null) === 'Trailer'
+        ));
+
+        if (empty($trailers)) {
+            return null;
+        }
+
+        $oficial = array_values(array_filter(
+            $trailers,
+            fn (array $video) => ($video['official'] ?? false) === true
+        ));
+
+        return ($oficial[0]['key'] ?? $trailers[0]['key'] ?? null) ?: null;
     }
 
     /**

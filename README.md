@@ -135,6 +135,10 @@ docker compose exec backend php artisan queue:work
 > As respostas do TMDB são cacheadas no Redis (`TMDB_CACHE_TTL`, padrão 3600s)
 > para respeitar o rate limit da API e acelerar a Home.
 
+O endpoint de detalhes enriquece o payload com `duracao` (ex.: `2h 19min`),
+`elenco` (5 principais atores) e `trailer` (chave do YouTube), usados pelo modal
+para exibir o botão "Assistir", o trailer sob demanda e os créditos.
+
 ### Media Service (Node)
 
 - `GET /health` — health check

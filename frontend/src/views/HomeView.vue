@@ -4,22 +4,48 @@ import HeroCarousel from '@/components/HeroCarousel.vue'
 import LoadingOverlay from '@/components/LoadingOverlay.vue'
 import MovieGrid from '@/components/MovieGrid.vue'
 import MovieModal from '@/components/MovieModal.vue'
+import { moviesService } from '@/services/movies'
 import { useMoviesStore } from '@/stores/movies'
 
 const movies = useMoviesStore()
 
 const filmeSelecionado = ref(null)
+const carregandoDetalhes = ref(false)
 
 const tituloGrid = computed(() =>
   movies.emBusca ? `Resultados para "${movies.termoBusca}"` : 'Filmes mais assistidos no Brasil'
 )
 
-function abrirModal(filme) {
+/**
+ * A listagem já traz o essencial para o modal abrir instantaneamente.
+ * Em paralelo buscamos os detalhes completos (duração, elenco, trailer) e
+ * substituímos o objeto assim que a resposta chega, sem travar a abertura.
+ */
+async function abrirModal(filme) {
   filmeSelecionado.value = filme
+
+  if (!filme?.id) return
+
+  carregandoDetalhes.value = true
+
+  try {
+    const detalhes = await moviesService.detalhes(filme.id)
+
+    // Só aplica se o modal ainda estiver exibindo o mesmo filme — evita que
+    // uma resposta atrasada sobrescreva um filme aberto depois.
+    if (detalhes && filmeSelecionado.value?.id === filme.id) {
+      filmeSelecionado.value = { ...filme, ...detalhes }
+    }
+  } catch {
+    // Falha nos detalhes não impede o uso do modal com os dados da listagem.
+  } finally {
+    carregandoDetalhes.value = false
+  }
 }
 
 function fecharModal() {
   filmeSelecionado.value = null
+  carregandoDetalhes.value = false
 }
 
 onMounted(() => {
@@ -65,6 +91,10 @@ onMounted(() => {
       </div>
     </template>
 
-    <MovieModal :filme="filmeSelecionado" @fechar="fecharModal" />
+    <MovieModal
+      :filme="filmeSelecionado"
+      :carregando-detalhes="carregandoDetalhes"
+      @fechar="fecharModal"
+    />
   </div>
 </template>
