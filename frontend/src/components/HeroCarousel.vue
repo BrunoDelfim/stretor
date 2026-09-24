@@ -14,10 +14,7 @@ const TOTAL_INDICADORES = 6
 const INTERVALO_AUTOPLAY = 7000
 
 const indiceAtual = ref(0)
-const arrastando = ref(false)
-const deslocamento = ref(0)
 
-let inicioX = 0
 let autoplay = null
 
 // Garante sempre 6 posições no carrossel, mesmo com poucos filmes carregados.
@@ -43,37 +40,8 @@ function reiniciarAutoplay() {
   autoplay = setInterval(proximo, INTERVALO_AUTOPLAY)
 }
 
-function aoPressionar(evento) {
-  arrastando.value = true
-  inicioX = evento.touches ? evento.touches[0].clientX : evento.clientX
-  deslocamento.value = 0
-}
-
-function aoMover(evento) {
-  if (!arrastando.value) return
-
-  const x = evento.touches ? evento.touches[0].clientX : evento.clientX
-  deslocamento.value = x - inicioX
-}
-
-function aoSoltar() {
-  if (!arrastando.value) return
-
-  const LIMITE = 60
-
-  if (deslocamento.value <= -LIMITE) {
-    proximo()
-  } else if (deslocamento.value >= LIMITE) {
-    irPara(indiceAtual.value - 1)
-  }
-
-  arrastando.value = false
-  deslocamento.value = 0
-}
-
 function selecionar() {
-  // Um arraste não deve ser interpretado como clique.
-  if (Math.abs(deslocamento.value) > 10 || !slideAtual.value) return
+  if (!slideAtual.value) return
 
   emit('selecionar', slideAtual.value)
 }
@@ -91,17 +59,7 @@ onUnmounted(() => clearInterval(autoplay))
   <section
     class="relative -mt-20 h-[100vh] min-h-[34rem] w-full select-none overflow-hidden"
   >
-    <div
-      class="relative h-full w-full cursor-grab active:cursor-grabbing"
-      @mousedown="aoPressionar"
-      @mousemove="aoMover"
-      @mouseup="aoSoltar"
-      @mouseleave="aoSoltar"
-      @touchstart.passive="aoPressionar"
-      @touchmove.passive="aoMover"
-      @touchend="aoSoltar"
-      @click="selecionar"
-    >
+    <div class="relative h-full w-full" @click="selecionar">
       <img
         v-if="slideAtual?.backdrop"
         :src="slideAtual.backdrop"
@@ -136,12 +94,12 @@ onUnmounted(() => clearInterval(autoplay))
 
       <div
         v-if="slideAtual"
-        class="pointer-events-none absolute inset-x-0 bottom-36 mx-auto max-w-7xl px-6"
+        class="pointer-events-none absolute inset-x-0 bottom-28 mx-auto max-w-7xl px-6"
       >
         <h2 class="max-w-3xl text-4xl font-bold text-white drop-shadow-lg sm:text-5xl">
           {{ slideAtual.titulo }}
         </h2>
-        <p class="mt-3 max-w-2xl text-sm text-slate-200 line-clamp-4 sm:text-base">
+        <p class="mt-3 max-w-2xl text-sm text-slate-200 line-clamp-3 sm:text-base">
           {{ slideAtual.sinopse }}
         </p>
       </div>

@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onUnmounted, ref, watch } from 'vue'
+import SkeletonBlock from '@/components/SkeletonBlock.vue'
 
 const props = defineProps({
   filme: {
@@ -130,25 +131,51 @@ onUnmounted(() => {
             </div>
 
             <div class="space-y-5 px-6">
+              <!--
+                Nota, ano e classificação já vêm da listagem, então aparecem
+                imediatamente. Duração e gêneros só existem nos detalhes: até
+                chegarem, ocupam o mesmo espaço em forma de skeleton para que o
+                modal não "pule" quando o conteúdo real entra.
+              -->
               <div class="flex flex-wrap items-center gap-3 text-sm">
                 <span v-if="filme.nota" class="font-semibold text-amber-400">★ {{ filme.nota }}</span>
                 <span v-if="filme.ano" class="text-slate-400">{{ filme.ano }}</span>
-                <span v-if="filme.duracao" class="text-slate-400">{{ filme.duracao }}</span>
-                <span class="rounded border border-white/20 px-2 py-0.5 text-slate-200">
-                  {{ filme.classificacao }}
-                </span>
-                <span
-                  v-for="genero in filme.generos"
-                  :key="genero"
-                  class="rounded-full bg-white/10 px-3 py-0.5 text-slate-200"
-                >
-                  {{ genero }}
-                </span>
+
+                <template v-if="carregandoDetalhes">
+                  <SkeletonBlock largura="w-16" altura="h-4" />
+                  <SkeletonBlock largura="w-20" altura="h-5" arredondamento="rounded-full" />
+                  <SkeletonBlock largura="w-24" altura="h-5" arredondamento="rounded-full" />
+                </template>
+
+                <template v-else>
+                  <span v-if="filme.duracao" class="text-slate-400">{{ filme.duracao }}</span>
+                  <span class="rounded border border-white/20 px-2 py-0.5 text-slate-200">
+                    {{ filme.classificacao }}
+                  </span>
+                  <span
+                    v-for="genero in filme.generos"
+                    :key="genero"
+                    class="rounded-full bg-white/10 px-3 py-0.5 text-slate-200"
+                  >
+                    {{ genero }}
+                  </span>
+                </template>
               </div>
 
-              <p class="text-sm leading-relaxed text-slate-300">{{ filme.sinopse }}</p>
+              <!-- Sinopse: a da listagem é curta, então o skeleton cobre as
+                   linhas até a versão completa dos detalhes chegar. -->
+              <div v-if="carregandoDetalhes" class="space-y-2">
+                <SkeletonBlock largura="w-full" altura="h-4" />
+                <SkeletonBlock largura="w-11/12" altura="h-4" />
+                <SkeletonBlock largura="w-3/4" altura="h-4" />
+              </div>
+              <p v-else class="text-sm leading-relaxed text-slate-300">{{ filme.sinopse }}</p>
 
-              <div v-if="filme.elenco?.length" class="space-y-1">
+              <div v-if="carregandoDetalhes" class="space-y-2">
+                <SkeletonBlock largura="w-16" altura="h-3" />
+                <SkeletonBlock largura="w-2/3" altura="h-4" />
+              </div>
+              <div v-else-if="filme.elenco?.length" class="space-y-1">
                 <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-500">Elenco</h3>
                 <p class="text-sm text-slate-300">{{ filme.elenco.join(', ') }}</p>
               </div>
@@ -220,8 +247,6 @@ onUnmounted(() => {
                 </button>
               </div>
 
-              <!-- Enquanto os detalhes completos não chegam, sinalizamos o carregamento. -->
-              <p v-if="carregandoDetalhes" class="text-xs text-slate-500">Carregando detalhes…</p>
             </div>
 
             <!-- Espaçador fixo: mantém a folga inferior constante em qualquer filme. -->

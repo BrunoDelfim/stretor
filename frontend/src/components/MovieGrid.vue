@@ -35,5 +35,11 @@ defineEmits(['selecionar'])
         @selecionar="$emit('selecionar', $event)"
       />
     </div>
+
+    <!--
+      Slot de rodapé: a Home injeta aqui a sentinela de rolagem infinita. O grid
+      continua puramente apresentacional e não precisa conhecer paginação.
+    -->
+    <slot name="rodape" />
   </section>
 </template>

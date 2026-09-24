@@ -54,6 +54,7 @@ sync_env_var() {
 sync_env_var "TMDB_API_KEY" "${TMDB_API_KEY:-}"
 sync_env_var "TMDB_LANGUAGE" "${TMDB_LANGUAGE:-}"
 sync_env_var "TMDB_REGION" "${TMDB_REGION:-}"
+sync_env_var "TMDB_MAX_PAGES" "${TMDB_MAX_PAGES:-}"
 sync_env_var "MEDIA_SERVICE_URL" "${MEDIA_SERVICE_URL:-}"
 
 # ---------------------------------------------------------------------------

@@ -25,5 +25,9 @@ return [
         'language' => env('TMDB_LANGUAGE', 'pt-BR'),
         'region' => env('TMDB_REGION', 'BR'),
         'cache_ttl' => (int) env('TMDB_CACHE_TTL', 3600),
+        // Teto de páginas da rolagem infinita. O TMDB reporta ~1000 páginas em
+        // populares; carregar tudo desperdiça banda e sobrecarrega o DOM. Quem
+        // procura algo específico usa a busca, que consulta o catálogo inteiro.
+        'max_pages' => (int) env('TMDB_MAX_PAGES', 25),
     ],
 ];

@@ -15,11 +15,19 @@ function cliente() {
 }
 
 export const moviesService = {
-  /** Filmes mais assistidos do Brasil. */
+  /**
+   * Filmes mais assistidos do Brasil.
+   *
+   * Devolve o envelope completo (`data` + `meta`) porque a rolagem infinita
+   * precisa saber se ainda existem páginas seguintes antes de pedir a próxima.
+   */
   async populares(page = 1) {
     const { data } = await cliente().get('/popular', { params: { page } })
 
-    return data.data ?? []
+    return {
+      filmes: data.data ?? [],
+      meta: data.meta ?? { page, total_pages: page, has_more: false },
+    }
   },
 
   /** Busca por título. */

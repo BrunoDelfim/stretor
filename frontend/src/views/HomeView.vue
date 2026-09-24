@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import HeroCarousel from '@/components/HeroCarousel.vue'
+import InfiniteScrollSentinel from '@/components/InfiniteScrollSentinel.vue'
 import LoadingOverlay from '@/components/LoadingOverlay.vue'
 import MovieGrid from '@/components/MovieGrid.vue'
 import MovieModal from '@/components/MovieModal.vue'
@@ -87,7 +88,21 @@ onMounted(() => {
           :filmes="movies.filmes"
           :titulo="tituloGrid"
           @selecionar="abrirModal"
-        />
+        >
+          <!--
+            A sentinela só é ativada quando há próxima página e não estamos em
+            modo de busca — assim a rolagem infinita não interfere nos resultados
+            de pesquisa, que usam a mesma lista.
+          -->
+          <template #rodape>
+            <InfiniteScrollSentinel
+              v-if="!movies.emBusca"
+              :ativo="movies.temMais"
+              :carregando="movies.carregandoMais"
+              @carregar-mais="movies.carregarMais"
+            />
+          </template>
+        </MovieGrid>
       </div>
     </template>
 

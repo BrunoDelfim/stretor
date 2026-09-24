@@ -146,12 +146,63 @@ docker compose exec backend php artisan queue:work
 
 - `GET /api/health` — health check da API
 - `GET /up` — health check do framework
-- `GET /api/v1/movies/popular` — filmes mais assistidos no Brasil (Home)
+- `GET /api/v1/movies/popular?page=N` — filmes mais assistidos no Brasil (Home)
 - `GET /api/v1/movies/search?query=...` — busca por título (navbar)
 - `GET /api/v1/movies/{id}` — detalhes do filme (modal)
 
 > As respostas do TMDB são cacheadas no Redis (`TMDB_CACHE_TTL`, padrão 3600s)
 > para respeitar o rate limit da API e acelerar a Home.
+
+#### Paginação da Home (rolagem infinita)
+
+O endpoint `popular` aceita o parâmetro `page` (padrão `1`) e devolve, além da
+lista, os metadados de paginação usados pela rolagem infinita:
+
+```json
+{
+  "data": [ { "id": 1, "titulo": "..." } ],
+  "meta": {
+    "page": 1,
+    "total_pages": 500,
+    "has_more": true
+  }
+}
+```
+
+O frontend observa o fim do grid com um `IntersectionObserver` (componente
+[`InfiniteScrollSentinel.vue`](frontend/src/components/InfiniteScrollSentinel.vue:1))
+e, ao se aproximar do fim, busca a próxima página e a anexa à lista. Quando
+`has_more` é `false`, a sentinela é desativada, nenhuma nova requisição é feita e
+o fim da lista exibe a mensagem "Você chegou ao fim — não há mais filmes para
+carregar no momento.". Durante uma busca ativa a rolagem infinita não é acionada.
+
+##### Limite de páginas
+
+O TMDB reporta cerca de 1000 páginas em `popular`, o que representaria milhares
+de filmes e um DOM pesado sem ganho real de descoberta. Por isso a rolagem
+infinita para no teto definido por `TMDB_MAX_PAGES` (padrão `25`, ~500 filmes).
+Ao atingir o limite, o backend responde com `has_more: false` e o frontend exibe
+a mensagem de fim — sem chamadas extras ao TMDB. Quem procura um título
+específico usa a busca, que consulta o catálogo inteiro.
+
+O teto também cobre os dois casos em que o catálogo acaba antes do previsto: o
+HTTP 400 do TMDB (página além do limite) e uma página com `results` vazio. Ambos
+são tratados como fim de catálogo, evitando que a rolagem fique pedindo páginas
+vazias indefinidamente.
+
+#### Skeletons de carregamento
+
+Enquanto uma página está sendo buscada, o grid exibe cards fantasma no lugar dos
+filmes reais, com um brilho que atravessa da esquerda para a direita (estilo
+Netflix). O mesmo vale para o modal: os campos que dependem dos detalhes
+(duração, gêneros, sinopse e elenco) aparecem como blocos animados até a resposta
+chegar, enquanto título, capa, nota, ano e classificação — que já vêm da
+listagem — permanecem visíveis desde o primeiro instante.
+
+Os placeholders são compostos a partir de
+[`SkeletonBlock.vue`](frontend/src/components/SkeletonBlock.vue:1) e
+[`MovieCardSkeleton.vue`](frontend/src/components/MovieCardSkeleton.vue:1), e a
+animação respeita `prefers-reduced-motion`.
 
 O endpoint de detalhes enriquece o payload com `duracao` (ex.: `2h 19min`),
 `elenco` (5 principais atores) e `trailer` (chave do YouTube), usados pelo modal

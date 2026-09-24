@@ -20,12 +20,26 @@ class MovieController extends Controller
 
     /**
      * Filmes mais assistidos do Brasil — alimenta o carrossel e o grid da Home.
+     *
+     * Além da lista, devolve os metadados de paginação para que a rolagem
+     * infinita saiba quando parar de pedir novas páginas.
      */
     public function populares(Request $request): JsonResponse
     {
         $pagina = max(1, (int) $request->query('page', 1));
 
-        return $this->responder(fn () => $this->tmdb->populares($pagina));
+        return $this->responder(function () use ($pagina) {
+            $resultado = $this->tmdb->populares($pagina);
+
+            return [
+                'data' => $resultado['resultados'],
+                'meta' => [
+                    'page' => $resultado['pagina'],
+                    'total_pages' => $resultado['total_paginas'],
+                    'has_more' => $resultado['pagina'] < $resultado['total_paginas'],
+                ],
+            ];
+        });
     }
 
     /**
@@ -55,6 +69,10 @@ class MovieController extends Controller
     /**
      * Centraliza o tratamento de erro para que falhas do TMDB (chave ausente,
      * rate limit, indisponibilidade) cheguem ao frontend como JSON previsível.
+     *
+     * Quando o callback já devolve um envelope pronto (com `data` e `meta`),
+     * ele é repassado como está; caso contrário, o resultado é embrulhado em
+     * `data` para manter o contrato simples dos demais endpoints.
      */
     private function responder(callable $callback, bool $singular = false): JsonResponse
     {
@@ -64,6 +82,10 @@ class MovieController extends Controller
             return response()->json([
                 'message' => $excecao->getMessage(),
             ], 502);
+        }
+
+        if (is_array($dados) && array_key_exists('data', $dados)) {
+            return response()->json($dados);
         }
 
         return response()->json([

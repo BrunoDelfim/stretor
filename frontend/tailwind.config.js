@@ -35,10 +35,16 @@ export default {
           from: { opacity: '0', transform: 'translateY(12px)' },
           to: { opacity: '1', transform: 'translateY(0)' },
         },
+        // Brilho que atravessa o bloco da esquerda para a direita, no estilo
+        // Netflix: o gradiente começa fora da área e termina do outro lado.
+        shimmer: {
+          '100%': { transform: 'translateX(100%)' },
+        },
       },
       animation: {
         'fade-in': 'fade-in 0.25s ease-out',
         'fade-up': 'fade-up 0.3s ease-out',
+        shimmer: 'shimmer 1.6s infinite',
       },
     },
   },

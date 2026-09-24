@@ -51,16 +51,78 @@ class TmdbService
     /**
      * Filmes mais assistidos/populares do Brasil.
      *
-     * @return array<int, array<string, mixed>>
+     * Devolve a lista normalizada junto com os metadados de paginação do TMDB.
+     * O frontend precisa saber se ainda há páginas seguintes para decidir se
+     * continua alimentando a rolagem infinita da Home.
+     *
+     * @return array{resultados: array<int, array<string, mixed>>, pagina: int, total_paginas: int}
      */
     public function populares(int $pagina = 1): array
     {
-        $payload = $this->requisitar('/movie/popular', [
-            'page' => $pagina,
-            'region' => config('services.tmdb.region'),
-        ]);
+        $teto = max(1, (int) config('services.tmdb.max_pages', 25));
 
-        return $this->normalizarLista($payload['results'] ?? []);
+        // Acima do teto nem consultamos o TMDB: devolvemos vazio com
+        // `total_paginas` igual à página pedida, o que faz `has_more` virar falso
+        // e encerra a rolagem infinita com a mensagem de fim.
+        if ($pagina > $teto) {
+            return [
+                'resultados' => [],
+                'pagina' => $pagina,
+                'total_paginas' => $pagina,
+            ];
+        }
+
+        try {
+            $payload = $this->requisitar('/movie/popular', [
+                'page' => $pagina,
+                'region' => config('services.tmdb.region'),
+            ]);
+        } catch (RuntimeException $excecao) {
+            // O TMDB responde HTTP 400 quando a página pedida passa do limite do
+            // catálogo. Isso não é uma falha: significa que a lista acabou. Nesse
+            // caso devolvemos vazio com `total_paginas` igual à página pedida, o
+            // que faz `has_more` virar falso e o frontend exibir o fim da lista
+            // em vez de um erro.
+            if ($this->paginaForaDoLimite($excecao)) {
+                return [
+                    'resultados' => [],
+                    'pagina' => $pagina,
+                    'total_paginas' => $pagina,
+                ];
+            }
+
+            throw $excecao;
+        }
+
+        $resultados = $payload['results'] ?? [];
+
+        // Uma página vazia é sinal definitivo de fim de catálogo, mesmo que o
+        // TMDB ainda informe um `total_pages` maior. Sem isso, a rolagem infinita
+        // ficaria pedindo páginas vazias indefinidamente e nunca exibiria o fim.
+        if (empty($resultados)) {
+            return [
+                'resultados' => [],
+                'pagina' => $pagina,
+                'total_paginas' => $pagina,
+            ];
+        }
+
+        return [
+            'resultados' => $this->normalizarLista($resultados),
+            'pagina' => (int) ($payload['page'] ?? $pagina),
+            // O teto entra no cálculo do `has_more` feito pelo controller: mesmo
+            // que o TMDB informe centenas de páginas, paramos no limite.
+            'total_paginas' => min((int) ($payload['total_pages'] ?? 1), $teto),
+        ];
+    }
+
+    /**
+     * Identifica o erro de "página além do limite" do TMDB (HTTP 400), que na
+     * prática sinaliza o fim do catálogo e não uma falha real.
+     */
+    private function paginaForaDoLimite(RuntimeException $excecao): bool
+    {
+        return str_contains($excecao->getMessage(), 'HTTP 400');
     }
 
     /**

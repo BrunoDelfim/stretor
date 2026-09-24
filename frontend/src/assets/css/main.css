@@ -65,4 +65,37 @@
   .scrollbar-hide::-webkit-scrollbar {
     display: none;
   }
+
+  /*
+   * Bloco de skeleton no estilo Netflix: um fundo escuro sólido com um brilho
+   * que atravessa da esquerda para a direita. O brilho é um pseudo-elemento
+   * posicionado fora da área (translateX(-100%)) que desliza até o outro lado,
+   * então o `overflow: hidden` é o que o mantém contido no bloco.
+   */
+  .skeleton {
+    position: relative;
+    overflow: hidden;
+    background-color: rgba(148, 163, 184, 0.12);
+  }
+
+  .skeleton::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background-image: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(255, 255, 255, 0.08) 50%,
+      transparent 100%
+    );
+    animation: shimmer 1.6s infinite;
+  }
+
+  /* Quem prefere menos movimento recebe o bloco estático, sem o brilho. */
+  @media (prefers-reduced-motion: reduce) {
+    .skeleton::after {
+      animation: none;
+    }
+  }
 }
