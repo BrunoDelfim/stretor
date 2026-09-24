@@ -1,9 +1,17 @@
 import { Router } from 'express'
 import multer from 'multer'
 import path from 'node:path'
+import fs from 'node:fs'
 import { v4 as uuid } from 'uuid'
 
 import { probeMedia, transcodeVideo, extractAudio } from '../services/ffmpeg.js'
+import {
+  criarSessao,
+  obterSessao,
+  encerrarSessao,
+  caminhoPlaylist,
+  diretorioSessao,
+} from '../services/sessoes.js'
 import { logger } from '../utils/logger.js'
 
 const router = Router()
@@ -40,6 +48,94 @@ router.post('/extract-audio', upload.single('file'), async (req, res, next) => {
   } catch (err) {
     next(err)
   }
+})
+
+/**
+ * Cria uma sessão de reprodução a partir de um magnet.
+ *
+ * Responde na hora com o id: a conexão do torrent e a conversão seguem em
+ * segundo plano, e o frontend acompanha pelo endpoint de status.
+ */
+router.post('/sessao', (req, res, next) => {
+  try {
+    const { magnet, filme_id: filmeId } = req.body ?? {}
+
+    if (!magnet) {
+      return res.status(400).json({ error: 'O campo "magnet" é obrigatório.' })
+    }
+
+    const sessao = criarSessao({ magnet, filmeId })
+
+    res.status(202).json(sessao)
+  } catch (err) {
+    next(err)
+  }
+})
+
+/** Estado atual da sessão — alimenta as mensagens de progresso do overlay. */
+router.get('/sessao/:id/status', (req, res) => {
+  const sessao = obterSessao(req.params.id)
+
+  if (!sessao) {
+    return res.status(404).json({ error: 'Sessão não encontrada.' })
+  }
+
+  res.json(sessao)
+})
+
+/**
+ * Playlist HLS consumida pelo player.
+ *
+ * A playlist é reescrita pelo FFmpeg a cada segmento novo, então nunca deve ser
+ * cacheada — o player precisa enxergar os segmentos assim que aparecem.
+ */
+router.get('/sessao/:id/playlist.m3u8', (req, res) => {
+  const playlist = caminhoPlaylist(req.params.id)
+
+  if (!playlist || !fs.existsSync(playlist)) {
+    return res.status(404).json({ error: 'Playlist ainda não disponível.' })
+  }
+
+  res.setHeader('Content-Type', 'application/vnd.apple.mpegurl')
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate')
+
+  fs.createReadStream(playlist).pipe(res)
+})
+
+/** Segmentos de vídeo da playlist. */
+router.get('/sessao/:id/segmento/:arquivo', (req, res) => {
+  const diretorio = diretorioSessao(req.params.id)
+
+  if (!diretorio) {
+    return res.status(404).json({ error: 'Sessão não encontrada.' })
+  }
+
+  // Só aceitamos o nome do arquivo, nunca um caminho: sem isso, um `../` no
+  // parâmetro permitiria ler qualquer arquivo do container.
+  const arquivo = path.basename(req.params.arquivo)
+  const caminho = path.join(diretorio, arquivo)
+
+  if (!caminho.startsWith(diretorio) || !fs.existsSync(caminho)) {
+    return res.status(404).json({ error: 'Segmento não encontrado.' })
+  }
+
+  res.setHeader('Content-Type', 'video/mp2t')
+  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
+
+  fs.createReadStream(caminho).pipe(res)
+})
+
+/** Encerra a sessão e libera o torrent e o processo de conversão. */
+router.delete('/sessao/:id', (req, res) => {
+  const encerrada = encerrarSessao(req.params.id)
+
+  if (!encerrada) {
+    return res.status(404).json({ error: 'Sessão não encontrada.' })
+  }
+
+  logger.info(`[sessao ${req.params.id}] encerrada pelo cliente`)
+
+  res.status(204).end()
 })
 
 export default router
