@@ -2,6 +2,7 @@ import WebTorrent from 'webtorrent'
 import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
+import { Transform } from 'node:stream'
 import { v4 as uuid } from 'uuid'
 
 import {
@@ -9,6 +10,8 @@ import {
   iniciarConversao,
   aguardarBufferInicial,
   localizarMoov,
+  mapearCaixas,
+  somarDuracaoDaPlaylist,
 } from './hls.js'
 import { logger } from '../utils/logger.js'
 
@@ -51,6 +54,80 @@ const EXTENSOES_VIDEO = ['.mkv', '.mp4', '.avi', '.mov', '.m4v', '.webm']
 const TIMEOUT_DADOS_MS = 30000
 
 /**
+ * Quantidade de bytes do começo do filme que precisa estar em disco antes de
+ * uma conversão ler direto do arquivo.
+ *
+ * Ler um arquivo parcialmente baixado direto do disco devolve zeros nas partes
+ * que ainda não chegaram — diferente do fluxo do WebTorrent, que fica esperando
+ * cada pedaço. Com zeros no lugar do começo, o FFmpeg atravessa o trecho
+ * inválido e passa a decodificar onde os dados aparecem: o filme "começa" no
+ * meio, e o relógio fica em 00:00 porque o muxer HLS ancora a saída em zero.
+ * Este é o trecho contíguo desde o byte 0 que exigimos antes de converter do
+ * disco.
+ */
+const BYTES_INICIAIS = 4 * 1024 * 1024
+
+/*
+ * A janela de leitura existe porque selecionar o arquivo inteiro (prioridade 1)
+ * deixava o *picker* do WebTorrent livre para buscar o mais raro primeiro: o
+ * download se espalhava pelo filme e a faixa logo à frente do leitor ficava
+ * cheia de buracos — a conversão morria de inanição depois dos primeiros
+ * segmentos. Aqui mantemos quente só o que vai ser lido agora.
+ *
+ * A antecedência é medida em segundos de mídia, não em bytes fixos: numa fonte
+ * lenta uma faixa curta não cobriria nem alguns segundos de vídeo, numa fonte
+ * rápida seria desperdício. Convertemos segundos em bytes pela vazão medida.
+ */
+const ANTECEDENCIA_SEGUNDOS = 150
+const ANTECEDENCIA_MINIMA_BYTES = 24 * 1024 * 1024
+const ANTECEDENCIA_MAXIMA_BYTES = 256 * 1024 * 1024
+
+/** Quanto da cauda já reproduzida fica selecionada, para um seek curto para trás. */
+const CAUDA_SELECIONADA_BYTES = 8 * 1024 * 1024
+
+/** Faixa imediata: o que o FFmpeg consome nos próximos instantes. */
+const TAMANHO_IMEDIATO_BYTES = 4 * 1024 * 1024
+
+/** Prioridades: o maior valor vence. O índice (`moov`) usa 10 e continua no topo. */
+const PRIORIDADE_JANELA = 6
+const PRIORIDADE_IMEDIATA = 8
+
+/** Cadência com que a janela e o freio de leitura são reavaliados. */
+const PASSO_LEITURA_MS = 700
+
+/*
+ * Freio da leitura no caminho de disco: congelamos a conversão quando a distância
+ * entre a fronteira contígua do download e a posição já publicada na playlist cai
+ * abaixo da margem, e só soltamos quando o download recupera folga suficiente.
+ */
+const MARGEM_LEITURA_SEGUNDOS = 30
+const PASSO_RETOMADA_SEGUNDOS = 20
+const MARGEM_LEITURA_BYTES = 32 * 1024 * 1024
+const PASSO_RETOMADA_BYTES = 16 * 1024 * 1024
+
+/** Erro interno: a sessão morreu e o preparo deve parar no próximo ponto. */
+class SessaoCancelada extends Error {
+  constructor() {
+    super('Sessão encerrada pelo cliente.')
+    this.name = 'SessaoCancelada'
+  }
+}
+
+/**
+ * Interrompe o preparo quando a sessão já não existe mais.
+ *
+ * Chamado depois de cada espera: o preparo é longo (conectar, baixar o índice,
+ * analisar o cabeçalho), e sem esta checagem um player fechado no meio deixaria
+ * um FFmpeg escrevendo numa pasta já apagada e um torrent preso no cliente
+ * compartilhado.
+ */
+function conferirSessao(sessao) {
+  if (sessao.cancelada) {
+    throw new SessaoCancelada()
+  }
+}
+
+/**
  * Cria uma sessão e começa a preparar a reprodução.
  *
  * A função devolve o id imediatamente: a conexão do torrent e a conversão
@@ -74,11 +151,27 @@ export function criarSessao({ magnet, filmeId }) {
     diretorio,
     torrent: null,
     comando: null,
+    fluxo: null,
     playlist: null,
     erro: null,
     progresso: null,
     download: null,
     duracao: null,
+    // Idioma real da faixa de áudio, lido do contêiner pelo ffprobe; ver
+    // `prepararSessao`. É o que confirma (ou desmente) a dublagem prometida
+    // pelo nome do arquivo.
+    idiomaAudio: null,
+    idiomaAudioRotulo: null,
+    idiomasAudio: [],
+    // Byte corrente da leitura (alimentado pelo contador no caminho de pipe) e o
+    // contador em si, para fechar o pipe no encerramento.
+    posicaoLeitura: 0,
+    contador: null,
+    // Janela móvel de seleção de pedaços; ver `iniciarJanela`.
+    janela: null,
+    // Bandeira de vida da sessão: encerrar muda o valor e o preparo desiste nos
+    // pontos de espera em vez de continuar trabalhando para um player fechado.
+    cancelada: false,
     criadaEm: Date.now(),
   }
 
@@ -86,12 +179,243 @@ export function criarSessao({ magnet, filmeId }) {
 
   // Não aguardamos: o frontend consulta o status enquanto isso roda.
   prepararSessao(sessao).catch((erro) => {
+    // Um preparo cancelado é o desfecho esperado de quem fechou o player: não
+    // é falha e não deve marcar a sessão como erro.
+    if (erro instanceof SessaoCancelada || sessao.cancelada) {
+      logger.info(`[sessao ${id}] preparo interrompido: a sessão foi encerrada`)
+      return
+    }
+
     logger.error(`[sessao ${id}] falha ao preparar:`, erro.message)
     sessao.status = 'erro'
     sessao.erro = erro.message
   })
 
   return { sessao_id: id, status: sessao.status }
+}
+
+/** Converte bytes para MB — só para deixar o log legível. */
+function emMB(bytes) {
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`
+}
+
+/**
+ * Vazão média do torrent, em bytes por segundo.
+ *
+ * `downloadSpeed` é uma média móvel do WebTorrent e é a régua para traduzir
+ * "segundos de mídia" em bytes. Quando ela ainda não foi medida, estimamos pela
+ * duração: um filme de 2h em 4GB dá cerca de 560KB/s.
+ */
+function bytesPorSegundo(sessao, arquivo) {
+  const velocidade = sessao.torrent?.downloadSpeed ?? 0
+
+  if (velocidade > 0) return velocidade
+
+  return sessao.duracao ? arquivo.length / sessao.duracao : 0
+}
+
+function bytesDoTempo(sessao, arquivo, segundos) {
+  const vazao = bytesPorSegundo(sessao, arquivo)
+
+  return vazao ? Math.round(vazao * segundos) : null
+}
+
+/** Tamanho da antecedência da janela, entre o mínimo e o máximo. */
+function tamanhoDaJanela(sessao, arquivo) {
+  const alvo = bytesDoTempo(sessao, arquivo, ANTECEDENCIA_SEGUNDOS) ?? ANTECEDENCIA_MINIMA_BYTES
+
+  return Math.min(Math.max(alvo, ANTECEDENCIA_MINIMA_BYTES), ANTECEDENCIA_MAXIMA_BYTES)
+}
+
+/** Margem de folga mínima antes de frear a leitura (bytes). */
+function margemDeLeitura(sessao, arquivo) {
+  return Math.max(bytesDoTempo(sessao, arquivo, MARGEM_LEITURA_SEGUNDOS) ?? MARGEM_LEITURA_BYTES, MARGEM_LEITURA_BYTES)
+}
+
+/** Folga que o download precisa recuperar para soltar a leitura (bytes). */
+function passoDeRetomada(sessao, arquivo) {
+  return Math.max(bytesDoTempo(sessao, arquivo, PASSO_RETOMADA_SEGUNDOS) ?? PASSO_RETOMADA_BYTES, PASSO_RETOMADA_BYTES)
+}
+
+/**
+ * Duração de mídia já publicada na playlist.
+ *
+ * É a posição confiável da conversão no caminho de disco: o `progress` do FFmpeg
+ * tem resolução de segundos e chega devagar, enquanto cada `#EXTINF` é escrito
+ * quando um segmento fecha. Fica no máximo um segmento atrás da leitura real.
+ */
+function tempoPublicado(sessao) {
+  try {
+    const conteudo = fs.readFileSync(path.join(sessao.diretorio, 'playlist.m3u8'), 'utf8')
+
+    return somarDuracaoDaPlaylist(conteudo)
+  } catch {
+    // A playlist ainda não existe (conversão recém-iniciada).
+    return 0
+  }
+}
+
+/**
+ * Mede a fronteira contígua do arquivo: quantos bytes seguidos já estão em disco.
+ *
+ * É o inverso de `faixaPresente` — aqui não interessa se um trecho específico
+ * chegou, e sim onde o download parou. O índice da peça é guardado como marca
+ * d'água que só avança, então cada chamada varre apenas o que há de novo.
+ */
+function medirFronteira(janela, torrent, arquivo) {
+  const tamanhoPeca = torrent?.pieceLength
+
+  if (!tamanhoPeca) return null
+
+  const base = arquivo.offset ?? 0
+  const ultimaPeca = Math.ceil((base + arquivo.length) / tamanhoPeca)
+  let indice = janela.fronteiraIndice
+
+  while (indice < ultimaPeca) {
+    const presente = pecaPresente(torrent, indice)
+
+    // Sem o mapa de pedaços não há medida possível.
+    if (presente === null) return null
+    if (!presente) break
+
+    indice += 1
+  }
+
+  janela.fronteiraIndice = indice
+
+  return Math.min(Math.max(indice * tamanhoPeca - base, 0), arquivo.length)
+}
+
+/**
+ * Mantém uma janela móvel de pedaços selecionados logo à frente da leitura.
+ *
+ * Selecionar o arquivo inteiro com uma prioridade única deixa o *picker* do
+ * WebTorrent buscar o mais raro primeiro: o download se espalha e a faixa à
+ * frente do leitor fica cheia de buracos — foi assim que a reprodução parou
+ * depois dos primeiros segmentos. Aqui priorizamos só o que vai ser lido agora e
+ * soltamos a cauda já reproduzida, para a banda atacar o que interessa.
+ *
+ * @param {object} sessao
+ * @param {import('webtorrent').TorrentFile} arquivo
+ * @param {() => number} posicao devolve o byte corrente da leitura
+ * @returns {{parar: () => void, usarPosicao: (fn: () => number) => void, segurarLeitura: (comando: object) => void}}
+ */
+function iniciarJanela(sessao, arquivo, posicao) {
+  const torrent = sessao.torrent
+  let fontePosicao = posicao
+
+  const janela = {
+    selecionada: null,
+    fronteiraIndice: Math.floor((arquivo.offset ?? 0) / (torrent?.pieceLength || 1)),
+    retomada: null,
+    comando: null,
+  }
+
+  /*
+   * `deselect` só existe nas versões mais recentes do WebTorrent. Sem ele a
+   * janela continua funcionando — apenas não solta a cauda, e o download fica
+   * mais espalhado do que o ideal. Nada quebra.
+   */
+  const podeSoltar = typeof arquivo.deselect === 'function'
+
+  const lerPosicao = () => Math.max(0, Math.min(fontePosicao() || 0, arquivo.length))
+
+  const deslizar = () => {
+    const lida = lerPosicao()
+    const tamanho = tamanhoDaJanela(sessao, arquivo)
+
+    const de = Math.max(0, lida - CAUDA_SELECIONADA_BYTES)
+    const ate = Math.min(arquivo.length, lida + tamanho)
+    const anterior = janela.selecionada
+
+    if (anterior && podeSoltar && de > anterior[0]) {
+      try {
+        arquivo.deselect(anterior[0], Math.min(de, anterior[1]))
+      } catch (erro) {
+        logger.warn(`[sessao ${sessao.id}] falha ao soltar a cauda da janela:`, erro.message)
+      }
+    }
+
+    arquivo.select(PRIORIDADE_JANELA, de, ate)
+
+    // A faixa imediata vai com prioridade maior: é o que o FFmpeg lê agora.
+    arquivo.select(PRIORIDADE_IMEDIATA, lida, Math.min(ate, lida + TAMANHO_IMEDIATO_BYTES))
+
+    janela.selecionada = [de, ate]
+  }
+
+  /*
+   * Freio da leitura, usado no caminho de disco: ali o FFmpeg lê em velocidade de
+   * CPU, muito à frente do download, e um arquivo esparso devolve zeros no que
+   * ainda não chegou — sem erro nenhum. Ele atravessaria o buraco e "concluiria"
+   * o filme num ponto arbitrário. Quando a folga entre a fronteira contígua e a
+   * posição já publicada encolhe, congelamos o processo e o soltamos depois que o
+   * download recupera espaço.
+   */
+  const conferirLeitura = () => {
+    if (!janela.comando) return
+
+    const fronteira = medirFronteira(janela, torrent, arquivo)
+
+    if (fronteira === null) return
+
+    const folga = fronteira - lerPosicao()
+
+    if (!janela.retomada) {
+      const minima = margemDeLeitura(sessao, arquivo)
+
+      if (folga >= minima) return
+
+      janela.retomada = minima + passoDeRetomada(sessao, arquivo)
+      janela.comando.pausar?.()
+      logger.info(
+        `[sessao ${sessao.id}] leitura colada no download (folga de ${emMB(Math.max(folga, 0))}) — pausando a conversão`
+      )
+      return
+    }
+
+    if (folga >= janela.retomada) {
+      janela.retomada = null
+      janela.comando.retomar?.()
+      logger.info(`[sessao ${sessao.id}] download recuperou a folga (${emMB(folga)}) — retomando a conversão`)
+    }
+  }
+
+  const conferir = () => {
+    try {
+      deslizar()
+      conferirLeitura()
+    } catch (erro) {
+      logger.warn(`[sessao ${sessao.id}] falha ao ajustar a janela de leitura:`, erro.message)
+    }
+  }
+
+  conferir()
+
+  const temporizador = setInterval(conferir, PASSO_LEITURA_MS)
+
+  // A janela não deve, sozinha, manter o processo acordado.
+  temporizador.unref?.()
+
+  return {
+    usarPosicao: (fn) => {
+      fontePosicao = fn
+    },
+    segurarLeitura: (comando) => {
+      janela.comando = comando
+    },
+    parar: () => {
+      clearInterval(temporizador)
+
+      // Um processo congelado precisa ser solto antes de ser morto.
+      if (janela.retomada) {
+        janela.comando?.retomar?.()
+        janela.retomada = null
+      }
+
+      janela.comando = null
+    },
+  }
 }
 
 /**
@@ -113,6 +437,19 @@ export function criarSessao({ magnet, filmeId }) {
  */
 async function prepararSessao(sessao) {
   const torrent = await adicionarTorrent(sessao.magnet)
+
+  /*
+   * A sessão pode ter morrido enquanto o magnet conectava (o usuário desistiu
+   * da fonte ou fechou o player). O torrent acabou de entrar no cliente
+   * compartilhado sem que ninguém o registrasse na sessão, e ficaria vivo para
+   * sempre — sendo reaproveitado pela próxima abertura do mesmo filme. Removemos
+   * aqui mesmo e abandonamos o preparo.
+   */
+  if (sessao.cancelada) {
+    removerTorrent(sessao, torrent)
+    throw new SessaoCancelada()
+  }
+
   sessao.torrent = torrent
 
   sessao.status = 'aguardando'
@@ -130,12 +467,13 @@ async function prepararSessao(sessao) {
   const caminho = path.join(torrent.path, arquivo.path)
 
   /*
-   * Selecionar o arquivo inteiro (prioridade 1) manda o WebTorrent baixar em
-   * ordem, do começo para frente — exatamente a ordem em que o FFmpeg lê. Sem
-   * uma prioridade explícita o valor vira 0 ("sem prioridade"), o que ainda
-   * desperta o interesse do torrent mas não deixa a intenção óbvia.
+   * O download passa a ser guiado por uma janela móvel, não pela seleção do
+   * arquivo inteiro: no começo o leitor ainda não tem posição — o caminho de
+   * disco a descobre pela playlist, o pipe pelo contador de bytes — e a janela se
+   * reajusta sozinha em segundo plano. Queremos a faixa à frente da leitura
+   * sempre quente, em vez de um download espalhado pelo filme inteiro.
    */
-  arquivo.select(1)
+  sessao.janela = iniciarJanela(sessao, arquivo, () => sessao.posicaoLeitura)
 
   /*
    * O download corre junto com a conversão; só registramos o andamento para
@@ -144,24 +482,33 @@ async function prepararSessao(sessao) {
   acompanharDownload(sessao, torrent)
 
   /*
-   * Antes de qualquer análise, confirmamos que a fonte realmente envia dados.
-   * O `ready` do torrent só diz que os metadados foram lidos; sem este passo,
-   * uma fonte sem peers ficava 120 s em `analisarComEspera` enquanto o
-   * frontend já tinha desistido. Falhamos rápido para o frontend tentar a
-   * próxima fonte.
+   * Antes de qualquer análise, confirmamos que a fonte realmente envia dados. O
+   * `ready` do torrent só diz que os metadados foram lidos; sem este passo, uma
+   * fonte sem peers ficava 120 s em `analisarComEspera` enquanto o frontend já
+   * tinha desistido. Falhamos rápido para o frontend tentar a próxima fonte.
    */
   await aguardarDados(sessao, torrent)
+  conferirSessao(sessao)
 
   /*
-   * Descobrimos se o índice está acessível desde o começo. Enquanto o arquivo
-   * não tem bytes suficientes, `localizarMoov` devolve `null`; nesse caso
-   * assumimos o caminho progressivo e deixamos o `analisarComEspera` aguardar o
-   * cabeçalho — se for um MP4 com `moov` no fim, a análise só vai concluir
-   * quando o download alcançar o índice, e aí caímos no caminho não progressivo.
+   * Se o índice ainda não estiver visível, é quase certo que ele esteja no fim
+   * do arquivo — o formato usual dos lançamentos em MP4. Pedimos a cauda já
+   * agora, antes de esperar o cabeçalho: a ordem natural do download é do
+   * começo para o fim, e sem isso a espera pelo índice viraria a espera pelo
+   * filme inteiro.
    */
-  const indiceNoFim = await indiceEstaNoFim(sessao, arquivo, caminho)
+  await anteciparCauda(sessao, arquivo, caminho)
+  conferirSessao(sessao)
 
-  const analise = await analisarComEspera(caminho, arquivo)
+  /*
+   * A leitura do cabeçalho vem ANTES da decisão do caminho de conversão, e essa
+   * ordem é o que torna a decisão confiável. Para um MP4 com o `moov` no fim, o
+   * índice só passa a existir em disco depois desta espera — decidir antes disso
+   * levava ao pipe, onde o FFmpeg não consegue voltar para o `mdat` e acaba
+   * decodificando a partir de um ponto arbitrário, com o relógio em 00:00.
+   */
+  const analise = await analisarComEspera(sessao, caminho, arquivo)
+  conferirSessao(sessao)
 
   /*
    * Guardamos a duração assim que o ffprobe a lê. O Plyr não consegue deduzi-la
@@ -170,68 +517,257 @@ async function prepararSessao(sessao) {
    */
   sessao.duracao = analise.duracao ?? null
 
+  /*
+   * Registramos o idioma real da faixa de áudio lida do contêiner. O nome do
+   * arquivo no torrent promete dublagem, mas quem diz o que está lá dentro é a
+   * faixa — e essa informação sobe no status para o usuário não descobrir um
+   * áudio trocado só depois de o filme começar.
+   */
+  sessao.idiomasAudio = analise.idiomasAudio ?? []
+  sessao.idiomaAudio = analise.idiomaAudio ?? null
+  sessao.idiomaAudioRotulo = analise.idiomaAudioRotulo ?? null
+
+  // Agora a resposta é definitiva: com o cabeçalho lido, o `moov` de um arquivo
+  // com índice no fim já chegou ao disco.
+  const indiceNoFim = await indiceEstaNoFim(sessao, arquivo, caminho)
+  conferirSessao(sessao)
+
   sessao.status = 'convertendo'
-  sessao.mensagem = 'Preparando a conversão...'
-
-  logger.info(
-    `[sessao ${sessao.id}] modo=${analise.modo} video=${analise.videoCodec} audio=${analise.audioCodec} duracao=${sessao.duracao ?? '?'} progressivo=${!indiceNoFim}`
-  )
-
   sessao.mensagem = mensagemDoModo(analise.modo)
+
+  /*
+   * Guardamos o essencial para reposicionar a conversão mais tarde (seek além do
+   * trecho convertido): o arquivo escolhido, o caminho em disco, o modo decidido
+   * e por qual caminho a leitura flui. Sem isso, reposicionar exigiria refazer
+   * toda a análise do arquivo.
+   */
+  sessao.arquivo = arquivo
+  sessao.caminho = caminho
+  sessao.modo = analise.modo
+  sessao.indiceNoFim = indiceNoFim
+  sessao.tempoBase = 0
+
+  /*
+   * Este log é a leitura do caso: caminho escolhido, codecs, duração e o
+   * `start_time` da fonte. O `start_time` alto denuncia um arquivo cuja timeline
+   * não começa em zero — junto com o cabeçalho (`ftyp>moov` é *faststart*,
+   * `ftyp>mdat` é índice no fim), dá para saber o que o FFmpeg recebeu sem
+   * adivinhar pelo comportamento do player.
+   */
+  logger.info(
+    `[sessao ${sessao.id}] caminho=${indiceNoFim ? 'disco' : 'pipe'} modo=${analise.modo} video=${analise.videoCodec} audio=${analise.audioCodec} audioIdioma=${sessao.idiomaAudioRotulo ?? sessao.idiomaAudio ?? '?'} faixasAudio=${sessao.idiomasAudio.length} keyframes=${analise.intervaloKeyframes?.toFixed(2) ?? '?'}s duracao=${sessao.duracao ?? '?'} inicioFonte=${analise.inicioFonte ?? '?'}s cabecalho=${descreverCabecalho(caminho)}`
+  )
 
   if (indiceNoFim) {
     /*
      * Sem pipe: o FFmpeg lê o MP4 sequencialmente e não busca o `moov` no fim.
-     * A saída é converter do disco, que é buscável — mas esperar o download
-     * inteiro deixaria o usuário minutos sem imagem.
+     * A saída é converter do disco, que é buscável — o arquivo permite voltar e
+     * ler as amostras na ordem que for necessária.
      *
-     * Priorizamos o trecho do `moov` (o índice) e só então abrimos a conversão.
-     * Com o índice em disco, o FFmpeg consegue montar a timeline e lê o `mdat`
-     * conforme os bytes chegam, sem precisar do arquivo completo.
+     * Antes de abrir a conversão garantimos que o começo do filme esteja em
+     * disco: o índice pode estar completo com o `mdat` ainda cheio de buracos, e
+     * a leitura direta devolve zeros nesses buracos. O FFmpeg atravessaria o
+     * começo inválido e passaria a decodificar no primeiro ponto com dados —
+     * que é justamente o filme "começando no meio".
      */
     sessao.mensagem = 'Baixando o índice do filme...'
     await priorizarIndice(sessao, arquivo, caminho)
+    conferirSessao(sessao)
 
     sessao.mensagem = 'Convertendo o filme...'
+    await aguardarInicio(sessao, arquivo)
+    conferirSessao(sessao)
 
-    sessao.comando = iniciarConversao({
+    const comando = iniciarConversao({
       caminho,
       extensao: path.extname(arquivo.name),
       diretorio: sessao.diretorio,
       modo: analise.modo,
+      duracaoEsperada: sessao.duracao,
       aoProgredir: (progresso) => {
         sessao.progresso = progresso
       },
     })
+
+    registrarConversao(sessao, comando)
+
+    /*
+     * No disco a leitura é rápida demais para o download, então ligamos o freio.
+     * A posição da leitura passa a vir do que a playlist já publicou: cada
+     * `#EXTINF` marca até onde a conversão realmente chegou, o que é seguro
+     * demais para frear (no máximo um segmento de atraso).
+     */
+    if (bytesPorSegundo(sessao, arquivo)) {
+      sessao.janela?.usarPosicao(() => bytesDoTempo(sessao, arquivo, tempoPublicado(sessao)) ?? 0)
+      sessao.janela?.segurarLeitura(comando)
+    } else {
+      // Sem uma régua para estimar a vazão não dá para frear com segurança:
+      // voltamos à seleção cheia, que mantém o download ativo pelo filme todo.
+      logger.warn(`[sessao ${sessao.id}] sem vazão estimada — convertendo do disco sem freio de leitura`)
+      sessao.janela?.parar()
+      sessao.janela = null
+      arquivo.select(1)
+    }
   } else {
     /*
      * O fluxo é criado agora e fica aberto até o fim do download. O FFmpeg o
-     * consome na medida em que os bytes chegam, publicando os segmentos.
+     * consome na medida em que os bytes chegam, publicando os segmentos. Além
+     * de começar antes, o fluxo entrega os pedaços na ordem do arquivo e
+     * **espera** cada um — ele nunca produz buracos, que é a garantia que a
+     * leitura direta do disco não dá.
      */
-    const fluxo = arquivo.createReadStream()
-
-    fluxo.on('error', (erro) => {
-      logger.warn(`[sessao ${sessao.id}] erro no fluxo do torrent:`, erro.message)
-    })
-
-    sessao.comando = iniciarConversao({
-      fluxo,
-      extensao: path.extname(arquivo.name),
-      diretorio: sessao.diretorio,
-      modo: analise.modo,
-      aoProgredir: (progresso) => {
-        sessao.progresso = progresso
+    /*
+     * O contador entre o fluxo e o FFmpeg é o que dá à janela a posição exata da
+     * leitura: cada pedaço que passa avança o byte corrente, e é a partir dele
+     * que o trecho seguinte é priorizado. Sem isso a janela só poderia adivinhar
+     * pelo relógio do FFmpeg, que é grosseiro e chega atrasado.
+     */
+    const contador = new Transform({
+      transform(pedaco, _codificacao, concluir) {
+        sessao.posicaoLeitura += pedaco.length
+        concluir(null, pedaco)
       },
     })
+
+    // O erro já é tratado no fluxo; sem um consumidor o `pipe` derrubaria o processo.
+    contador.on('error', () => {})
+
+    const leitura = arquivo.createReadStream()
+
+    leitura.on('error', (erro) => {
+      logger.warn(`[sessao ${sessao.id}] erro no fluxo do torrent:`, erro.message)
+      contador.destroy(erro)
+    })
+
+    leitura.pipe(contador)
+
+    sessao.fluxo = leitura
+    sessao.contador = contador
+
+    registrarConversao(
+      sessao,
+      iniciarConversao({
+        fluxo: contador,
+        extensao: path.extname(arquivo.name),
+        diretorio: sessao.diretorio,
+        modo: analise.modo,
+        duracaoEsperada: sessao.duracao,
+        aoProgredir: (progresso) => {
+          sessao.progresso = progresso
+        },
+      })
+    )
   }
 
   // Só liberamos o player quando há segmentos suficientes para tocar sem
   // travar — é o buffer que protege conexões lentas.
   await aguardarBufferInicial(sessao.diretorio)
+  conferirSessao(sessao)
+
+  // Registra como a playlist saiu (sequência, primeiro `#EXTINF`, quantidade de
+  // segmentos). É o que permite confirmar pelo log se a conversão começou do
+  // zero, sem depender da leitura do player.
+  registrarDiagnostico(sessao)
 
   sessao.status = 'pronto'
   sessao.mensagem = 'Pronto para reproduzir'
   sessao.playlist = path.join(sessao.diretorio, 'playlist.m3u8')
+}
+
+/**
+ * Pede a cauda do arquivo quando o índice ainda não está visível.
+ *
+ * Em MP4 com o `moov` no fim, a ordem natural do download (começo → fim) deixa o
+ * índice para o último momento, e é justamente dele que a análise depende. Os
+ * tamanhos dos átomos ficam nos cabeçalhos, então conseguimos ler onde o `mdat`
+ * termina mesmo com o arquivo pela metade: o que vem depois dele é o índice (às
+ * vezes com um `free`/`wide` no meio, que a faixa pedida também cobre).
+ *
+ * Devolve `false` quando não há o que antecipar — contêiner que não é ISO BMFF,
+ * índice já visível ou arquivo cujo `mdat` é a última caixa (aí o índice está
+ * antes dele e já seria visível).
+ *
+ * @param {object} sessao
+ * @param {import('webtorrent').TorrentFile} arquivo
+ * @param {string} caminho caminho do arquivo em disco
+ * @returns {Promise<boolean>}
+ */
+async function anteciparCauda(sessao, arquivo, caminho) {
+  const extensao = path.extname(arquivo.name).toLowerCase()
+
+  if (!['.mp4', '.m4v', '.mov'].includes(extensao)) {
+    return false
+  }
+
+  if (localizarMoov(caminho, arquivo.length)) {
+    return false
+  }
+
+  const mdat = mapearCaixas(caminho, arquivo.length).find((caixa) => caixa.tipo === 'mdat')
+
+  if (!mdat || mdat.fim >= arquivo.length) {
+    return false
+  }
+
+  arquivo.select(10, mdat.fim, arquivo.length)
+
+  logger.info(
+    `[sessao ${sessao.id}] índice ainda não visível; antecipando a cauda a partir de ${mdat.fim}`
+  )
+
+  return true
+}
+
+/**
+ * Resume o layout do contêiner a partir dos cabeçalhos dos átomos.
+ *
+ * `ftyp>moov>mdat` é o arranjo *faststart* (índice no começo, flui pelo pipe);
+ * `ftyp>mdat` indica o índice no fim. Se os primeiros bytes não formarem átomos
+ * coerentes, a extensão não corresponde ao conteúdo — o que explica uma
+ * conversão que falha ou sai do lugar.
+ *
+ * @param {string} caminho
+ * @returns {string}
+ */
+function descreverCabecalho(caminho) {
+  try {
+    const tamanho = fs.statSync(caminho).size
+    const caixas = mapearCaixas(caminho, tamanho, 4)
+
+    return caixas.length ? caixas.map((caixa) => caixa.tipo).join('>') : 'desconhecido'
+  } catch {
+    return 'ilegível'
+  }
+}
+
+/**
+ * Registra no log como a playlist publicada começa.
+ *
+ * Sequência de mídia, primeiro `#EXTINF` e quantidade de segmentos: se o
+ * primeiro trecho tiver duração coerente e a sequência for zero, a conversão
+ * partiu do início do arquivo. É a evidência que faltava para separar um
+ * problema de conversão de um problema de player.
+ *
+ * @param {object} sessao
+ */
+function registrarDiagnostico(sessao) {
+  try {
+    const conteudo = fs.readFileSync(path.join(sessao.diretorio, 'playlist.m3u8'), 'utf8')
+    const linhas = conteudo
+      .split('\n')
+      .map((linha) => linha.trim())
+      .filter(Boolean)
+
+    const sequencia = linhas.find((linha) => linha.startsWith('#EXT-X-MEDIA-SEQUENCE'))
+    const primeiro = linhas.find((linha) => linha.startsWith('#EXTINF'))
+    const segmentos = linhas.filter((linha) => linha.endsWith('.ts')).length
+
+    logger.info(
+      `[sessao ${sessao.id}] playlist: ${sequencia ?? 'sem sequência'} | ${primeiro ?? 'sem EXTINF'} | segmentos=${segmentos}`
+    )
+  } catch (erro) {
+    logger.warn(`[sessao ${sessao.id}] falha ao inspecionar a playlist:`, erro.message)
+  }
 }
 
 /**
@@ -241,10 +777,10 @@ async function prepararSessao(sessao) {
  * funciona. Para MP4/MOV com o `moov` no fim, o pipe não serve e é preciso
  * esperar o download completo.
  *
- * Enquanto o arquivo não tem bytes suficientes para localizar o `moov`,
- * devolvemos `false` (caminho progressivo): se for um MP4 com índice no fim, a
- * `analisarComEspera` só vai concluir quando o índice chegar, e aí o download
- * já estará completo de qualquer forma.
+ * Chamada depois do cabeçalho ter sido lido, a resposta aqui é definitiva: num
+ * MP4 com o `moov` no fim, o índice já chegou ao disco — foi exatamente por ele
+ * que a análise esperou. Quando nem assim o `moov` aparece, o arquivo não é um
+ * ISO BMFF que saibamos planejar, e o pipe continua sendo o caminho seguro.
  *
  * @param {object} sessao
  * @param {import('webtorrent').TorrentFile} arquivo
@@ -272,7 +808,7 @@ async function indiceEstaNoFim(sessao, arquivo, caminho) {
   }
 
   logger.info(
-    `[sessao ${sessao.id}] moov no fim (offset ${moov.inicio}); aguardando o download completo`
+    `[sessao ${sessao.id}] índice no fim (offset ${moov.inicio}); a conversão lerá do disco`
   )
 
   return true
@@ -288,8 +824,9 @@ async function indiceEstaNoFim(sessao, arquivo, caminho) {
  * e o FFmpeg lê o `mdat` conforme os bytes chegam — o arquivo em disco é
  * buscável, então ele consegue esperar/relê-lo.
  *
- * Se o `moov` não puder ser localizado (arquivo ainda sem bytes suficientes),
- * caímos para a espera do download completo, que é o comportamento antigo.
+ * Se o `moov` não puder ser localizado (arquivo truncado ou que não é ISO
+ * BMFF), caímos para a espera do download completo: sem o mapa dos pedaços não
+ * há como provar que o índice chegou.
  *
  * @param {object} sessao
  * @param {import('webtorrent').TorrentFile} arquivo
@@ -317,42 +854,114 @@ async function priorizarIndice(sessao, arquivo, caminho) {
     `[sessao ${sessao.id}] priorizando o moov (${moov.inicio}–${moov.fim}); convertendo do disco`
   )
 
-  await aguardarTrecho(sessao, arquivo, moov.fim)
+  await aguardarPecas(sessao, arquivo, moov.inicio, moov.fim)
 }
 
 /**
- * Aguarda o arquivo ter bytes até a posição informada.
+ * Diz se um pedaço do torrent já está presente.
  *
- * Usado para esperar o trecho do `moov` chegar ao disco. Verificamos o
- * progresso do arquivo a cada segundo; o download segue em paralelo.
+ * O WebTorrent expõe o mapa de pedaços de formas diferentes conforme a versão e
+ * a loja (`bitfield` ou o vetor `pieces`). Quando nenhuma delas responde,
+ * devolvemos `null` — "não sei" — para o chamador não esperar para sempre por um
+ * sinal que nunca virá.
+ */
+function pecaPresente(torrent, indice) {
+  if (torrent.bitfield?.get) {
+    return torrent.bitfield.get(indice)
+  }
+
+  if (Array.isArray(torrent.pieces)) {
+    return Boolean(torrent.pieces[indice])
+  }
+
+  return null
+}
+
+/**
+ * Diz se a faixa `[de, ate]` do arquivo está inteiramente presente.
+ *
+ * `arquivo.progress` é uma média: diz quanto do filme foi baixado, não *onde*.
+ * Para saber se um trecho específico chegou é preciso olhar os pedaços que o
+ * cobrem — é a diferença entre "baixei 90% espalhados" e "o começo está aqui".
+ */
+function faixaPresente(torrent, arquivo, de, ate) {
+  const tamanhoPeca = torrent?.pieceLength
+
+  if (!tamanhoPeca) return null
+
+  const base = arquivo.offset ?? 0
+  const primeiro = Math.floor((base + de) / tamanhoPeca)
+  const ultimo = Math.ceil((base + ate) / tamanhoPeca)
+
+  for (let indice = primeiro; indice < ultimo; indice += 1) {
+    const presente = pecaPresente(torrent, indice)
+
+    if (presente === null) return null
+    if (!presente) return false
+  }
+
+  return true
+}
+
+/**
+ * Aguarda uma faixa do arquivo ficar presente, com prazo.
+ *
+ * Usada tanto para o índice (`moov`) quanto para o começo do filme. O download
+ * corre em paralelo; aqui só esperamos o pedaço do arquivo que interessa.
  *
  * @param {object} sessao
  * @param {import('webtorrent').TorrentFile} arquivo
- * @param {number} posicao byte até onde precisamos dos dados
+ * @param {number} de byte inicial da faixa
+ * @param {number} ate byte final da faixa
  * @param {number} timeoutMs tempo máximo de espera
  */
-function aguardarTrecho(sessao, arquivo, posicao, timeoutMs = 120000) {
+function aguardarPecas(sessao, arquivo, de, ate, timeoutMs = 120000) {
   const inicio = Date.now()
 
   return new Promise((resolve, reject) => {
     const verificar = () => {
-      // `arquivo.progress` é a fração baixada do arquivo; multiplicada pelo
-      // tamanho, dá os bytes disponíveis. Se já cobrem o índice, seguimos.
-      const baixado = arquivo.progress * arquivo.length
+      if (sessao.cancelada) return reject(new SessaoCancelada())
 
-      if (baixado >= posicao || arquivo.progress >= 1) {
+      // Arquivo completo é a resposta mais barata e cobre todos os casos.
+      if (arquivo.progress >= 1) return resolve()
+
+      const presente = sessao.torrent ? faixaPresente(sessao.torrent, arquivo, de, ate) : null
+
+      if (presente === true) return resolve()
+
+      // Sem o mapa de pedaços, resta a fração baixada — imprecisa, mas ainda
+      // evita abrir a conversão com o arquivo praticamente vazio.
+      if (presente === null && arquivo.progress * arquivo.length >= ate) {
         return resolve()
       }
 
       if (Date.now() - inicio > timeoutMs) {
-        return reject(new Error('Tempo esgotado aguardando o índice do vídeo.'))
+        return reject(new Error('Tempo esgotado aguardando o trecho do vídeo.'))
       }
 
-      setTimeout(verificar, 1000)
+      setTimeout(verificar, 500)
     }
 
     verificar()
   })
+}
+
+/**
+ * Aguarda o começo do filme estar contíguo em disco.
+ *
+ * Existe por causa de uma armadilha silenciosa: o arquivo em disco é esparso, e
+ * a parte ainda não baixada é lida como zeros em vez de erro. Um FFmpeg apontado
+ * para esse arquivo atravessa o começo inválido e passa a decodificar no
+ * primeiro ponto com dados — o filme abre no meio, com o relógio em 00:00 e sem
+ * nenhuma mensagem de erro. Exigir os primeiros megabytes é o que garante que a
+ * conversão começa onde o filme começa.
+ *
+ * @param {object} sessao
+ * @param {import('webtorrent').TorrentFile} arquivo
+ * @param {number} timeoutMs tempo máximo de espera
+ */
+function aguardarInicio(sessao, arquivo, timeoutMs = 180000) {
+  return aguardarPecas(sessao, arquivo, 0, Math.min(BYTES_INICIAIS, arquivo.length), timeoutMs)
 }
 
 /**
@@ -371,6 +980,8 @@ function aguardarDownloadCompleto(sessao, arquivo, timeoutMs = 10 * 60 * 1000) {
 
   return new Promise((resolve, reject) => {
     const verificar = () => {
+      if (sessao.cancelada) return reject(new SessaoCancelada())
+
       if (arquivo.progress >= 1) {
         return resolve()
       }
@@ -566,14 +1177,19 @@ function aguardarDados(sessao, torrent) {
  * não dá para saber de antemão quanto falta, tentamos de novo a cada segundo
  * até conseguir — o download segue em paralelo.
  *
+ * @param {object} sessao
  * @param {string} caminho caminho absoluto do arquivo no disco
  * @param {import('webtorrent').TorrentFile} arquivo arquivo do torrent
  */
-async function analisarComEspera(caminho, arquivo, timeoutMs = 120000) {
+async function analisarComEspera(sessao, caminho, arquivo, timeoutMs = 120000) {
   const inicio = Date.now()
   let ultimoErro = null
 
   while (Date.now() - inicio < timeoutMs) {
+    // A leitura do cabeçalho pode demorar; se a sessão morrer nesse meio-tempo,
+    // não faz sentido seguir esperando por um arquivo que já foi descartado.
+    conferirSessao(sessao)
+
     try {
       const analise = await analisarArquivo(caminho)
 
@@ -638,6 +1254,21 @@ export function obterSessao(id) {
      * fonte de verdade enquanto a conversão não termina.
      */
     duracao: sessao.duracao ?? null,
+    /*
+     * Idioma real da faixa de áudio, lido do ffprobe. O frontend usa isto para
+     * confirmar a dublagem na tela em vez de confiar apenas no nome do
+     * arquivo — um lançamento pode prometer PT-BR e entregar outra faixa.
+     */
+    idioma_audio: sessao.idiomaAudio ?? null,
+    idioma_audio_rotulo: sessao.idiomaAudioRotulo ?? null,
+    idiomas_audio: sessao.idiomasAudio ?? [],
+    /*
+     * Tempo, em segundos, onde começa a timeline atual. Vale zero na reprodução
+     * normal; depois de um seek remoto vale o ponto buscado, porque a conversão
+     * é reiniciada ali e a playlist recomeça em zero. O player soma este valor
+     * para exibir a posição real no filme.
+     */
+    tempo_base: sessao.tempoBase ?? 0,
     // A URL só é exposta quando a playlist está pronta para ser consumida.
     playlist: sessao.status === 'pronto' ? `/api/media/sessao/${sessao.id}/playlist.m3u8` : null,
   }
@@ -660,7 +1291,282 @@ export function diretorioSessao(id) {
 }
 
 /**
+ * Guarda o comando da conversão na sessão, reagindo a um cancelamento tardio.
+ *
+ * Existe uma janela entre criar o FFmpeg e registrá-lo: se a sessão for
+ * encerrada exatamente nesse intervalo, o processo recém-criado ficaria órfão
+ * escrevendo numa pasta que acabou de ser apagada. Aqui a bandeira é conferida
+ * de novo e, se a sessão morreu, o comando é morto na hora.
+ *
+ * @param {object} sessao
+ * @param {{parar: () => void}} comando
+ */
+function registrarConversao(sessao, comando) {
+  if (sessao.cancelada) {
+    comando.parar()
+    throw new SessaoCancelada()
+  }
+
+  sessao.comando = comando
+}
+
+/** Para a conversão em andamento e fecha o fluxo do torrent, se houver. */
+function pararConversao(sessao) {
+  /*
+   * A janela vem primeiro: se a conversão estava congelada pelo freio, é ela
+   * quem envia o SIGCONT antes de o processo ser morto — um processo parado não
+   * responderia bem a um encerramento abrupto.
+   */
+  sessao.janela?.parar()
+  sessao.janela = null
+
+  try {
+    sessao.comando?.parar()
+  } catch (erro) {
+    logger.warn(`[sessao ${sessao.id}] falha ao encerrar a conversão:`, erro.message)
+  }
+
+  sessao.comando = null
+
+  // O fluxo alimentava o FFmpeg a partir do torrent; sem consumidor ele ficaria
+  // segurando peças do download sem motivo.
+  if (sessao.fluxo) {
+    try {
+      sessao.fluxo.destroy()
+    } catch {
+      // O fluxo já pode ter fechado sozinho.
+    }
+
+    sessao.fluxo = null
+  }
+
+  // O contador fica entre o fluxo e o FFmpeg; destruí-lo libera o pipe inteiro.
+  if (sessao.contador) {
+    try {
+      sessao.contador.destroy()
+    } catch {
+      // Já pode ter sido destruído pelo erro do fluxo.
+    }
+
+    sessao.contador = null
+  }
+}
+
+/**
+ * Apaga playlist e segmentos de uma sessão para recomeçar a conversão do zero.
+ *
+ * Ao reposicionar, os segmentos antigos não representam mais o trecho que o
+ * player vai consumir; mantê-los no mesmo diretório misturaria duas timelines na
+ * playlist recém-gerada.
+ */
+function limparSegmentos(sessao) {
+  let entradas = []
+
+  try {
+    entradas = fs.readdirSync(sessao.diretorio)
+  } catch {
+    // Diretório já removido (sessão encerrada no meio do reposicionamento).
+    return
+  }
+
+  for (const nome of entradas) {
+    /*
+     * O nome carrega o carimbo da execução (`segmento-<carimbo>-N.ts`), mas
+     * aceitamos também o formato antigo sem carimbo para não deixar resíduo de
+     * uma execução anterior no disco.
+     */
+    if (nome === 'playlist.m3u8' || /^segmento-(?:\d+-)?\d+\.ts(\.tmp)?$/.test(nome)) {
+      try {
+        fs.rmSync(path.join(sessao.diretorio, nome), { force: true })
+      } catch (erro) {
+        logger.warn(`[sessao ${sessao.id}] falha ao limpar ${nome}:`, erro.message)
+      }
+    }
+  }
+}
+
+/**
+ * Reposiciona a conversão de uma sessão para um tempo alvo.
+ *
+ * Usado quando o usuário busca um ponto além do já convertido. Na ordem natural,
+ * a conversão publica os segmentos do começo para o fim: um salto para o meio de
+ * um filme de duas horas exigiria esperar a conversão das duas horas. Aqui
+ * paramos a conversão, apagamos os segmentos e reiniciamos a partir do alvo com
+ * `-ss`, de modo que o trecho buscado fica disponível em segundos.
+ *
+ * A timeline resultante é local: a playlist nova começa em zero e representa o
+ * trecho de `tempo` em diante. O `tempo_base` devolvido informa ao player onde
+ * esse zero está no filme, para ele ajustar a duração exibida.
+ *
+ * @param {string} id
+ * @param {number} tempo tempo alvo, em segundos
+ * @returns {{sessao_id: string, status: string, tempo_base?: number, erro?: string}|null}
+ */
+export function reposicionarSessao(id, tempo) {
+  const sessao = sessoes.get(id)
+
+  if (!sessao) return null
+
+  if (!Number.isFinite(tempo) || tempo < 0) {
+    return { sessao_id: id, status: sessao.status, erro: 'Tempo de busca inválido.' }
+  }
+
+  if (!sessao.arquivo || !sessao.caminho) {
+    return { sessao_id: id, status: sessao.status, erro: 'A sessão ainda não permite reposicionar.' }
+  }
+
+  // Outro reposicionamento em curso: devolvemos o estado atual em vez de
+  // disparar um segundo trabalho concorrente sobre o mesmo diretório.
+  if (sessao.status === 'reposicionando') {
+    return { sessao_id: id, status: sessao.status, tempo_base: sessao.tempoBase ?? 0 }
+  }
+
+  sessao.status = 'reposicionando'
+  sessao.mensagem = 'Buscando o trecho...'
+
+  reposicionarEmSegundoPlano(sessao, tempo).catch((erro) => {
+    if (erro instanceof SessaoCancelada || sessao.cancelada) {
+      logger.info(`[sessao ${id}] reposicionamento interrompido: a sessão foi encerrada`)
+      return
+    }
+
+    logger.error(`[sessao ${id}] falha ao reposicionar:`, erro.message)
+    sessao.status = 'erro'
+    sessao.erro = erro.message
+  })
+
+  return { sessao_id: id, status: sessao.status, tempo_base: sessao.tempoBase ?? 0 }
+}
+
+/** Reinicia a conversão a partir do tempo alvo, depois de limpar a saída antiga. */
+async function reposicionarEmSegundoPlano(sessao, tempo) {
+  const arquivo = sessao.arquivo
+  const caminho = sessao.caminho
+
+  // A duração que resta do filme é o que a nova conversão vai cobrir; passá-la
+  // ao finalizador evita que ele compare com a duração cheia e conclua errado.
+  const duracaoRestante = sessao.duracao ? Math.max(sessao.duracao - tempo, 0) : null
+
+  pararConversao(sessao)
+  conferirSessao(sessao)
+
+  limparSegmentos(sessao)
+
+  sessao.tempoBase = tempo
+  sessao.progresso = null
+
+  /*
+   * A janela nova parte do ponto buscado. O byte alvo é estimado pela vazão do
+   * torrent; a partir dele o download volta a priorizar a faixa à frente.
+   */
+  sessao.posicaoLeitura = bytesDoTempo(sessao, arquivo, tempo) ?? 0
+  sessao.janela = iniciarJanela(sessao, arquivo, () => sessao.posicaoLeitura)
+
+  if (sessao.indiceNoFim) {
+    /*
+     * Caminho de disco: o arquivo é buscável e o `-ss` salta direto para o alvo.
+     */
+    await aguardarInicio(sessao, arquivo)
+    conferirSessao(sessao)
+
+    registrarConversao(
+      sessao,
+      iniciarConversao({
+        caminho,
+        extensao: path.extname(arquivo.name),
+        diretorio: sessao.diretorio,
+        modo: sessao.modo,
+        duracaoEsperada: duracaoRestante,
+        tempoInicial: tempo,
+        aoProgredir: (progresso) => {
+          sessao.progresso = progresso
+        },
+      })
+    )
+
+    if (bytesPorSegundo(sessao, arquivo)) {
+      sessao.janela?.usarPosicao(
+        () => bytesDoTempo(sessao, arquivo, tempo + tempoPublicado(sessao)) ?? 0
+      )
+      sessao.janela?.segurarLeitura(sessao.comando)
+    } else {
+      sessao.janela?.parar()
+      sessao.janela = null
+      arquivo.select(1)
+    }
+  } else {
+    /*
+     * Caminho de pipe: não há seek de verdade. Posicionamos o fluxo no byte
+     * estimado e deixamos o `-ss` cobrir só o resíduo entre a estimativa por
+     * vazão e o tempo real pedido, para não descartar minutos de leitura.
+     */
+    const vazao = bytesPorSegundo(sessao, arquivo)
+    const tempoDoByte = vazao ? sessao.posicaoLeitura / vazao : 0
+    const residual = Math.max(0, tempo - tempoDoByte)
+
+    const contador = new Transform({
+      transform(pedaco, _codificacao, concluir) {
+        sessao.posicaoLeitura += pedaco.length
+        concluir(null, pedaco)
+      },
+    })
+
+    contador.on('error', () => {})
+
+    const leitura = arquivo.createReadStream({ start: sessao.posicaoLeitura })
+
+    leitura.on('error', (erro) => {
+      logger.warn(`[sessao ${sessao.id}] erro no fluxo do torrent:`, erro.message)
+      contador.destroy(erro)
+    })
+
+    leitura.pipe(contador)
+
+    sessao.fluxo = leitura
+    sessao.contador = contador
+
+    registrarConversao(
+      sessao,
+      iniciarConversao({
+        fluxo: contador,
+        extensao: path.extname(arquivo.name),
+        diretorio: sessao.diretorio,
+        modo: sessao.modo,
+        duracaoEsperada: duracaoRestante,
+        tempoInicial: residual,
+        aoProgredir: (progresso) => {
+          sessao.progresso = progresso
+        },
+      })
+    )
+  }
+
+  await aguardarBufferInicial(sessao.diretorio)
+  conferirSessao(sessao)
+
+  registrarDiagnostico(sessao)
+
+  sessao.status = 'pronto'
+  sessao.mensagem = 'Pronto para reproduzir'
+  sessao.playlist = path.join(sessao.diretorio, 'playlist.m3u8')
+}
+
+/** Remove o torrent do cliente compartilhado, apagando os dados baixados. */
+function removerTorrent(sessao, torrent) {
+  try {
+    cliente.remove(torrent, { destroyStore: true })
+  } catch (erro) {
+    logger.warn(`[sessao ${sessao.id}] falha ao remover o torrent:`, erro.message)
+  }
+}
+
+/**
  * Encerra uma sessão: mata a conversão, remove o torrent e limpa o disco.
+ *
+ * A bandeira de cancelamento é levantada **antes** de qualquer desmontagem. O
+ * preparo reage a ela em cada ponto de espera e desiste sozinho, então uma
+ * sessão abandonada no meio do download não deixa FFmpeg nem torrent para trás —
+ * era esse resíduo que fazia o próximo filme herdar o estado do anterior.
  *
  * @param {string} id
  */
@@ -671,20 +1577,13 @@ export function encerrarSessao(id) {
     return false
   }
 
-  try {
-    // O supervisor da conversão pode ter uma passada em andamento ou estar
-    // esperando mais dados; `parar` cobre os dois casos.
-    sessao.comando?.parar()
-  } catch (erro) {
-    logger.warn(`[sessao ${id}] falha ao encerrar a conversão:`, erro.message)
-  }
+  sessao.cancelada = true
 
-  try {
-    if (sessao.torrent) {
-      cliente.remove(sessao.torrent, { destroyStore: true })
-    }
-  } catch (erro) {
-    logger.warn(`[sessao ${id}] falha ao remover o torrent:`, erro.message)
+  pararConversao(sessao)
+
+  if (sessao.torrent) {
+    removerTorrent(sessao, sessao.torrent)
+    sessao.torrent = null
   }
 
   try {

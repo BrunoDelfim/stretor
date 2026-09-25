@@ -31,11 +31,29 @@ export const streamingService = {
   /**
    * Fontes de torrent disponíveis para o filme, já ordenadas por prioridade
    * (dublado em PT-BR primeiro).
+   *
+   * Os metadados do filme vão junto como query string de propósito: o backend
+   * tenta o catálogo primeiro, mas quando o TMDB está fora do ar ou sem chave
+   * ele reaproveita o que veio daqui e a busca de fontes continua funcionando.
+   *
+   * Devolve também o `mensagem` da resposta: é o aviso que o overlay mostra
+   * quando a lista volta vazia, e sem ele o usuário não teria como distinguir
+   * "não existe release para este filme" de "falta configurar o sistema".
    */
-  async buscarFontes(filmeId) {
-    const { data } = await clienteApi().get(`/${filmeId}/fontes`)
+  async buscarFontes(filme) {
+    const { data } = await clienteApi().get(`/${filme.id}/fontes`, {
+      params: {
+        titulo: filme.titulo,
+        titulo_original: filme.titulo_original,
+        ano: filme.ano,
+        imdb_id: filme.imdb_id,
+      },
+    })
 
-    return data.data?.fontes ?? []
+    return {
+      fontes: data.data?.fontes ?? [],
+      mensagem: data.data?.mensagem ?? null,
+    }
   },
 
   /**
@@ -56,6 +74,22 @@ export const streamingService = {
   /** Estado atual da sessão (conectando, convertendo, pronto ou erro). */
   async statusSessao(sessaoId) {
     const { data } = await clienteMedia().get(`${BASE_SESSAO}/${sessaoId}/status`)
+
+    return data
+  },
+
+  /**
+   * Pede ao media-service que reposicione a conversão para um tempo alvo.
+   *
+   * Só faz sentido quando o alvo cai além do trecho já convertido: o serviço
+   * descarta os segmentos antigos e recomeça a conversão no ponto pedido. A
+   * resposta traz o `tempo_base`, que indica onde o novo zero da playlist está no
+   * filme — o player usa isso para acertar a duração exibida.
+   */
+  async solicitarSeek(sessaoId, tempo) {
+    const { data } = await clienteMedia().post(`${BASE_SESSAO}/${sessaoId}/seek`, {
+      tempo,
+    })
 
     return data
   },

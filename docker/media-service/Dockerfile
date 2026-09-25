@@ -13,6 +13,12 @@ WORKDIR /app
 
 COPY media-service/package*.json ./
 
+# Os patches precisam existir antes do install: o `postinstall` roda o
+# patch-package, que só encontra `patches/` se a pasta já estiver no contexto.
+# Copiada depois, o patch do webtorrent era silenciosamente ignorado
+# ("No patch files found") e a imagem saía com o bug que ele corrige.
+COPY media-service/patches ./patches
+
 RUN npm install
 
 COPY media-service/ ./

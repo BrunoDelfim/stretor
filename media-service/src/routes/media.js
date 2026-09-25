@@ -12,6 +12,7 @@ import {
   caminhoPlaylist,
   diretorioSessao,
   verificarFonte,
+  reposicionarSessao,
 } from '../services/sessoes.js'
 import { logger } from '../utils/logger.js'
 
@@ -142,10 +143,12 @@ router.get('/sessao/:id/playlist.m3u8', (req, res) => {
 /**
  * Segmentos de vídeo da playlist.
  *
- * O FFmpeg escreve os segmentos como `segmento-N.ts` e a playlist os referencia
- * de forma relativa. O player resolve esse nome sobre a URL da playlist, o que
- * resulta em `/sessao/<id>/segmento-N.ts` — por isso a rota recebe o arquivo
- * direto, sem o nível intermediário `/segmento/`.
+ * O FFmpeg escreve os segmentos como `segmento-<carimbo>-N.ts` e a playlist os
+ * referencia de forma relativa. O player resolve esse nome sobre a URL da
+ * playlist, o que resulta em `/sessao/<id>/segmento-<carimbo>-N.ts` — por isso a
+ * rota recebe o arquivo direto, sem o nível intermediário `/segmento/`. O carimbo
+ * é único por execução de conversão, o que permite cachear o segmento para sempre
+ * sem risco de servir conteúdo de um reposicionamento anterior.
  */
 router.get('/sessao/:id/:arquivo', (req, res) => {
   const diretorio = diretorioSessao(req.params.id)
@@ -164,9 +167,46 @@ router.get('/sessao/:id/:arquivo', (req, res) => {
   }
 
   res.setHeader('Content-Type', 'video/mp2t')
+  // `immutable` é seguro porque o nome do arquivo muda a cada execução de
+  // conversão: um segmento nunca é reescrito com conteúdo diferente no mesmo
+  // caminho, então o navegador pode reaproveitá-lo em seeks dentro do trecho.
   res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
 
   fs.createReadStream(caminho).pipe(res)
+})
+
+/**
+ * Reposiciona a sessão para um tempo alvo.
+ *
+ * O player só chega aqui quando o alvo está além do trecho já convertido — um
+ * salto para o meio de um filme longo exigiria esperar horas de conversão
+ * sequencial. O media-service então descarta os segmentos antigos, reposiciona a
+ * janela de leitura do torrent e reinicia a conversão a partir do ponto pedido.
+ *
+ * A resposta é assíncrona (202): a playlist só volta a existir depois que os
+ * primeiros segmentos do novo trecho ficam prontos, e o frontend acompanha isso
+ * pelo endpoint de status. A timeline resultante é local — a playlist nova começa
+ * em zero a partir do alvo — por isso devolvemos o `tempo_base` para o player
+ * ajustar a duração exibida.
+ */
+router.post('/sessao/:id/seek', (req, res, next) => {
+  try {
+    const tempo = Number(req.body?.tempo)
+
+    const resultado = reposicionarSessao(req.params.id, tempo)
+
+    if (!resultado) {
+      return res.status(404).json({ error: 'Sessão não encontrada.' })
+    }
+
+    if (resultado.erro) {
+      return res.status(400).json({ error: resultado.erro, ...resultado })
+    }
+
+    res.status(202).json(resultado)
+  } catch (err) {
+    next(err)
+  }
 })
 
 /** Encerra a sessão e libera o torrent e o processo de conversão. */
