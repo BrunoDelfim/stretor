@@ -79,14 +79,21 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   no final. A análise insiste até o cabeçalho ficar legível e só a aceita quando
   vídeo e áudio foram identificados — um cabeçalho lido pela metade faria o
   FFmpeg "concluir" sem gerar segmento nenhum.
-- **Download completo antes da conversão**: a conversão só começa com o arquivo
-  inteiro em disco. A tentativa de ler `arquivo.createReadStream()` esbarrava no
-  `moov` no fim: num pipe não há como voltar para ler o índice depois de
-  atravessar o `mdat`, então o FFmpeg abortava a sondagem com `partial file` e
-  gerava uma playlist vazia (`#EXTINF:0.000000`, segmento de 0 byte). Com o
-  arquivo completo o FFmpeg busca livremente, lê o `moov` onde ele estiver e
-  converte numa única passada. O progresso do download alimenta a mensagem do
-  overlay enquanto isso.
+- **Reprodução progressiva**: o caminho da conversão é escolhido pela posição do
+  índice do contêiner. MKV/WebM e MP4 *faststart* trazem o índice no começo e
+  fluem por um pipe alimentado pelo torrent — o FFmpeg publica cada segmento
+  conforme os bytes chegam e o player abre **antes** do fim do download. MP4/MOV
+  com o `moov` no fim não fluem por pipe: o FFmpeg lê o MP4 sequencialmente e não
+  busca o índice depois de atravessar o `mdat` (aborta com `partial file`).
+  Reordenar o fluxo também não serve, porque as tabelas de amostras do `moov`
+  (`stco`/`co64`) guardam offsets absolutos do arquivo original — mover o índice
+  para a frente invalida esses offsets e o segmento sai com 0 byte. Nesses casos
+  aguardamos o download completo e convertemos do disco. A detecção fica em
+  [`localizarMoov`](../media-service/src/services/hls.js:311) e a decisão em
+  [`indiceEstaNoFim`](../media-service/src/services/sessoes.js:219).
+- **Buffer inicial**: o player só é liberado com 8 segmentos (~32 s de vídeo) em
+  disco, folga suficiente para uma conexão de 4 Mbps converter o próximo trecho
+  enquanto o atual toca, sem interrupção.
 - **Retomada removida**: `-ss`, `-hls_flags append_list` e toda a lógica de
   "passada interrompida" deixaram de existir. A playlist usa `-hls_list_size 0`
   (mantém todos os segmentos) e `#EXT-X-ENDLIST` é anexado só ao final da

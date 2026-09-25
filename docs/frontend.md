@@ -106,6 +106,12 @@ playlist é `#EXT-X-PLAYLIST-TYPE:EVENT` e ainda não tem `#EXT-X-ENDLIST`; sem
 essa opção o `hls.js` a trata como transmissão ao vivo e posiciona o playhead
 nos últimos segmentos (`liveSyncDurationCount`), pulando o começo do filme.
 
+Esse mesmo arranjo é o que sustenta a **reprodução progressiva**: o media-service
+libera a playlist assim que há 8 segmentos em disco, mesmo com o download em
+andamento. O `hls.js` acompanha a playlist que cresce e pede cada novo segmento
+conforme o playhead avança — enquanto um trecho toca, o próximo é baixado e
+convertido, sem interrupção.
+
 O CSS do componente força `.plyr` e `.plyr__video-wrapper` a ocuparem 100% da
 altura do container com `aspect-video`; sem isso o wrapper não herda a área e o
 vídeo colapsa. Falhas fatais do `hls.js` são capturadas e levam o overlay ao
