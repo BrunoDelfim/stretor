@@ -302,6 +302,11 @@ class TmdbService
             // traduzidos). Só existe no endpoint de detalhes.
             'imdb_id' => $filme['imdb_id'] ?? null,
             'titulo' => $filme['title'] ?? $filme['name'] ?? MensagensFilme::TITULO_INDISPONIVEL,
+            // O título original entra como alternativa de busca: o tracker
+            // nacional publica pelo nome traduzido, mas o release em si — e os
+            // indexadores internacionais — costumam usar o original. Tentar os
+            // dois evita perder a fonte quando a tradução ficou ambígua.
+            'titulo_original' => $filme['original_title'] ?? $filme['original_name'] ?? null,
             'sinopse' => $filme['overview'] ?: MensagensFilme::SINOPSE_INDISPONIVEL,
             'capa' => $this->montarImagem($filme['poster_path'] ?? null, TamanhoImagem::POSTER),
             'backdrop' => $this->montarImagem($filme['backdrop_path'] ?? null, TamanhoImagem::BACKDROP),

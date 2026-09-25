@@ -68,20 +68,27 @@ enum IdiomaFonte: string
 
         /*
          * Tags de dublagem PT-BR. Além de "dublado", os trackers nacionais usam
-         * "nacional" (produção brasileira), "pt-br"/"ptbr" e "br" isolado em
-         * alguns casos. Verificamos " pt-br" com espaço para não casar com
-         * "pt-br" dentro de outra palavra.
+         * "nacional" (produção brasileira), "dublagem", "pt-br"/"ptbr"/"pt br" e
+         * variações de "áudio português". As formas com espaço no início
+         * (" pt-br", " pt br") evitam casar com o sufixo "pt-br" colado em outra
+         * palavra.
          */
         $tagsDublado = [
             'dublado',
             'dublada',
+            'dublagem',
             'nacional',
             ' pt-br',
             ' ptbr',
+            ' pt br',
+            ' pt_br',
             'pt-br',
             'ptbr',
+            'br-pt',
             'áudio pt',
             'audio pt',
+            'português',
+            'portugues',
         ];
 
         foreach ($tagsDublado as $tag) {
@@ -95,5 +102,52 @@ enum IdiomaFonte: string
         }
 
         return self::ORIGINAL;
+    }
+
+    /**
+     * Deduz o idioma a partir do campo de idioma do indexador.
+     *
+     * O Torznab expõe um atributo `language` que alguns indexadores preenchem
+     * com o idioma real do release (ex.: "pt-BR", "Portuguese", "Brazilian").
+     * Quando ele vem preenchido é informação melhor do que a tag no título, e
+     * por isso tem precedência sobre `deduzirDoTitulo()`.
+     *
+     * Devolve `null` quando o campo está vazio ou não é reconhecido — aí o
+     * chamador cai para a dedução pelo título, em vez de tratar a ausência como
+     * "idioma original".
+     *
+     * A comparação evita um `str_contains('pt')` solto, que casaria com
+     * qualquer palavra contendo essas letras (ex.: "script"). Os códigos são
+     * conferidos inteiros e o radical "portugu" cobre as variações escritas.
+     */
+    public static function deduzirDoIdioma(string $idioma): ?self
+    {
+        $texto = mb_strtolower(trim($idioma));
+
+        if ($texto === '') {
+            return null;
+        }
+
+        $codigosPt = [
+            'pt',
+            'pt-br',
+            'pt_br',
+            'pt br',
+            'ptbr',
+            'por',
+            'portuguese',
+            'portuguese (brazil)',
+            'português',
+            'portugues',
+            'brazilian',
+            'brazil',
+            'br',
+        ];
+
+        if (in_array($texto, $codigosPt, true) || str_contains($texto, 'portugu')) {
+            return self::DUBLADO;
+        }
+
+        return null;
     }
 }

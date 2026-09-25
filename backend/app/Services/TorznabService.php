@@ -39,15 +39,45 @@ class TorznabService
      */
     public function buscar(string $titulo, ?int $ano = null): array
     {
+        return $this->consultar($this->termoBase($titulo, $ano));
+    }
+
+    /**
+     * Busca lançamentos dublados em PT-BR.
+     *
+     * A busca pelo título puro mistura dezenas de lançamentos em inglês e o
+     * indexador nem sempre devolve o dublado entre os primeiros resultados. Os
+     * trackers nacionais publicam com a tag "dublado" no nome, então a consulta
+     * com esse termo faz o indexador priorizar exatamente o que interessa.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function buscarDublado(string $titulo, ?int $ano = null): array
+    {
+        return $this->consultar($this->termoBase($titulo, $ano).' dublado');
+    }
+
+    /**
+     * Monta o termo de busca com o ano, quando disponível.
+     *
+     * O indexador agrega trackers que misturam remakes; o ano reduz os falsos
+     * positivos.
+     */
+    private function termoBase(string $titulo, ?int $ano): string
+    {
+        return $ano ? "{$titulo} {$ano}" : $titulo;
+    }
+
+    /**
+     * Executa a consulta ao indexador e traduz o XML.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function consultar(string $termo): array
+    {
         if (! $this->configurado()) {
             return [];
         }
-
-        /*
-         * O termo inclui o ano quando disponível: o indexador agrega trackers
-         * que misturam remakes, e o ano reduz falsos positivos.
-         */
-        $termo = $ano ? "{$titulo} {$ano}" : $titulo;
 
         $parametros = [
             'apikey' => $this->chave(),
@@ -145,6 +175,12 @@ class TorznabService
             'peers' => (int) ($atributos['peers'] ?? 0),
             'magnet' => $magnet,
             'infohash' => strtolower(trim((string) ($atributos['infohash'] ?? ''))),
+            /*
+             * Alguns indexadores informam o idioma do release num atributo
+             * próprio. Repassamos o valor cru: quem decide se ele é útil é o
+             * TorrentService, que conhece os códigos que o sistema entende.
+             */
+            'idioma' => trim((string) ($atributos['language'] ?? '')),
         ];
     }
 

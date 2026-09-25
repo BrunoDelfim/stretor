@@ -2,50 +2,35 @@
 
 namespace App\Services;
 
-use App\Enums\IdiomaFonte;
+use App\Services\Torrents\CatalogoProvedores;
 use App\Support\MensagensTorrent;
-use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Http;
-use RuntimeException;
+use App\Enums\IdiomaFonte;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Busca de fontes de torrent para um filme.
  *
- * O provedor externo fica isolado atrás deste serviço: o restante do sistema
- * conhece apenas o contrato normalizado (título, qualidade, idioma, seeds e
- * magnet). Trocar de provedor significa reescrever só a normalização, sem tocar
- * no controller nem no frontend.
+ * Este serviço é a fachada do subsistema de torrents: o controller conhece
+ * apenas `fontes()` e o contrato normalizado que ele devolve (título, qualidade,
+ * idioma, tamanho, seeds e magnet). Quem consulta o quê, em que ordem e com qual
+ * cache é responsabilidade do [`CatalogoProvedores`].
  *
- * Há dois provedores, nesta ordem:
+ * A divisão é intencional:
  *
- * 1. **Torznab (Prowlarr/Jackett)** — agrega trackers PT-BR e é o caminho para
- *    obter fontes dubladas. É o provedor principal.
- * 2. **YTS** — reserva em inglês, usada quando o indexador não está configurado
- *    ou não devolve resultados.
+ * - **CatalogoProvedores** cuida da infraestrutura — o registro dos provedores, a
+ *   cascata de fallback, o cache por provedor e a tolerância a falha.
+ * - **TorrentService** cuida da regra de negócio — quais títulos buscar, como
+ *   ordenar, o que descartar e o que registrar no log.
  *
- * As respostas são cacheadas no Redis porque a busca é a etapa mais lenta do
- * fluxo de reprodução — e o mesmo filme costuma ser aberto mais de uma vez.
+ * Assim, acrescentar um provedor novo não encosta na regra de ordenação, e mudar
+ * a política de idioma não encosta em HTTP.
  */
 class TorrentService
 {
     public function __construct(
-        private readonly TorznabService $torznab,
+        private readonly CatalogoProvedores $catalogo,
     ) {
     }
-
-    /**
-     * Anunciadores públicos usados para completar o magnet. São estáveis há
-     * anos e cobrem tanto UDP quanto HTTP, o que ajuda o WebTorrent a achar
-     * peers mesmo quando o DHT está bloqueado na rede.
-     */
-    private const TRACKERS_PUBLICOS = [
-        'udp://tracker.opentrackr.org:1337/announce',
-        'udp://open.tracker.cl:1337/announce',
-        'udp://tracker.openbittorrent.com:6969/announce',
-        'udp://exodus.desync.com:6969/announce',
-        'udp://tracker.torrent.eu.org:451/announce',
-        'https://tracker.tamersunion.org:443/announce',
-    ];
 
     /**
      * Fontes disponíveis para um filme, já ordenadas por prioridade.
@@ -56,186 +41,83 @@ class TorrentService
      *
      * @return array<int, array<string, mixed>>
      */
-    public function fontes(string $titulo, ?int $ano = null, ?string $imdbId = null): array
-    {
-        $chave = 'torrent:fontes:'.md5(mb_strtolower($titulo).'|'.$ano.'|'.$imdbId);
-        $ttl = (int) config('services.torrents.cache_ttl', 1800);
+    public function fontes(
+        string $titulo,
+        ?int $ano = null,
+        ?string $imdbId = null,
+        ?string $tituloOriginal = null,
+    ): array {
+        $titulos = $this->titulosDeBusca($titulo, $tituloOriginal);
 
-        return Cache::remember($chave, $ttl, function () use ($titulo, $ano, $imdbId) {
-            return $this->consultarProvedores($titulo, $ano, $imdbId);
-        });
-    }
-
-    /**
-     * Consulta o indexador Torznab e, se necessário, o YTS como reserva.
-     *
-     * @return array<int, array<string, mixed>>
-     */
-    private function consultarProvedores(string $titulo, ?int $ano, ?string $imdbId): array
-    {
-        $fontes = [];
-
-        // Provedor principal: Torznab, com catálogo PT-BR.
-        if ($this->torznab->configurado()) {
-            try {
-                $fontes = $this->normalizarTorznab($this->torznab->buscar($titulo, $ano));
-            } catch (RuntimeException $excecao) {
-                // O indexador pode estar fora do ar; não derrubamos a busca por
-                // isso — caímos para o YTS.
-                report($excecao);
-            }
-        }
-
-        // Reserva: YTS, quando o indexador não devolveu nada.
-        if (empty($fontes)) {
-            $fontes = $this->consultarYts($titulo, $ano, $imdbId);
-        }
-
-        return $this->ordenar($fontes);
-    }
-
-    /**
-     * Normaliza os itens do Torznab para o contrato do sistema.
-     *
-     * @param  array<int, array<string, mixed>>  $itens
-     * @return array<int, array<string, mixed>>
-     */
-    private function normalizarTorznab(array $itens): array
-    {
-        $fontes = [];
-
-        foreach ($itens as $item) {
-            $titulo = (string) ($item['titulo'] ?? '');
-            $magnet = (string) ($item['magnet'] ?? '');
-
-            // Sem magnet não há como reproduzir; o infohash sozinho não basta
-            // porque o indexador pode não informar trackers.
-            if ($titulo === '' || $magnet === '') {
-                continue;
-            }
-
-            $idioma = IdiomaFonte::deduzirDoTitulo($titulo);
-
-            $fontes[] = [
-                'id' => (string) ($item['infohash'] ?? md5($magnet)),
-                'titulo' => $titulo,
-                'qualidade' => $this->deduzirQualidade($titulo),
-                'idioma' => $idioma->value,
-                'idioma_rotulo' => $idioma->rotulo(),
-                'tamanho' => $this->formatarTamanho($item['tamanho_bytes'] ?? null),
-                'seeds' => (int) ($item['seeds'] ?? 0),
-                'peers' => (int) ($item['peers'] ?? 0),
-                'magnet' => $this->completarMagnet($magnet),
-            ];
-        }
-
-        return $fontes;
-    }
-
-    /**
-     * Consulta o YTS (reserva em inglês) e normaliza a resposta.
-     *
-     * @return array<int, array<string, mixed>>
-     */
-    private function consultarYts(string $titulo, ?int $ano, ?string $imdbId): array
-    {
-        $baseUrl = rtrim((string) config('services.torrents.base_url'), '/');
-
-        if ($baseUrl === '') {
+        if (empty($titulos)) {
             return [];
         }
 
-        // O imdb_id é o termo de busca mais confiável: o título sozinho traz
-        // remakes e traduções erradas (ex.: "Fight Club" devolve também o filme
-        // de 2023). Só caímos para o título quando o TMDB não informa o imdb_id.
-        $parametros = [
-            'query_term' => $imdbId ?: $titulo,
-            'limit' => MensagensTorrent::LIMITE_FONTES,
-            'sort_by' => 'seeds',
-            'order_by' => 'desc',
-        ];
+        $fontes = $this->ordenar(
+            $this->catalogo->buscar($titulos, $ano, $imdbId)
+        );
 
-        try {
-            $resposta = Http::baseUrl($baseUrl)
-                ->acceptJson()
-                ->timeout(15)
-                ->get('/api/v2/list_movies.json', $parametros);
-        } catch (\Throwable $excecao) {
-            throw new RuntimeException(MensagensTorrent::FALHA_PROVEDOR, previous: $excecao);
-        }
-
-        if ($resposta->failed()) {
-            throw new RuntimeException(
-                MensagensTorrent::FALHA_PROVEDOR.' (HTTP '.$resposta->status().')'
-            );
-        }
-
-        $filmes = $resposta->json('data.movies') ?? [];
-
-        // Quando a busca foi por título, o provedor pode devolver remakes de
-        // outros anos. Mantemos apenas os que batem com o ano do filme.
-        if (! $imdbId && $ano) {
-            $filmes = array_values(array_filter(
-                $filmes,
-                fn (array $filme) => (int) ($filme['year'] ?? 0) === $ano
-            ));
-        }
-
-        $fontes = [];
-
-        foreach ($filmes as $filme) {
-            foreach ($filme['torrents'] ?? [] as $torrent) {
-                $fontes[] = $this->normalizarYts($filme, $torrent);
-            }
-        }
+        $this->registrar($fontes, $titulos, $ano, $imdbId);
 
         return $fontes;
     }
 
     /**
-     * Converte um torrent cru do YTS no contrato do sistema.
+     * Confirma se existe algum provedor utilizável na configuração atual.
      *
-     * @param  array<string, mixed>  $filme
-     * @param  array<string, mixed>  $torrent
-     * @return array<string, mixed>
+     * O controller usa isto para escolher a mensagem do aviso: "nenhuma fonte
+     * encontrada" (o sistema procurou e não achou) é diferente de "nenhum
+     * provedor pôde ser consultado" (falta configuração).
      */
-    private function normalizarYts(array $filme, array $torrent): array
+    public function temProvedorDisponivel(): bool
     {
-        $titulo = (string) ($filme['title_long'] ?? $filme['title'] ?? '');
-        $idioma = IdiomaFonte::deduzirDoTitulo($titulo);
-
-        return [
-            'id' => (string) ($torrent['hash'] ?? ''),
-            'titulo' => $titulo,
-            'qualidade' => $torrent['quality'] ?? MensagensTorrent::QUALIDADE_NAO_INFORMADA,
-            'idioma' => $idioma->value,
-            'idioma_rotulo' => $idioma->rotulo(),
-            'tamanho' => $this->formatarTamanho($torrent['size_bytes'] ?? null),
-            'seeds' => (int) ($torrent['seeds'] ?? 0),
-            'peers' => (int) ($torrent['peers'] ?? 0),
-            'magnet' => $this->montarMagnetYts($torrent, $titulo),
-        ];
+        return $this->catalogo->algumDisponivel();
     }
 
     /**
-     * Ordena as fontes por idioma (dublado primeiro) e, dentro do idioma, por
-     * seeds. Fontes sem seeds são descartadas: não têm como servir dados.
+     * Monta a lista de títulos a tentar, sem repetir.
+     *
+     * O TMDB é consultado em PT-BR, então o título traduzido é o que os trackers
+     * brasileiros publicam. O título original entra como segunda tentativa porque
+     * algumas traduções ficam curtas demais para o buscador do site ("Homem-
+     * Aranha" devolve o desenho, "Spider-Man" devolve o filme).
+     *
+     * @return array<int, string>
+     */
+    private function titulosDeBusca(string $titulo, ?string $tituloOriginal): array
+    {
+        $titulos = [];
+
+        foreach ([$titulo, $tituloOriginal] as $candidato) {
+            $candidato = trim((string) $candidato);
+
+            if ($candidato !== '' && ! in_array($candidato, $titulos, true)) {
+                $titulos[] = $candidato;
+            }
+        }
+
+        return $titulos;
+    }
+
+    /**
+     * Filtra e ordena as fontes.
+     *
+     * O filtro de seeds é a primeira barreira contra fontes mortas, e a ordenação
+     * é o que faz o dublado aparecer antes do legendado na interface.
      *
      * @param  array<int, array<string, mixed>>  $fontes
      * @return array<int, array<string, mixed>>
      */
     private function ordenar(array $fontes): array
     {
-        // Sem seeds a fonte não conecta; oferecê-la só faria o frontend perder
-        // tempo tentando. O filtro é a primeira barreira contra fontes mortas.
         $fontes = array_values(array_filter(
             $fontes,
             fn (array $fonte) => ($fonte['seeds'] ?? 0) > 0 && ($fonte['magnet'] ?? '') !== ''
         ));
 
         usort($fontes, function (array $a, array $b) {
-            $prioridadeA = IdiomaFonte::tryFrom($a['idioma'])?->prioridade() ?? 99;
-            $prioridadeB = IdiomaFonte::tryFrom($b['idioma'])?->prioridade() ?? 99;
+            $prioridadeA = IdiomaFonte::tryFrom($a['idioma'] ?? '')?->prioridade() ?? 99;
+            $prioridadeB = IdiomaFonte::tryFrom($b['idioma'] ?? '')?->prioridade() ?? 99;
 
             return $prioridadeA <=> $prioridadeB ?: $b['seeds'] <=> $a['seeds'];
         });
@@ -244,108 +126,33 @@ class TorrentService
     }
 
     /**
-     * Deduz a qualidade a partir do título do torrent.
+     * Registra no log por que a lista veio como veio.
      *
-     * O Torznab não tem um campo de qualidade padronizado; a resolução costuma
-     * vir no nome do arquivo (ex.: "1080p", "2160p", "WEB-DL").
+     * O log é a única forma de distinguir "não existe release dublado" de "a
+     * classificação de idioma falhou": se há fontes e nenhuma dublada, o índice
+     * funciona e a escassez é real; se não há fontes nenhuma, o problema é de
+     * rede, de provedor fora do ar ou de configuração.
+     *
+     * @param  array<int, array<string, mixed>>  $fontes
+     * @param  array<int, string>  $titulos
      */
-    private function deduzirQualidade(string $titulo): string
+    private function registrar(array $fontes, array $titulos, ?int $ano, ?string $imdbId): void
     {
-        $texto = mb_strtolower($titulo);
+        $contexto = [
+            'titulos' => $titulos,
+            'ano' => $ano,
+            'imdb_id' => $imdbId,
+            'fontes' => count($fontes),
+        ];
 
-        foreach (['2160p', '4k', '1080p', '720p', '480p'] as $marcador) {
-            if (str_contains($texto, $marcador)) {
-                return strtoupper($marcador);
-            }
+        if (empty($fontes)) {
+            Log::warning('Nenhuma fonte de torrent encontrada para o título.', $contexto);
+
+            return;
         }
 
-        return MensagensTorrent::QUALIDADE_NAO_INFORMADA;
-    }
-
-    /**
-     * Completa o magnet do Torznab com os anunciadores públicos.
-     *
-     * O indexador pode devolver um magnet sem trackers (só o infohash). Sem
-     * trackers o WebTorrent depende só do DHT, que é bloqueado em muitas redes;
-     * acrescentar os anunciadores públicos garante a montagem da malha.
-     */
-    private function completarMagnet(string $magnet): string
-    {
-        $faltantes = array_filter(
-            self::TRACKERS_PUBLICOS,
-            fn (string $tracker) => ! str_contains($magnet, rawurlencode($tracker))
-                && ! str_contains($magnet, $tracker)
-        );
-
-        foreach ($faltantes as $tracker) {
-            $magnet .= '&tr='.rawurlencode($tracker);
+        if (! $this->catalogo->temDublado($fontes)) {
+            Log::info('Há fontes, mas nenhuma dublada em PT-BR para o título.', $contexto);
         }
-
-        return $magnet;
-    }
-
-    /**
-     * Monta o link magnet a partir do hash e das trackers do YTS.
-     *
-     * O YTS devolve em `url` um link de download do .torrent, não uma lista de
-     * trackers. Sem trackers o magnet não encontra peers, então acrescentamos
-     * os anunciadores públicos mais usados.
-     *
-     * @param  array<string, mixed>  $torrent
-     */
-    private function montarMagnetYts(array $torrent, string $titulo): string
-    {
-        $hash = (string) ($torrent['hash'] ?? '');
-
-        if ($hash === '') {
-            return '';
-        }
-
-        $magnet = 'magnet:?xt=urn:btih:'.$hash.'&dn='.rawurlencode($titulo);
-
-        foreach ($this->trackersYts($torrent) as $tracker) {
-            $magnet .= '&tr='.rawurlencode($tracker);
-        }
-
-        return $magnet;
-    }
-
-    /**
-     * Trackers do torrent do YTS, aceitando tanto a lista quanto o link único
-     * que ele devolve, e completando com os anunciadores públicos padrão.
-     *
-     * @param  array<string, mixed>  $torrent
-     * @return array<int, string>
-     */
-    private function trackersYts(array $torrent): array
-    {
-        $informados = $torrent['url'] ?? [];
-
-        if (is_string($informados)) {
-            $informados = [$informados];
-        }
-
-        $informados = array_filter(
-            (array) $informados,
-            fn ($tracker) => is_string($tracker)
-                && (str_starts_with($tracker, 'udp://') || str_starts_with($tracker, 'http'))
-        );
-
-        return array_values(array_unique(array_merge($informados, self::TRACKERS_PUBLICOS)));
-    }
-
-    /** Converte bytes em um rótulo legível (ex.: "2.1 GB"). */
-    private function formatarTamanho(?int $bytes): ?string
-    {
-        if (empty($bytes) || $bytes <= 0) {
-            return null;
-        }
-
-        $unidades = ['B', 'KB', 'MB', 'GB', 'TB'];
-        $indice = (int) floor(log($bytes, 1024));
-        $indice = min($indice, count($unidades) - 1);
-        $valor = $bytes / (1024 ** $indice);
-
-        return number_format($valor, $indice > 1 ? 1 : 0, ',', '.').' '.$unidades[$indice];
     }
 }
