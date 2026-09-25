@@ -75,6 +75,22 @@ PT-BR. A configuração é feita uma única vez, pelo painel:
 4. Cole o valor em `TORRENTS_TORZNAB_KEY` no `.env` e reinicie o backend
    (`docker compose restart backend`).
 
+#### Definição customizada de indexador público PT-BR
+
+O Prowlarr só traz, de fábrica, trackers brasileiros **privados** (que exigem
+conta e convite). Para um indexador público, o projeto versiona uma definição
+própria em [`docker/prowlarr/Definitions/Custom/`](../docker/prowlarr/Definitions/Custom/torrentdosfilmes.yml:1),
+montada em `/config/Definitions/Custom/` dentro do container pelo
+[`docker-compose.yml`](../docker-compose.yml:188). Assim a definição sobrevive a
+recriações do container e é versionada junto com o código.
+
+> **Domínio instável**: os trackers públicos brasileiros trocam de endereço com
+> frequência (bloqueio judicial, expiração de domínio, sequestro por sites de
+> aposta). Se o Prowlarr passar a devolver `Name does not resolve` ou
+> `Unable to connect`, atualize a lista `links` do arquivo `.yml` com o endereço
+> atual do site. O restante da definição (seletores, categorias, filtros)
+> continua válido.
+
 ### 4. Acessar os serviços
 
 Tudo é servido pelo Nginx na **porta 80**:

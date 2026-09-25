@@ -1,0 +1,198 @@
+---
+# Definição customizada de indexador público PT-BR para o Prowlarr.
+#
+# Por que existe: os trackers brasileiros de catálogo aberto não entram na lista
+# oficial do Prowlarr (que só traz trackers privados, que exigem conta e convite).
+# Sem uma definição, o Prowlarr não consegue raspar o site e o backend fica só
+# com o YTS (catálogo em inglês). Este arquivo ensina o Prowlarr a ler a busca do
+# site e a devolver os resultados no padrão Torznab.
+#
+# ATENÇÃO — domínio: os trackers públicos brasileiros trocam de endereço com
+# frequência (bloqueio judicial, expiração de domínio, sequestro por sites de
+# aposta). O domínio abaixo é o que estava ativo na última verificação. Se o
+# Prowlarr passar a devolver "Name does not resolve" ou "Unable to connect",
+# troque a lista `links` pelo endereço atual do site. O resto da definição
+# (seletores, categorias, filtros) continua válido.
+#
+# O Prowlarr lê definições customizadas de /config/Definitions/Custom/. O
+# docker-compose monta esta pasta lá dentro, então o arquivo é versionado junto
+# com o projeto e sobrevive a recriações do container.
+id: torrentdosfilmes
+name: Torrent dos Filmes
+description: "Torrent dos Filmes é um indexador público brasileiro de filmes e séries, com lançamentos dublados e legendados em PT-BR."
+language: pt-BR
+type: public
+encoding: UTF-8
+# O site é sensível a rajadas; um atraso entre requisições evita bloqueio por rate limit.
+requestDelay: 2
+
+links:
+  - https://torrentdosfilmes.tv/
+legacylinks:
+  - https://torrentdosfilmes.se/
+  - https://torrentdosfilmes.info/
+  - https://torrentdosfilmes.com/
+  - https://torrentdosfilmes.net/
+  - https://torrentdosfilmes.org/
+
+caps:
+  categorymappings:
+    - {id: 1, cat: Movies, desc: "Filmes"}
+    - {id: 2, cat: Movies/HD, desc: "Filmes HD"}
+    - {id: 3, cat: Movies/UHD, desc: "Filmes 4K"}
+    - {id: 4, cat: Movies/DVD, desc: "Filmes DVD"}
+    - {id: 5, cat: TV, desc: "Séries"}
+    - {id: 6, cat: TV/HD, desc: "Séries HD"}
+    - {id: 7, cat: TV/Anime, desc: "Animes"}
+    - {id: 8, cat: TV/Documentary, desc: "Documentários"}
+    - {id: 9, cat: Movies/3D, desc: "Filmes 3D"}
+
+  modes:
+    search: [q]
+    movie-search: [q, imdbid]
+    tv-search: [q, season, ep, imdbid]
+
+settings:
+  - name: info_idioma
+    type: info
+    label: Sobre o idioma
+    default: "Este indexador devolve títulos em PT-BR. As tags <b>Dublado</b>, <b>Dual Áudio</b> e <b>Legendado</b> vêm no nome do arquivo e são usadas pelo Stretor para priorizar o dublado."
+  - name: sort
+    type: select
+    label: Ordenação pedida ao site
+    default: seeders
+    options:
+      seeders: seeders
+      date: date
+      size: size
+  - name: type
+    type: select
+    label: Direção da ordenação
+    default: desc
+    options:
+      desc: desc
+      asc: asc
+
+search:
+  paths:
+    # A busca do site aceita o termo por querystring e devolve HTML.
+    - path: index.php
+  inputs:
+    # O termo vem do TMDB (já traduzido para PT-BR) e é passado como palavra-chave.
+    search: "{{ .Keywords }}"
+    # O site usa o parâmetro "cat" para filtrar a categoria; vazio busca tudo.
+    cat: "{{ range .Categories }}{{.}},{{end}}"
+    sort: "{{ .Config.sort }}"
+    order: "{{ .Config.type }}"
+
+  keywordsfilters:
+    # O site não lida bem com dois-pontos nem com o ano no termo; removemos ambos
+    # para aumentar o recall. O ano é reaplicado depois, na montagem do título.
+    - name: re_replace
+      args: ["[:]", " "]
+    - name: re_replace
+      args: ["\\b(19|20)\\d{2}\\b", ""]
+
+  rows:
+    selector: "div.item, article.item, div.movie, div.post"
+
+  fields:
+    category:
+      selector: "a[href*='category'], span.category"
+      optional: true
+      filters:
+        - name: replace
+          args: ["Filmes HD", "2"]
+        - name: replace
+          args: ["Filmes 4K", "3"]
+        - name: replace
+          args: ["Filmes DVD", "4"]
+        - name: replace
+          args: ["Filmes", "1"]
+        - name: replace
+          args: ["Séries HD", "6"]
+        - name: replace
+          args: ["Séries", "5"]
+        - name: replace
+          args: ["Animes", "7"]
+        - name: replace
+          args: ["Documentários", "8"]
+        - name: replace
+          args: ["Filmes 3D", "9"]
+      default: "1"
+
+    title:
+      selector: "h2 a, h3 a, a.title, div.title a"
+      filters:
+        # Normaliza a qualidade para o padrão que o Stretor reconhece.
+        - name: re_replace
+          args: ["(?i)\\b4K\\b", "2160p"]
+        - name: re_replace
+          args: ["(?i)\\bFull ?HD\\b", "1080p"]
+        - name: re_replace
+          args: ["(?i)\\bHD\\b(?! ?Rip)", "720p"]
+        # Mantém as tags de idioma explícitas no título, que é o que o backend
+        # usa para classificar dublado/dual/legendado.
+        - name: re_replace
+          args: ["(?i)\\bDublado\\b", "Dublado"]
+        - name: re_replace
+          args: ["(?i)\\bDual ?[ÁA]udio\\b", "Dual Audio"]
+        - name: re_replace
+          args: ["(?i)\\bLegendado\\b", "Legendado"]
+
+    details:
+      selector: "h2 a, h3 a, a.title, div.title a"
+      attribute: href
+
+    download:
+      selector: "a[href*='magnet:'], a[href*='download'], a[href*='torrent']"
+      attribute: href
+
+    infohash:
+      selector: "a[href*='magnet:']"
+      attribute: href
+      optional: true
+      filters:
+        - name: regexp
+          args: "urn:btih:([a-fA-F0-9]{40})"
+
+    date:
+      selector: "span.date, time, div.date"
+      optional: true
+      default: now
+      filters:
+        - name: dateparse
+          args: "dd/MM/yyyy"
+
+    size:
+      selector: "span.size, div.size, span[class*='size']"
+      optional: true
+      default: "0 B"
+
+    seeders:
+      selector: "span.seeders, span[class*='seed'], span.up"
+      optional: true
+      default: 0
+
+    leechers:
+      selector: "span.leechers, span[class*='leech'], span.down"
+      optional: true
+      default: 0
+
+    grabs:
+      selector: "span.grabs, span[class*='grab']"
+      optional: true
+      default: 0
+
+    downloadvolumefactor:
+      text: 0
+
+    uploadvolumefactor:
+      text: 1
+
+    minimumratio:
+      text: 0
+
+    minimumseedtime:
+      text: 0
+# engine n/a (definição customizada para indexador público PT-BR)

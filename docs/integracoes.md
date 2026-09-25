@@ -48,6 +48,30 @@ uma única API.
 - O YTS continua como **reserva**, consultado só quando o indexador não está
   configurado.
 
+### Definição customizada de indexador público PT-BR
+
+O Prowlarr não traz nenhum tracker brasileiro **público** de fábrica — os que
+vêm embutidos (`amigosshare`, `bjshare`, `brasiltracker`, `capybarabr`,
+`locadora`, `mdan`, `samaritano`, `shakaw`) são todos privados e exigem conta e
+convite. Para ter uma fonte pública em PT-BR, o projeto versiona uma definição
+própria:
+
+- Arquivo: [`docker/prowlarr/Definitions/Custom/torrentdosfilmes.yml`](../docker/prowlarr/Definitions/Custom/torrentdosfilmes.yml:1).
+- O [`docker-compose.yml`](../docker-compose.yml:188) monta essa pasta em
+  `/config/Definitions/Custom/` dentro do container, então a definição é
+  versionada com o código e sobrevive a recriações.
+- O Prowlarr lê o arquivo no boot; para recarregar depois de editá-lo, use
+  `docker compose restart prowlarr`.
+- A definição é do tipo `Cardigann` (raspagem de HTML) e devolve os resultados
+  no padrão Torznab, com as tags de idioma (`Dublado`, `Dual Audio`,
+  `Legendado`) preservadas no título — é o que o backend usa para priorizar o
+  dublado.
+
+> **Domínio instável**: os trackers públicos brasileiros trocam de endereço com
+> frequência. Se o Prowlarr devolver `Name does not resolve` ou
+> `Unable to connect`, atualize a lista `links` do `.yml` com o endereço atual.
+> O restante da definição continua válido.
+
 ### Prioridade de idioma
 
 O usuário quer o filme **dublado em PT-BR**. A ordenação coloca as fontes
