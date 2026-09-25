@@ -179,10 +179,37 @@ async function iniciarPlayer(url) {
      */
     instanciaHls = new Hls({ enableWorker: true, startPosition: 0 })
 
+    /*
+     * O `attachMedia` vem ANTES do `loadSource`. Na ordem inversa o hls.js
+     * começava a buscar a playlist antes de ter um MediaSource associado; o
+     * Plyr ainda estava movendo o `<video>` para o próprio wrapper e a
+     * associação se perdia — o player abria vazio e os segmentos paravam de ser
+     * requisitados depois dos primeiros.
+     */
+    instanciaHls.attachMedia(midia)
+
+    /*
+     * O `play()` só depois do manifesto interpretado. Chamá-lo antes disso
+     * esbarrava em um MediaSource ainda sem buffer, e a rejeição era engolida
+     * pelo `catch` — o filme ficava parado sem nenhum aviso.
+     */
+    instanciaHls.on(Hls.Events.MANIFEST_PARSED, () => {
+      if (cancelado) return
+
+      Promise.resolve(player?.play()).catch(() => {
+        if (player) player.muted = true
+        Promise.resolve(player?.play()).catch(() => {})
+      })
+    })
+
     // Uma falha fatal aqui é de reprodução, não de fonte: a playlist existe e
     // foi servida. Avisamos o usuário sem mexer no fluxo de fontes, que já
     // terminou quando a playlist ficou pronta.
     instanciaHls.on(Hls.Events.ERROR, (_evento, dados) => {
+      // O detalhe é o que distingue um stall de buffer de um erro de rede; sem
+      // ele o console não ajuda a diagnosticar a tela preta.
+      console.error('[player] erro do hls.js:', dados.type, dados.details, dados.reason ?? '')
+
       if (!dados.fatal) return
 
       erro.value = 'Não foi possível carregar o vídeo. Tente novamente.'
@@ -190,7 +217,6 @@ async function iniciarPlayer(url) {
     })
 
     instanciaHls.loadSource(url)
-    instanciaHls.attachMedia(midia)
   } else {
     erro.value = 'Seu navegador não suporta a reprodução deste vídeo.'
     estado.value = 'erro'
@@ -202,16 +228,16 @@ async function iniciarPlayer(url) {
   mensagem.value = ''
 
   /*
-   * O navegador recusa autoplay com som quando a interação do usuário já se
-   * perdeu no meio das requisições assíncronas — e é o nosso caso, porque o
-   * clique em "Assistir" aconteceu muito antes de a playlist ficar pronta. Se o
-   * play com som for barrado, repetimos mutado, que é sempre permitido: assim o
-   * filme começa de verdade e o usuário só precisa subir o volume.
+   * O `play()` fica a cargo do evento `MANIFEST_PARSED` (acima), quando o
+   * MediaSource já tem buffer. Aqui só cobrimos o Safari, que toca HLS nativo e
+   * não passa pelo hls.js.
    */
-  Promise.resolve(player.play()).catch(() => {
-    player.muted = true
-    Promise.resolve(player.play()).catch(() => {})
-  })
+  if (midia.canPlayType('application/vnd.apple.mpegurl')) {
+    Promise.resolve(player.play()).catch(() => {
+      player.muted = true
+      Promise.resolve(player.play()).catch(() => {})
+    })
+  }
 }
 
 /**

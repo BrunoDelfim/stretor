@@ -79,25 +79,31 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   no final. A análise insiste até o cabeçalho ficar legível e só a aceita quando
   vídeo e áudio foram identificados — um cabeçalho lido pela metade faria o
   FFmpeg "concluir" sem gerar segmento nenhum.
-- **Conversão a partir do fluxo do torrent** (`createReadStream`): o FFmpeg
-  consome o `Readable` do WebTorrent, não o arquivo em disco. Ler o arquivo
-  parcial fazia o FFmpeg atravessar as regiões ainda não baixadas (que o disco
-  devolve como zeros) em altíssima velocidade, morrer na primeira lacuna com
-  código 183 e ser retomado com `-ss`. Cada retomada reiniciava os timestamps e
-  começava fora de um keyframe, gerando segmentos sem IDR — o meio do filme
-  ficava ilegível e o player parava. Com o stream, o WebTorrent entrega os bytes
-  em ordem e **bloqueia** até a peça necessária baixar: uma única passada, com
-  timestamps monotônicos.
-- **Retomada removida**: com o fluxo contínuo, `-ss`, `-hls_flags append_list` e
-  toda a lógica de "passada interrompida" deixaram de existir. A playlist usa
-  `-hls_list_size 0` (mantém todos os segmentos) e `#EXT-X-ENDLIST` é anexado só
-  ao final da conversão — sem essa tag o `hls.js` continuaria esperando
-  segmentos que nunca viriam.
+- **Download completo antes da conversão**: a conversão só começa com o arquivo
+  inteiro em disco. A tentativa de ler `arquivo.createReadStream()` esbarrava no
+  `moov` no fim: num pipe não há como voltar para ler o índice depois de
+  atravessar o `mdat`, então o FFmpeg abortava a sondagem com `partial file` e
+  gerava uma playlist vazia (`#EXTINF:0.000000`, segmento de 0 byte). Com o
+  arquivo completo o FFmpeg busca livremente, lê o `moov` onde ele estiver e
+  converte numa única passada. O progresso do download alimenta a mensagem do
+  overlay enquanto isso.
+- **Retomada removida**: `-ss`, `-hls_flags append_list` e toda a lógica de
+  "passada interrompida" deixaram de existir. A playlist usa `-hls_list_size 0`
+  (mantém todos os segmentos) e `#EXT-X-ENDLIST` é anexado só ao final da
+  conversão — sem essa tag o `hls.js` continuaria esperando segmentos que nunca
+  viriam.
+- **Normalização de timestamps**: `-fflags +genpts` gera PTS monotônicos e
+  `-avoid_negative_ts make_zero` ancora a timeline em zero. Sem isso o `#EXTINF`
+  da playlist deixa de bater com os PTS reais e o `hls.js` trava no MSE (anexa o
+  buffer, mas o playhead não avança e ele para de pedir segmentos). **Não** se
+  usa `-copyts` nem `-start_at_zero`: eles preservam os timestamps de origem, mas
+  o muxer HLS então corta os segmentos em pontos que não coincidem com os
+  keyframes e os *parameter sets* (SPS/PPS) do H.264 acabam no segmento errado —
+  o decodificador acusa `non-existing PPS 0` e nenhum frame sai.
 - **Seleção do arquivo antes da análise**: `arquivo.select(1)` manda o WebTorrent
-  baixar o arquivo inteiro em ordem, do começo para frente — exatamente o trecho
-  que a conversão consome. A prioridade explícita evita o valor 0 ("sem
-  prioridade"), que ainda desperta o interesse do torrent mas deixa a intenção
-  obscura.
+  baixar o arquivo inteiro em ordem, do começo para frente. A prioridade
+  explícita evita o valor 0 ("sem prioridade"), que ainda desperta o interesse do
+  torrent mas deixa a intenção obscura.
 
 ### Endereço do media-service no frontend
 

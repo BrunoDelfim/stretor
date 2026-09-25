@@ -99,12 +99,19 @@ async function prepararSessao(sessao) {
 
   /*
    * Selecionar o arquivo inteiro (prioridade 1) manda o WebTorrent baixar em
-   * ordem, do começo para frente — exatamente o trecho que a conversão consome,
-   * já que ela lê o fluxo do torrent e não o arquivo em disco. Sem uma
-   * prioridade explícita o valor vira 0 ("sem prioridade"), o que ainda desperta
-   * o interesse do torrent mas não deixa a intenção óbvia.
+   * ordem, do começo para frente. Sem uma prioridade explícita o valor vira 0
+   * ("sem prioridade"), o que ainda desperta o interesse do torrent mas não
+   * deixa a intenção óbvia.
    */
   arquivo.select(1)
+
+  /*
+   * Esperamos o download terminar antes de converter. A conversão precisa de um
+   * arquivo buscável: o `moov` do MP4 costuma ficar no fim e, lendo de um fluxo
+   * não buscável, o FFmpeg não conseguia voltar para lê-lo — a playlist saía
+   * vazia. Com o arquivo completo em disco isso deixa de acontecer.
+   */
+  await aguardarDownload(sessao, torrent)
 
   const analise = await analisarComEspera(caminho, arquivo)
 
@@ -118,9 +125,9 @@ async function prepararSessao(sessao) {
   sessao.mensagem = mensagemDoModo(analise.modo)
 
   sessao.comando = iniciarConversao({
-    // Passamos o arquivo do torrent, não o caminho em disco: a conversão lê o
-    // fluxo, que espera as peças que faltam em vez de devolver zeros.
-    arquivo,
+    // O arquivo já está completo em disco: o FFmpeg busca livremente e lê o
+    // `moov` onde ele estiver.
+    caminho,
     diretorio: sessao.diretorio,
     modo: analise.modo,
     aoProgredir: (progresso) => {
@@ -181,6 +188,59 @@ function escolherArquivoDeVideo(torrent) {
   }
 
   return videos.sort((a, b) => b.length - a.length)[0]
+}
+
+/**
+ * Aguarda o torrent baixar por completo, reportando o progresso na sessão.
+ *
+ * A conversão só começa com o arquivo inteiro em disco porque o `moov` do MP4
+ * pode estar no fim: lendo de um fluxo não buscável o FFmpeg não consegue voltar
+ * para lê-lo e gera uma playlist vazia. O progresso alimenta a mensagem do
+ * overlay enquanto o download corre.
+ *
+ * @param {object} sessao
+ * @param {import('webtorrent').Torrent} torrent
+ */
+function aguardarDownload(sessao, torrent) {
+  return new Promise((resolve, reject) => {
+    const atualizar = () => {
+      const percentual = Math.round(torrent.progress * 100)
+
+      sessao.mensagem = `Baixando a fonte... ${percentual}%`
+      sessao.progresso = { percentual, tempoProcessado: null }
+    }
+
+    const concluir = () => {
+      torrent.off('download', atualizar)
+      torrent.off('done', concluir)
+      torrent.off('error', falhar)
+
+      sessao.mensagem = 'Download concluído'
+      sessao.progresso = { percentual: 100, tempoProcessado: null }
+
+      resolve()
+    }
+
+    const falhar = (erro) => {
+      torrent.off('download', atualizar)
+      torrent.off('done', concluir)
+      torrent.off('error', falhar)
+
+      reject(erro)
+    }
+
+    // O torrent pode já ter terminado (cache local) antes de chegarmos aqui.
+    if (torrent.progress >= 1) {
+      concluir()
+      return
+    }
+
+    torrent.on('download', atualizar)
+    torrent.on('done', concluir)
+    torrent.on('error', falhar)
+
+    atualizar()
+  })
 }
 
 /**

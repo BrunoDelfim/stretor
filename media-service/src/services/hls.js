@@ -15,17 +15,17 @@ import { logger } from '../utils/logger.js'
  * - `audio`   — o vídeo serve, mas o áudio não; converte só o áudio para AAC.
  * - `video`   — o codec de vídeo é incompatível; transcodifica o vídeo.
  *
- * A entrada é o **fluxo** do torrent, não o arquivo em disco. Ler o arquivo
- * parcial fazia o FFmpeg atravessar as regiões ainda não baixadas (que o disco
- * devolve como zeros) em altíssima velocidade, morrer na primeira lacuna e ser
- * retomado com `-ss`. Cada retomada reiniciava os timestamps e começava fora de
- * um keyframe, produzindo segmentos sem IDR — o meio do filme ficava ilegível e a
- * playlist acumulava numeração inconsistente.
+ * A entrada é o **arquivo completo em disco**, não o fluxo do torrent. A
+ * tentativa anterior de ler `arquivo.createReadStream()` esbarrava num detalhe
+ * do contêiner: boa parte das fontes de torrent traz o átomo `moov` (o índice do
+ * MP4) no **fim** do arquivo, não no início. Num pipe não há como voltar para ler
+ * esse índice depois de atravessar o `mdat`, então o FFmpeg abortava a sondagem
+ * com `partial file` e gerava uma playlist vazia (`#EXTINF:0.000000`).
  *
- * Consumindo `arquivo.createReadStream()`, o WebTorrent entrega os bytes em ordem
- * e **bloqueia** até a peça necessária baixar. O FFmpeg enxerga um fluxo
- * contínuo, com timestamps monotônicos, e publica os segmentos conforme o
- * download avança — uma única passada, sem lacunas e sem retomadas.
+ * Com o arquivo inteiro em disco o FFmpeg busca livremente, lê o `moov` onde ele
+ * estiver e converte numa única passada. O preço é esperar o download terminar
+ * antes de começar a conversão — o que é aceitável diante da alternativa, que era
+ * simplesmente não reproduzir.
  */
 
 /** Codecs de vídeo que o navegador toca sem transcodificar. */
@@ -40,10 +40,9 @@ const DURACAO_SEGMENTO = 4
 /**
  * Formato de entrada declarado ao FFmpeg conforme a extensão do arquivo.
  *
- * Lendo de um pipe o FFmpeg não consegue buscar, então declarar o formato evita
- * que a sondagem automática dependa de índices que vivem no fim do arquivo. Os
- * contêineres `faststart` — o padrão das fontes de torrent — trazem o cabeçalho
- * no início e funcionam bem deste jeito.
+ * Declarar o formato evita que a sondagem automática erre o contêiner em
+ * arquivos com extensão enganosa (comum em encodes caseiros). Como agora a
+ * entrada é um arquivo buscável, o FFmpeg lê o índice onde ele estiver.
  */
 const FORMATOS_CONTAINER = {
   '.mp4': 'mp4',
@@ -98,48 +97,48 @@ export function decidirModo(videoCodec, audioCodec) {
 }
 
 /**
- * Converte o fluxo do torrent para HLS, publicando os segmentos conforme ficam
+ * Converte o arquivo baixado para HLS, publicando os segmentos conforme ficam
  * prontos.
  *
  * @param {object} opcoes
- * @param {import('webtorrent').TorrentFile} opcoes.arquivo arquivo do torrent
+ * @param {string} opcoes.caminho caminho do arquivo de vídeo já completo em disco
  * @param {string} opcoes.diretorio pasta onde a playlist e os segmentos serão escritos
  * @param {string} opcoes.modo modo de conversão (`remux`, `audio` ou `video`)
  * @param {(progresso: object) => void} [opcoes.aoProgredir] callback de progresso
  * @returns {{parar: () => void}}
  */
-export function iniciarConversao({ arquivo, diretorio, modo, aoProgredir }) {
+export function iniciarConversao({ caminho, diretorio, modo, aoProgredir }) {
   fs.mkdirSync(diretorio, { recursive: true })
 
   const playlist = path.join(diretorio, 'playlist.m3u8')
   const padraoSegmento = path.join(diretorio, 'segmento-%d.ts')
 
-  const controle = { parado: false, comando: null, fluxo: null, truncado: false }
+  const controle = { parado: false, comando: null }
 
-  /*
-   * O read stream do WebTorrent espera as peças que faltam em vez de devolver
-   * zeros. É ele que transforma um download parcial num fluxo contínuo para o
-   * FFmpeg — e o que dispensa toda a lógica de retomada com `-ss`.
-   */
-  const fluxo = arquivo.createReadStream()
-  controle.fluxo = fluxo
+  const comando = ffmpeg(caminho)
 
-  // Sem um listener, um erro do fluxo (torrent destruído, disco cheio) subiria
-  // como exceção não tratada e derrubaria o processo inteiro.
-  fluxo.on('error', (erro) => {
-    if (controle.parado) return
-
-    controle.truncado = true
-    logger.error('[hls] falha no fluxo do torrent:', erro.message)
-  })
-
-  const comando = ffmpeg(fluxo)
-
-  const formato = FORMATOS_CONTAINER[path.extname(arquivo.name ?? '').toLowerCase()]
+  const formato = FORMATOS_CONTAINER[path.extname(caminho).toLowerCase()]
 
   if (formato) {
     comando.inputFormat(formato)
   }
+
+  /*
+   * O `moov` de muitas fontes fica no fim do arquivo e o FFmpeg, lendo de um
+   * pipe, não conseguia voltar para buscá-lo — daí a playlist vazia. Com o
+   * arquivo em disco isso deixa de ser problema, mas ainda normalizamos os
+   * timestamps: encodes antigos trazem um start time diferente de zero e o
+   * `#EXTINF` da playlist precisa bater com os PTS reais, senão o hls.js trava
+   * no MSE (anexa o buffer, mas o playhead não avança).
+   *
+   * `+genpts` gera PTS monotônicos. NÃO usamos `-copyts` nem `-start_at_zero`:
+   * eles preservam os timestamps de origem, mas o muxer HLS então corta os
+   * segmentos em pontos que não coincidem com os keyframes e os *parameter sets*
+   * (SPS/PPS) do H.264 acabam no segmento errado — o decodificador acusa
+   * `non-existing PPS 0` e nenhum frame sai. O `-avoid_negative_ts make_zero`
+   * sozinho já ancora a timeline em zero sem mexer no alinhamento dos segmentos.
+   */
+  comando.inputOptions(['-fflags +genpts'])
 
   aplicarModo(comando, modo)
 
@@ -161,6 +160,8 @@ export function iniciarConversao({ arquivo, diretorio, modo, aoProgredir }) {
        * ela foi carregada.
        */
       '-hls_playlist_type event',
+      // Ancora a timeline em zero sem deslocar os cortes dos segmentos.
+      '-avoid_negative_ts make_zero',
     ])
     .output(playlist)
     .on('start', (linha) => logger.info('[hls] conversão iniciada:', linha))
@@ -173,20 +174,11 @@ export function iniciarConversao({ arquivo, diretorio, modo, aoProgredir }) {
     .on('error', (erro) => {
       if (controle.parado) return
 
-      // Com o fluxo do torrent não existe "fronteira de download" para tratar:
-      // um erro aqui é real (contêiner sem cabeçalho no início, arquivo
-      // corrompido). Registramos e a sessão falha, deixando o cliente tentar a
-      // próxima fonte.
+      // Um erro aqui é real (arquivo corrompido, codec sem suporte). Registramos
+      // e a sessão falha, deixando o cliente tentar a próxima fonte.
       logger.error('[hls] conversão interrompida:', erro.message)
     })
     .on('end', () => {
-      if (controle.truncado) {
-        // O fluxo morreu no meio: marcar a playlist como completa faria o
-        // player acreditar que recebeu o filme inteiro.
-        logger.warn('[hls] conversão encerrada com o fluxo incompleto; playlist não finalizada')
-        return
-      }
-
       logger.info('[hls] conversão concluída')
       // A playlist só é considerada completa quando declara o fim. Sem essa tag
       // o hls.js continua esperando segmentos que nunca virão.
@@ -199,14 +191,6 @@ export function iniciarConversao({ arquivo, diretorio, modo, aoProgredir }) {
   return {
     parar: () => {
       controle.parado = true
-
-      // Fechar o fluxo primeiro destrava qualquer leitura pendente do FFmpeg que
-      // esteja esperando uma peça do torrent terminar de baixar.
-      try {
-        controle.fluxo?.destroy()
-      } catch {
-        // O fluxo já pode ter terminado.
-      }
 
       try {
         controle.comando?.kill('SIGKILL')
@@ -267,7 +251,7 @@ function aplicarModo(comando, modo) {
  * @param {number} minimoSegmentos quantidade mínima de segmentos prontos
  * @param {number} timeoutMs tempo máximo de espera
  */
-export function aguardarBufferInicial(diretorio, minimoSegmentos = 2, timeoutMs = 60000) {
+export function aguardarBufferInicial(diretorio, minimoSegmentos = 4, timeoutMs = 60000) {
   const playlist = path.join(diretorio, 'playlist.m3u8')
   const inicio = Date.now()
 
