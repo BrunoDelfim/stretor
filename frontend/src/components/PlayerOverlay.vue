@@ -149,6 +149,18 @@ let primeiroTrechoAncorado = false
 let usuarioBuscou = false
 
 /*
+ * Marca se a pausa atual foi pedida pelo usuário.
+ *
+ * O vigia de reprodução existe para vencer a política de autoplay no arranque,
+ * não para reimpor a reprodução depois. Sem esta distinção, o `FRAG_BUFFERED`
+ * — que dispara a cada trecho novo, e a conversão publica um a cada poucos
+ * segundos — encontrava o elemento pausado e dava `play()` de volta: toda pausa
+ * do usuário era desfeita no trecho seguinte. Também é o que impede o vigia de
+ * atropelar uma busca, quando o elemento fica pausado enquanto o alvo carrega.
+ */
+let usuarioPausou = false
+
+/*
  * Insistência no trecho buscado.
  *
  * A conversão publica os segmentos na ordem do filme, então um salto para a
@@ -173,6 +185,11 @@ let timerTrecho = null
  * o trecho correspondente chegar.
  */
 let alvoDeSeek = null
+
+/** Diz se há uma busca em andamento (alvo capturado e ainda não alcançado). */
+function buscaEmAndamento() {
+  return alvoDeSeek !== null
+}
 
 const LIMITE_TENTATIVAS_DE_TRECHO = 60
 const INTERVALO_TENTATIVA_DE_TRECHO_MS = 2000
@@ -395,10 +412,11 @@ async function iniciarPlayer(url, minhaGeracao) {
      * preserva o que já foi assistido, permitindo voltar na barra sem rebuscar
      * tudo.
      */
-    // Reprodução nova: o playhead ainda não foi ancorado no primeiro trecho e o
-    // usuário ainda não buscou nada nesta timeline.
+    // Reprodução nova: o playhead ainda não foi ancorado no primeiro trecho, o
+    // usuário ainda não buscou nada nesta timeline e não há pausa pendente.
     primeiroTrechoAncorado = false
     usuarioBuscou = false
+    usuarioPausou = false
 
     instanciaHls = new Hls({
       enableWorker: true,
@@ -540,7 +558,15 @@ async function iniciarPlayer(url, minhaGeracao) {
           `pausado=${midiaDoBuffer.paused} pronto=${midiaDoBuffer.readyState}`
       )
 
-      if (midiaDoBuffer.paused) vigiarReproducao()
+      /*
+       * O vigia só entra em cena no arranque. Se o usuário pausou, a pausa é
+       * dele e nenhum trecho novo deve desfazê-la; se há uma busca em andamento,
+       * o elemento está pausado de propósito enquanto o alvo carrega, e um
+       * `play()` aqui tocaria a partir do buffer antigo, desfazendo a busca.
+       */
+      if (midiaDoBuffer.paused && !usuarioPausou && !buscaEmAndamento()) {
+        vigiarReproducao()
+      }
     })
 
     /*
@@ -558,18 +584,32 @@ async function iniciarPlayer(url, minhaGeracao) {
        * existir buffer para escrevê-lo no playhead — antes disso o elemento
        * recusaria o `currentTime`. É este passo que mantém a bola de progresso
        * onde o usuário soltou, inclusive quando o alvo só é convertido depois.
+       *
+       * O alvo só é liberado quando o playhead realmente chegou nele. Zerá-lo
+       * apenas porque o trecho chegou deixava a posição sem guarda: qualquer
+       * reescrita do `currentTime` logo depois (o clamp do Plyr, por exemplo)
+       * ficava sem quem a corrigisse, e o vídeo voltava para trás.
        */
       if (alvoDeSeek !== null) {
         const fimDoTrecho = inicioDoTrecho + (dados?.frag?.duration ?? 0)
+        const cobreAlvo = alvoDeSeek >= inicioDoTrecho - 0.5 && alvoDeSeek <= fimDoTrecho + 0.5
 
-        if (alvoDeSeek >= inicioDoTrecho - 0.5 && alvoDeSeek <= fimDoTrecho + 0.5) {
+        if (cobreAlvo) {
           const midiaDaBusca = player?.media
 
-          if (midiaDaBusca && Math.abs(midiaDaBusca.currentTime - alvoDeSeek) > 0.5) {
-            midiaDaBusca.currentTime = alvoDeSeek
-          }
+          if (midiaDaBusca) {
+            if (Math.abs(midiaDaBusca.currentTime - alvoDeSeek) > 0.5) {
+              try {
+                midiaDaBusca.currentTime = alvoDeSeek
+              } catch {
+                // O elemento pode recusar por um instante; o próximo trecho reaplica.
+              }
+            }
 
-          alvoDeSeek = null
+            if (Math.abs(midiaDaBusca.currentTime - alvoDeSeek) <= 0.5) {
+              alvoDeSeek = null
+            }
+          }
         }
       }
 
@@ -838,6 +878,19 @@ function vigiarReproducao() {
       return
     }
 
+    /*
+     * Pausa do usuário ou busca em andamento: o vigia não tem o que fazer. Nos
+     * dois casos o elemento está pausado de propósito, e insistir no `play()`
+     * desfaria a pausa ou tocaria a partir do buffer antigo.
+     */
+    if (usuarioPausou || buscaEmAndamento()) {
+      anotarDiagnostico(
+        usuarioPausou ? 'vigia suspenso: pausa do usuário' : 'vigia suspenso: busca em andamento'
+      )
+
+      return
+    }
+
     anotarDiagnostico(
       `tentativa de play ${tentativasDePlay + 1}: pronto=${midia.readyState} ` +
         `buffer=${midia.buffered?.length ?? 0}`
@@ -908,8 +961,12 @@ function fixarBordaAoPlayhead() {
  * para além dele o browser clampeia o `currentTime` ao fim do range e o cursor
  * volta para trás — a origem do "não avança".
  *
- * Aqui capturamos a intenção do usuário no próprio input da barra, antes de o
- * Plyr escrever no elemento, e conduzimos a busca por fora do controle padrão.
+ * O Plyr tem o próprio handler de `seeking`, que escreve `media.currentTime`
+ * com o valor da barra. Como o elemento clampeia esse valor ao fim do
+ * `seekable`, o Plyr acaba sendo o autor do "volta para onde estava". Por isso
+ * a busca é conduzida por fora: capturamos a intenção no `input`, e no `change`
+ * interrompemos a propagação para o handler do Plyr não rodar — quem escreve no
+ * elemento é só o `executarSeek()`.
  */
 function ligarControleDeSeek(midia) {
   const entradaSeek = player?.elements?.inputs?.seek
@@ -929,11 +986,54 @@ function ligarControleDeSeek(midia) {
       }
     })
 
-    // `change` marca o fim do arrasto: é o momento de efetivar a busca.
-    entradaSeek.addEventListener('change', () => {
+    /*
+     * `change` marca o fim do arrasto. `stopImmediatePropagation` impede o
+     * handler do Plyr de escrever no elemento — sem isso ele clampeia o
+     * `currentTime` ao fim do `seekable` e desfaz a busca antes de ela começar.
+     * O `preventDefault` evita o comportamento nativo do input range.
+     */
+    entradaSeek.addEventListener('change', (evento) => {
+      evento.preventDefault()
+      evento.stopImmediatePropagation()
+
       executarSeek(Number(entradaSeek.value))
     })
   }
+
+  /*
+   * Pausa e retomada do usuário. O `pause` só conta como intenção quando não há
+   * busca em andamento — durante uma busca o elemento pausa sozinho enquanto o
+   * alvo carrega, e isso não é uma pausa do usuário.
+   */
+  midia.addEventListener('pause', () => {
+    if (!buscaEmAndamento()) {
+      usuarioPausou = true
+    }
+  })
+
+  midia.addEventListener('play', () => {
+    usuarioPausou = false
+  })
+
+  /*
+   * Rede de segurança contra o clamp do browser. Se o `currentTime` foi
+   * reescrito para longe do alvo (pelo Plyr ou pelo próprio elemento), o alvo é
+   * reaplicado assim que houver buffer para ele. Sem isso, uma busca que o
+   * Plyr clampeou ficaria perdida.
+   */
+  midia.addEventListener('seeked', () => {
+    if (alvoDeSeek === null) return
+
+    if (Math.abs(midia.currentTime - alvoDeSeek) <= 0.5) return
+
+    if (!alvoEstaEmBuffer(midia, alvoDeSeek)) return
+
+    try {
+      midia.currentTime = alvoDeSeek
+    } catch {
+      // O elemento pode recusar por um instante; o próximo trecho reaplica.
+    }
+  })
 }
 
 /** Fim do intervalo de tempo que o elemento consegue buscar agora. */
@@ -992,14 +1092,22 @@ function executarSeek(alvo) {
    * carga — o `FRAG_LOADED` seguinte encontrava o playhead em zero e reancorava
    * o filme no começo. Era a origem do "arrasto a barra e volto ao início".
    * Com o alvo já em buffer, escrever `currentTime` é suficiente e instantâneo.
+   *
+   * O alvo fica registrado até o playhead chegar nele: é o que permite ao
+   * handler de `seeked` corrigir uma reescrita do `currentTime` feita logo
+   * depois (o clamp do Plyr, por exemplo).
    */
   if (alvoEstaEmBuffer(midia, alvo)) {
-    alvoDeSeek = null
+    alvoDeSeek = alvo
 
     try {
       midia.currentTime = alvo
     } catch {
       // O elemento pode recusar por um instante; o próximo trecho reaplica.
+    }
+
+    if (Math.abs(midia.currentTime - alvo) <= 0.5) {
+      alvoDeSeek = null
     }
 
     return

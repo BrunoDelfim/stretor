@@ -163,11 +163,27 @@ some e o Plyr é liberado, mas o filme não começa.
 O arranque agora espera o sinal certo: o evento **`FRAG_BUFFERED`**, que só
 dispara com o primeiro trecho carregado **e anexado** ao buffer. É a partir daí
 que o elemento tem o que tocar. O handler chama
-[`vigiarReproducao()`](../frontend/src/components/PlayerOverlay.vue:718), que
+[`vigiarReproducao()`](../frontend/src/components/PlayerOverlay.vue:817), que
 insiste em `play()` a cada 1 s (até 30 tentativas) enquanto o vídeo continuar
 pausado. O vigia é idempotente — o `FRAG_BUFFERED` dispara a cada trecho e
 reiniciar a contagem não faria sentido — e se encerra sozinho assim que o vídeo
 toca, seja pelo vigia ou pelo clique do usuário.
+
+#### O vigia só age no arranque
+
+O vigia existe para vencer a política de autoplay, não para reimpor a
+reprodução. Como o `FRAG_BUFFERED` dispara a cada trecho — e a conversão publica
+um a cada poucos segundos —, a checagem de "está pausado" sozinha fazia o
+`play()` voltar **toda vez que o usuário pausava**. A flag `usuarioPausou`,
+alimentada pelos eventos `pause`/`play` do elemento, separa "ainda não começou"
+de "o usuário pausou": o `FRAG_BUFFERED` só aciona o vigia quando ela for falsa,
+e o próprio vigia sai de imediato quando ela for verdadeira.
+
+O `pause` só conta como intenção do usuário quando **não** há busca em
+andamento — durante uma busca o elemento pausa sozinho enquanto o alvo carrega,
+e isso não é uma pausa. Pelo mesmo motivo o vigia também não tenta `play()`
+enquanto `alvoDeSeek` estiver definido: um `play()` ali tocaria a partir do
+buffer antigo, desfazendo a busca.
 
 A recusa por autoplay é tratada em
 [`tentarReproduzir()`](../frontend/src/components/PlayerOverlay.vue:692): quando o
@@ -273,6 +289,24 @@ reprodução (ver "Âncora do playhead no primeiro trecho"). Sem essa marca, uma
 busca feita antes de o primeiro trecho chegar seria desfeita pelo `FRAG_LOADED`
 seguinte — a intenção do usuário sempre vence a âncora, em qualquer ordem de
 eventos.
+
+#### O Plyr não pode escrever no elemento
+
+O Plyr tem o próprio handler de `seeking`, que escreve `media.currentTime` com o
+valor da barra. Como o elemento clampeia esse valor ao fim do `seekable` — que,
+numa playlist `EVENT`, cobre só o trecho convertido —, o Plyr acabava sendo o
+autor do "arrasto a barra e volto ao início". Por isso
+[`ligarControleDeSeek()`](../frontend/src/components/PlayerOverlay.vue:952)
+interrompe a propagação no `change` (`preventDefault` +
+`stopImmediatePropagation`): quem escreve no elemento é só o `executarSeek()`.
+
+#### O alvo fica guardado até o playhead chegar nele
+
+`alvoDeSeek` não é liberado só porque o trecho que cobre o alvo chegou — só
+quando `midia.currentTime` realmente alcançou o alvo. Enquanto ele estiver
+definido, o handler de `seeked` reaplica o alvo se o `currentTime` tiver sido
+reescrito para longe (o clamp do browser, por exemplo). Sem essa guarda, uma
+reescrita logo depois da busca ficava sem quem a corrigisse.
 
 O servidor também deixou de publicar segmentos pela metade: os `-hls_flags` de
 [`iniciarConversao()`](../media-service/src/services/hls.js:324) ganharam
