@@ -4,7 +4,12 @@ import fs from 'node:fs'
 import os from 'node:os'
 import { v4 as uuid } from 'uuid'
 
-import { analisarArquivo, iniciarConversao, aguardarBufferInicial } from './hls.js'
+import {
+  analisarArquivo,
+  iniciarConversao,
+  aguardarBufferInicial,
+  localizarMoov,
+} from './hls.js'
 import { logger } from '../utils/logger.js'
 
 /**
@@ -59,6 +64,8 @@ export function criarSessao({ magnet, filmeId }) {
     comando: null,
     playlist: null,
     erro: null,
+    progresso: null,
+    download: null,
     criadaEm: Date.now(),
   }
 
@@ -75,7 +82,19 @@ export function criarSessao({ magnet, filmeId }) {
 }
 
 /**
- * Conecta o torrent, aguarda o arquivo e inicia a conversão.
+ * Conecta o torrent e inicia a conversão.
+ *
+ * Há dois caminhos, decididos pela posição do índice do contêiner:
+ *
+ * - **MKV/WebM e MP4 *faststart*** trazem o índice no começo e fluem por um
+ *   pipe. Abrimos um fluxo do arquivo e o entregamos ao FFmpeg, que publica os
+ *   segmentos conforme os bytes chegam — o player começa antes do fim do
+ *   download.
+ * - **MP4/MOV com o `moov` no fim** não fluem por pipe: o FFmpeg lê o MP4
+ *   sequencialmente e não consegue buscar o índice depois de atravessar o
+ *   `mdat`. Reordenar o fluxo também não serve, porque as tabelas de amostras
+ *   do `moov` guardam offsets absolutos do arquivo original. Nesses casos
+ *   aguardamos o download completo e convertemos do disco.
  *
  * @param {object} sessao
  */
@@ -99,19 +118,26 @@ async function prepararSessao(sessao) {
 
   /*
    * Selecionar o arquivo inteiro (prioridade 1) manda o WebTorrent baixar em
-   * ordem, do começo para frente. Sem uma prioridade explícita o valor vira 0
-   * ("sem prioridade"), o que ainda desperta o interesse do torrent mas não
-   * deixa a intenção óbvia.
+   * ordem, do começo para frente — exatamente a ordem em que o FFmpeg lê. Sem
+   * uma prioridade explícita o valor vira 0 ("sem prioridade"), o que ainda
+   * desperta o interesse do torrent mas não deixa a intenção óbvia.
    */
   arquivo.select(1)
 
   /*
-   * Esperamos o download terminar antes de converter. A conversão precisa de um
-   * arquivo buscável: o `moov` do MP4 costuma ficar no fim e, lendo de um fluxo
-   * não buscável, o FFmpeg não conseguia voltar para lê-lo — a playlist saía
-   * vazia. Com o arquivo completo em disco isso deixa de acontecer.
+   * O download corre junto com a conversão; só registramos o andamento para
+   * dar contexto no overlay. Não bloqueia.
    */
-  await aguardarDownload(sessao, torrent)
+  acompanharDownload(sessao, torrent)
+
+  /*
+   * Descobrimos se o índice está acessível desde o começo. Enquanto o arquivo
+   * não tem bytes suficientes, `localizarMoov` devolve `null`; nesse caso
+   * assumimos o caminho progressivo e deixamos o `analisarComEspera` aguardar o
+   * cabeçalho — se for um MP4 com `moov` no fim, a análise só vai concluir
+   * quando o download alcançar o índice, e aí caímos no caminho não progressivo.
+   */
+  const indiceNoFim = await indiceEstaNoFim(sessao, arquivo, caminho)
 
   const analise = await analisarComEspera(caminho, arquivo)
 
@@ -119,21 +145,50 @@ async function prepararSessao(sessao) {
   sessao.mensagem = 'Preparando a conversão...'
 
   logger.info(
-    `[sessao ${sessao.id}] modo=${analise.modo} video=${analise.videoCodec} audio=${analise.audioCodec}`
+    `[sessao ${sessao.id}] modo=${analise.modo} video=${analise.videoCodec} audio=${analise.audioCodec} progressivo=${!indiceNoFim}`
   )
 
   sessao.mensagem = mensagemDoModo(analise.modo)
 
-  sessao.comando = iniciarConversao({
-    // O arquivo já está completo em disco: o FFmpeg busca livremente e lê o
-    // `moov` onde ele estiver.
-    caminho,
-    diretorio: sessao.diretorio,
-    modo: analise.modo,
-    aoProgredir: (progresso) => {
-      sessao.progresso = progresso
-    },
-  })
+  if (indiceNoFim) {
+    /*
+     * Sem pipe: o índice só é legível com o arquivo inteiro em disco. Esperamos
+     * o download terminar e convertemos do caminho — o FFmpeg busca o `moov`
+     * normalmente porque o arquivo é buscável.
+     */
+    sessao.mensagem = 'Baixando o filme...'
+    await aguardarDownload(sessao, torrent)
+
+    sessao.comando = iniciarConversao({
+      caminho,
+      extensao: path.extname(arquivo.name),
+      diretorio: sessao.diretorio,
+      modo: analise.modo,
+      aoProgredir: (progresso) => {
+        sessao.progresso = progresso
+      },
+    })
+  } else {
+    /*
+     * O fluxo é criado agora e fica aberto até o fim do download. O FFmpeg o
+     * consome na medida em que os bytes chegam, publicando os segmentos.
+     */
+    const fluxo = arquivo.createReadStream()
+
+    fluxo.on('error', (erro) => {
+      logger.warn(`[sessao ${sessao.id}] erro no fluxo do torrent:`, erro.message)
+    })
+
+    sessao.comando = iniciarConversao({
+      fluxo,
+      extensao: path.extname(arquivo.name),
+      diretorio: sessao.diretorio,
+      modo: analise.modo,
+      aoProgredir: (progresso) => {
+        sessao.progresso = progresso
+      },
+    })
+  }
 
   // Só liberamos o player quando há segmentos suficientes para tocar sem
   // travar — é o buffer que protege conexões lentas.
@@ -142,6 +197,76 @@ async function prepararSessao(sessao) {
   sessao.status = 'pronto'
   sessao.mensagem = 'Pronto para reproduzir'
   sessao.playlist = path.join(sessao.diretorio, 'playlist.m3u8')
+}
+
+/**
+ * Verifica se o índice do contêiner está no fim do arquivo.
+ *
+ * Para MKV/WebM e MP4 *faststart* o índice fica no começo e o fluxo progressivo
+ * funciona. Para MP4/MOV com o `moov` no fim, o pipe não serve e é preciso
+ * esperar o download completo.
+ *
+ * Enquanto o arquivo não tem bytes suficientes para localizar o `moov`,
+ * devolvemos `false` (caminho progressivo): se for um MP4 com índice no fim, a
+ * `analisarComEspera` só vai concluir quando o índice chegar, e aí o download
+ * já estará completo de qualquer forma.
+ *
+ * @param {object} sessao
+ * @param {import('webtorrent').TorrentFile} arquivo
+ * @param {string} caminho caminho do arquivo em disco
+ * @returns {Promise<boolean>}
+ */
+async function indiceEstaNoFim(sessao, arquivo, caminho) {
+  const extensao = path.extname(arquivo.name).toLowerCase()
+
+  // Só MP4/MOV têm o `moov` no fim; os demais contêineres trazem o índice no
+  // começo e fluem pelo pipe sem preparação.
+  if (!['.mp4', '.m4v', '.mov'].includes(extensao)) {
+    return false
+  }
+
+  const moov = localizarMoov(caminho, arquivo.length)
+
+  if (!moov) {
+    return false
+  }
+
+  // Um `moov` nos primeiros megabytes é o caso *faststart*: flui pelo pipe.
+  if (moov.inicio < 1024 * 1024) {
+    return false
+  }
+
+  logger.info(
+    `[sessao ${sessao.id}] moov no fim (offset ${moov.inicio}); aguardando o download completo`
+  )
+
+  return true
+}
+
+/**
+ * Aguarda o download do torrent terminar.
+ *
+ * Usado apenas no caminho não progressivo (MP4 com `moov` no fim), em que a
+ * conversão precisa do arquivo inteiro em disco. O progresso é refletido no
+ * overlay para o usuário saber que ainda está baixando.
+ *
+ * @param {object} sessao
+ * @param {import('webtorrent').Torrent} torrent
+ */
+function aguardarDownload(sessao, torrent) {
+  return new Promise((resolve) => {
+    if (torrent.progress >= 1) {
+      resolve()
+      return
+    }
+
+    const concluir = () => {
+      torrent.off('done', concluir)
+      resolve()
+    }
+
+    torrent.on('done', concluir)
+  })
 }
 
 /**
@@ -212,56 +337,38 @@ function escolherArquivoDeVideo(torrent) {
 }
 
 /**
- * Aguarda o torrent baixar por completo, reportando o progresso na sessão.
+ * Acompanha o download em segundo plano, sem bloquear a conversão.
  *
- * A conversão só começa com o arquivo inteiro em disco porque o `moov` do MP4
- * pode estar no fim: lendo de um fluxo não buscável o FFmpeg não consegue voltar
- * para lê-lo e gera uma playlist vazia. O progresso alimenta a mensagem do
- * overlay enquanto o download corre.
+ * Diferente da versão anterior, que esperava o arquivo inteiro, aqui só
+ * registramos o andamento. O download corre junto com a conversão, então o
+ * percentual serve de contexto no overlay enquanto os segmentos são gerados.
  *
  * @param {object} sessao
  * @param {import('webtorrent').Torrent} torrent
  */
-function aguardarDownload(sessao, torrent) {
-  return new Promise((resolve, reject) => {
-    const atualizar = () => {
-      const percentual = Math.round(torrent.progress * 100)
+function acompanharDownload(sessao, torrent) {
+  const atualizar = () => {
+    const percentual = Math.round(torrent.progress * 100)
 
-      sessao.mensagem = `Baixando a fonte... ${percentual}%`
-      sessao.progresso = { percentual, tempoProcessado: null }
-    }
+    sessao.download = { percentual }
+  }
 
-    const concluir = () => {
-      torrent.off('download', atualizar)
-      torrent.off('done', concluir)
-      torrent.off('error', falhar)
+  const concluir = () => {
+    torrent.off('download', atualizar)
+    torrent.off('done', concluir)
 
-      sessao.mensagem = 'Download concluído'
-      sessao.progresso = { percentual: 100, tempoProcessado: null }
+    sessao.download = { percentual: 100 }
+  }
 
-      resolve()
-    }
+  if (torrent.progress >= 1) {
+    concluir()
+    return
+  }
 
-    const falhar = (erro) => {
-      torrent.off('download', atualizar)
-      torrent.off('done', concluir)
-      torrent.off('error', falhar)
+  torrent.on('download', atualizar)
+  torrent.on('done', concluir)
 
-      reject(erro)
-    }
-
-    // O torrent pode já ter terminado (cache local) antes de chegarmos aqui.
-    if (torrent.progress >= 1) {
-      concluir()
-      return
-    }
-
-    torrent.on('download', atualizar)
-    torrent.on('done', concluir)
-    torrent.on('error', falhar)
-
-    atualizar()
-  })
+  atualizar()
 }
 
 /**
@@ -331,6 +438,9 @@ export function obterSessao(id) {
     mensagem: sessao.mensagem,
     erro: sessao.erro,
     progresso: sessao.progresso ?? null,
+    // O download corre em paralelo à conversão; expomos o percentual para o
+    // overlay mostrar o quanto da fonte já chegou.
+    download: sessao.download ?? null,
     // A URL só é exposta quando a playlist está pronta para ser consumida.
     playlist: sessao.status === 'pronto' ? `/api/media/sessao/${sessao.id}/playlist.m3u8` : null,
   }

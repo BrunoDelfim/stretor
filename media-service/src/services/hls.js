@@ -15,17 +15,19 @@ import { logger } from '../utils/logger.js'
  * - `audio`   — o vídeo serve, mas o áudio não; converte só o áudio para AAC.
  * - `video`   — o codec de vídeo é incompatível; transcodifica o vídeo.
  *
- * A entrada é o **arquivo completo em disco**, não o fluxo do torrent. A
- * tentativa anterior de ler `arquivo.createReadStream()` esbarrava num detalhe
- * do contêiner: boa parte das fontes de torrent traz o átomo `moov` (o índice do
- * MP4) no **fim** do arquivo, não no início. Num pipe não há como voltar para ler
- * esse índice depois de atravessar o `mdat`, então o FFmpeg abortava a sondagem
- * com `partial file` e gerava uma playlist vazia (`#EXTINF:0.000000`).
+ * A entrada é um **fluxo** alimentado pelo torrent, e o pipe fica aberto até o
+ * download terminar. Assim o FFmpeg publica cada segmento conforme os bytes
+ * chegam, em vez de esperar o arquivo inteiro — é o que permite começar a
+ * assistir com o download ainda em andamento.
  *
- * Com o arquivo inteiro em disco o FFmpeg busca livremente, lê o `moov` onde ele
- * estiver e converte numa única passada. O preço é esperar o download terminar
- * antes de começar a conversão — o que é aceitável diante da alternativa, que era
- * simplesmente não reproduzir.
+ * O que decide se isso funciona é a posição do índice do contêiner:
+ *
+ * - MKV/WebM e MP4 *faststart* trazem o índice no começo e fluem pelo pipe sem
+ *   problema (confirmado em teste: os segmentos crescem junto com os dados).
+ * - MP4 comum traz o `moov` no **fim**; num pipe não há como voltar para lê-lo
+ *   depois de atravessar o `mdat`, e o FFmpeg aborta com `partial file`. Nesses
+ *   casos o chamador precisa garantir que o `moov` já esteja em disco antes de
+ *   abrir o pipe — responsabilidade de `sessoes.js`.
  */
 
 /** Codecs de vídeo que o navegador toca sem transcodificar. */
@@ -41,8 +43,8 @@ const DURACAO_SEGMENTO = 4
  * Formato de entrada declarado ao FFmpeg conforme a extensão do arquivo.
  *
  * Declarar o formato evita que a sondagem automática erre o contêiner em
- * arquivos com extensão enganosa (comum em encodes caseiros). Como agora a
- * entrada é um arquivo buscável, o FFmpeg lê o índice onde ele estiver.
+ * arquivos com extensão enganosa (comum em encodes caseiros). Num pipe a
+ * sondagem tem menos contexto, então informar o formato é ainda mais útil.
  */
 const FORMATOS_CONTAINER = {
   '.mp4': 'mp4',
@@ -97,17 +99,25 @@ export function decidirModo(videoCodec, audioCodec) {
 }
 
 /**
- * Converte o arquivo baixado para HLS, publicando os segmentos conforme ficam
- * prontos.
+ * Converte um vídeo para HLS, publicando os segmentos conforme ficam prontos.
+ *
+ * A entrada pode ser um **fluxo** (alimentado pelo torrent, mantido aberto até o
+ * download terminar) ou um **caminho** em disco. O fluxo é o caminho rápido:
+ * o FFmpeg consome os bytes na medida em que chegam e o player começa antes do
+ * fim do download. Só funciona quando o índice do contêiner está no começo
+ * (MKV/WebM, MP4 *faststart*). Para MP4 com o `moov` no fim é preciso passar o
+ * caminho, com o arquivo inteiro já em disco.
  *
  * @param {object} opcoes
- * @param {string} opcoes.caminho caminho do arquivo de vídeo já completo em disco
+ * @param {import('node:stream').Readable} [opcoes.fluxo] fluxo do arquivo de vídeo
+ * @param {string} [opcoes.caminho] caminho do arquivo em disco (alternativa ao fluxo)
+ * @param {string} opcoes.extensao extensão do arquivo (define o formato de entrada)
  * @param {string} opcoes.diretorio pasta onde a playlist e os segmentos serão escritos
  * @param {string} opcoes.modo modo de conversão (`remux`, `audio` ou `video`)
  * @param {(progresso: object) => void} [opcoes.aoProgredir] callback de progresso
  * @returns {{parar: () => void}}
  */
-export function iniciarConversao({ caminho, diretorio, modo, aoProgredir }) {
+export function iniciarConversao({ fluxo, caminho, extensao, diretorio, modo, aoProgredir }) {
   fs.mkdirSync(diretorio, { recursive: true })
 
   const playlist = path.join(diretorio, 'playlist.m3u8')
@@ -115,21 +125,23 @@ export function iniciarConversao({ caminho, diretorio, modo, aoProgredir }) {
 
   const controle = { parado: false, comando: null }
 
-  const comando = ffmpeg(caminho)
+  const comando = ffmpeg(fluxo ?? caminho)
 
-  const formato = FORMATOS_CONTAINER[path.extname(caminho).toLowerCase()]
+  /*
+   * Num pipe não há nome de arquivo para o FFmpeg deduzir o contêiner, então
+   * declaramos o formato a partir da extensão. Sem isso a sondagem pode errar
+   * encodes caseiros com extensão enganosa.
+   */
+  const formato = FORMATOS_CONTAINER[extensao?.toLowerCase()]
 
   if (formato) {
     comando.inputFormat(formato)
   }
 
   /*
-   * O `moov` de muitas fontes fica no fim do arquivo e o FFmpeg, lendo de um
-   * pipe, não conseguia voltar para buscá-lo — daí a playlist vazia. Com o
-   * arquivo em disco isso deixa de ser problema, mas ainda normalizamos os
-   * timestamps: encodes antigos trazem um start time diferente de zero e o
-   * `#EXTINF` da playlist precisa bater com os PTS reais, senão o hls.js trava
-   * no MSE (anexa o buffer, mas o playhead não avança).
+   * Normalizamos os timestamps porque encodes antigos trazem um start time
+   * diferente de zero e o `#EXTINF` da playlist precisa bater com os PTS reais,
+   * senão o hls.js trava no MSE (anexa o buffer, mas o playhead não avança).
    *
    * `+genpts` gera PTS monotônicos. NÃO usamos `-copyts` nem `-start_at_zero`:
    * eles preservam os timestamps de origem, mas o muxer HLS então corta os
@@ -247,11 +259,16 @@ function aplicarModo(comando, modo) {
  * Aguarda a playlist existir e ter segmentos suficientes para o player começar
  * sem travar — o buffer inicial que protege conexões lentas.
  *
+ * Como a conversão agora corre junto com o download, o buffer precisa cobrir o
+ * tempo de baixar e converter o próximo trecho. Numa conexão de 4 Mbps
+ * (~500 KB/s) e segmentos de 4 s, 8 segmentos (~32 s de vídeo) dão folga
+ * confortável para a reprodução não alcançar a conversão.
+ *
  * @param {string} diretorio pasta da sessão
  * @param {number} minimoSegmentos quantidade mínima de segmentos prontos
  * @param {number} timeoutMs tempo máximo de espera
  */
-export function aguardarBufferInicial(diretorio, minimoSegmentos = 4, timeoutMs = 60000) {
+export function aguardarBufferInicial(diretorio, minimoSegmentos = 8, timeoutMs = 180000) {
   const playlist = path.join(diretorio, 'playlist.m3u8')
   const inicio = Date.now()
 
@@ -275,4 +292,77 @@ export function aguardarBufferInicial(diretorio, minimoSegmentos = 4, timeoutMs 
 
     verificar()
   })
+}
+
+/**
+ * Descobre a posição do átomo `moov` num MP4/MOV.
+ *
+ * Percorremos a lista de átomos do topo do arquivo (`ftyp`, `free`, `mdat`,
+ * `moov`...) somando os tamanhos até encontrar o `moov`. O que interessa é
+ * saber se ele está no começo (faststart, flui pelo pipe) ou no fim (precisa
+ * ser baixado antes de abrir o pipe).
+ *
+ * Devolve `null` quando não é possível determinar — arquivo ainda incompleto,
+ * contêiner diferente de MP4, ou átomo com tamanho de 64 bits que não
+ * conseguimos ler. Nesse caso o chamador assume o pior cenário (esperar o
+ * índice) para não arriscar uma playlist vazia.
+ *
+ * @param {string} caminho caminho do arquivo em disco
+ * @param {number} tamanhoArquivo tamanho total do arquivo em bytes
+ * @returns {{inicio: number, fim: number} | null}
+ */
+export function localizarMoov(caminho, tamanhoArquivo) {
+  let fd
+
+  try {
+    fd = fs.openSync(caminho, 'r')
+
+    const cabecalho = Buffer.alloc(16)
+    let posicao = 0
+
+    while (posicao < tamanhoArquivo) {
+      const lidos = fs.readSync(fd, cabecalho, 0, 16, posicao)
+
+      if (lidos < 8) return null
+
+      let tamanho = cabecalho.readUInt32BE(0)
+      const tipo = cabecalho.toString('latin1', 4, 8)
+
+      // Tamanho 1 indica um campo de 64 bits logo após o tipo.
+      if (tamanho === 1) {
+        if (lidos < 16) return null
+        const alto = cabecalho.readUInt32BE(8)
+        const baixo = cabecalho.readUInt32BE(12)
+        tamanho = alto * 2 ** 32 + baixo
+      }
+
+      // Tamanho 0 significa "até o fim do arquivo".
+      if (tamanho === 0) {
+        tamanho = tamanhoArquivo - posicao
+      }
+
+      if (tipo === 'moov') {
+        return { inicio: posicao, fim: posicao + tamanho }
+      }
+
+      // Um tamanho absurdo indica que lemos lixo (arquivo incompleto).
+      if (tamanho < 8 || posicao + tamanho > tamanhoArquivo) {
+        return null
+      }
+
+      posicao += tamanho
+    }
+
+    return null
+  } catch {
+    return null
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd)
+      } catch {
+        // O descritor já pode ter sido fechado.
+      }
+    }
+  }
 }
