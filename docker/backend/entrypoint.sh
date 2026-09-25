@@ -59,6 +59,8 @@ sync_env_var "MEDIA_SERVICE_URL" "${MEDIA_SERVICE_URL:-}"
 sync_env_var "TORRENTS_TORZNAB_URL" "${TORRENTS_TORZNAB_URL:-}"
 sync_env_var "TORRENTS_TORZNAB_KEY" "${TORRENTS_TORZNAB_KEY:-}"
 sync_env_var "TORRENTS_TORZNAB_CATEGORIA" "${TORRENTS_TORZNAB_CATEGORIA:-}"
+sync_env_var "TORRENTS_BASE_URL" "${TORRENTS_BASE_URL:-}"
+sync_env_var "TORRENTS_CACHE_TTL" "${TORRENTS_CACHE_TTL:-}"
 
 # ---------------------------------------------------------------------------
 # 2. Dependências PHP

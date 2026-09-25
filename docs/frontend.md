@@ -101,10 +101,24 @@ O fluxo correto, implementado em
    isso acontecer, repetimos `play()` **mutado**, que é sempre permitido — o
    filme começa de verdade e o usuário só precisa subir o volume.
 
-O `hls.js` é criado com **`startPosition: 0`**. Enquanto a conversão corre, a
-playlist é `#EXT-X-PLAYLIST-TYPE:EVENT` e ainda não tem `#EXT-X-ENDLIST`; sem
-essa opção o `hls.js` a trata como transmissão ao vivo e posiciona o playhead
-nos últimos segmentos (`liveSyncDurationCount`), pulando o começo do filme.
+O `hls.js` é criado com **`autoStartLoad: false`**, **`liveDurationInfinity:
+false`** e **`backBufferLength: 90`**. Enquanto a conversão corre, a playlist é
+`#EXT-X-PLAYLIST-TYPE:EVENT` e ainda não tem `#EXT-X-ENDLIST`; nesse cenário o
+`hls.js` marca `details.live = true`. Nesse caminho "ao vivo" o `startPosition`
+da configuração é **descartado**: o `setStartPosition()` o redefine para `-1` e
+cai no `getInitialLiveFragment()`, que posiciona o playhead na borda ao vivo
+(`liveSyncPosition`). O sintoma era o filme começar de um ponto diferente a cada
+carregamento — o salto de `segmento-26` para `segmento-318` (~20 min) — e a
+duração `Infinity`.
+
+Configurar `startPosition` **não** resolve, porque o valor é ignorado no caminho
+"ao vivo". A saída é desligar o carregamento automático (`autoStartLoad: false`)
+e iniciar a carga explicitamente com **`startLoad(0)`** no evento
+`MANIFEST_PARSED`. Como a playlist começa no tempo zero, o ramo "ao vivo" só é
+escolhido quando a posição vale `-1`; com `0` explícito ele é evitado e a
+reprodução começa pelo começo. O `liveDurationInfinity: false` (padrão) evita que
+a duração vire `Infinity`, e o `backBufferLength` alto preserva o que já foi
+assistido, permitindo voltar na barra sem rebuscar tudo.
 
 Esse mesmo arranjo é o que sustenta a **reprodução progressiva**: o media-service
 libera a playlist assim que há 8 segmentos em disco, mesmo com o download em
@@ -112,17 +126,31 @@ andamento. O `hls.js` acompanha a playlist que cresce e pede cada novo segmento
 conforme o playhead avança — enquanto um trecho toca, o próximo é baixado e
 convertido, sem interrupção.
 
-### Duração e barra de progresso (sem tocar no Plyr)
+### Duração e barra de progresso
 
 Enquanto a playlist é `EVENT`, o `hls.js` a enxerga como transmissão ao vivo: a
 duração total fica `Infinity`, a barra não anda e o tempo decorrido sai errado.
-A correção **não** mexe no Plyr — o player nunca é manipulado por código. O
-ajuste é no servidor: ao concluir a conversão, a playlist vira
+A correção principal é no servidor: ao concluir a conversão, a playlist vira
 `#EXT-X-PLAYLIST-TYPE:VOD` com `#EXT-X-ENDLIST`, e o Plyr passa a ler a duração
 real sozinho.
 
-A duração também é exposta no status da sessão (`duracao`), o que permite ao
-overlay exibir o tempo restante durante a conversão sem tocar no player.
+Durante a conversão, porém, a playlist ainda é `EVENT` e o `hls.js` só conhece
+os segmentos já publicados — a duração que ele calcula é a do trecho convertido,
+não a do filme. O ffprobe já leu a duração total no media-service e ela chega
+pelo status da sessão (`duracao`); o overlay a guarda em `duracaoTotal` e a
+repassa ao Plyr em [`aplicarDuracaoReal()`](../frontend/src/components/PlayerOverlay.vue:324).
+
+A via usada é a opção **`config.duration`** do Plyr, a duração "de fachada": o
+getter interno de `duration` devolve esse número no lugar do `media.duration`
+quando ele existe, então a barra representa o filme inteiro desde o primeiro
+instante. É bem mais estável do que sobrescrever `duration` no `<video>` — uma
+propriedade somente-leitura do `HTMLMediaElement`, que exige
+`Object.defineProperty` e ainda depende de o Plyr reler o atributo. Como o Plyr
+só redesenha os mostradores de tempo nos eventos `durationchange loadeddata
+loadedmetadata`, disparamos um `durationchange` logo depois de trocar o valor. A
+função é chamada em `MANIFEST_PARSED` e a cada `LEVEL_UPDATED`, para a barra não
+encolher quando o `hls.js` recalcula a duração a partir dos `#EXTINF` já
+publicados.
 
 O CSS do componente força `.plyr` e `.plyr__video-wrapper` a ocuparem 100% da
 altura do container com `aspect-video`; sem isso o wrapper não herda a área e o

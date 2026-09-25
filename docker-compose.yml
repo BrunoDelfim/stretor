@@ -38,9 +38,13 @@ services:
       - TMDB_API_KEY=${TMDB_API_KEY}
       - TMDB_LANGUAGE=${TMDB_LANGUAGE:-pt-BR}
       - TMDB_REGION=${TMDB_REGION:-BR}
+      - TMDB_MAX_PAGES=${TMDB_MAX_PAGES:-25}
       - TORRENTS_TORZNAB_URL=${TORRENTS_TORZNAB_URL:-http://prowlarr:9696}
       - TORRENTS_TORZNAB_KEY=${TORRENTS_TORZNAB_KEY}
       - TORRENTS_TORZNAB_CATEGORIA=${TORRENTS_TORZNAB_CATEGORIA:-2000}
+      # Reserva de torrents (YTS) usada quando o indexador não responde.
+      - TORRENTS_BASE_URL=${TORRENTS_BASE_URL:-https://yts.gg}
+      - TORRENTS_CACHE_TTL=${TORRENTS_CACHE_TTL:-1800}
     depends_on:
       init:
         condition: service_completed_successfully

@@ -46,6 +46,16 @@ const download = ref(null)
 const elementoVideo = ref(null)
 const urlPlaylist = ref(null)
 
+/*
+ * Duração total do filme, lida pelo ffprobe no media-service.
+ *
+ * Enquanto a conversão corre a playlist é `EVENT`, e o hls.js a trata como
+ * transmissão ao vivo: reporta `Infinity` e o Plyr não monta a barra de
+ * progresso. Guardamos o valor real para informar ao player qual é o fim da
+ * timeline, permitindo seek e exibição do tempo total antes do fim da conversão.
+ */
+const duracaoTotal = ref(null)
+
 let player = null
 let instanciaHls = null
 let timerStatus = null
@@ -136,6 +146,14 @@ async function iniciarPlayer(url) {
     controls: ['play-large', 'play', 'progress', 'current-time', 'duration', 'mute', 'volume', 'settings', 'fullscreen'],
     settings: ['quality', 'speed'],
     autoplay: true,
+    /*
+     * Duração "de fachada" do Plyr. Enquanto a playlist é `EVENT`, a duração
+     * que o hls.js calcula é apenas a do trecho já convertido, então o Plyr
+     * mostraria um tempo total que muda conforme a conversão avança. Passamos o
+     * valor real lido pelo ffprobe (quando disponível) para a barra representar
+     * o filme inteiro desde o primeiro instante.
+     */
+    duration: duracaoTotal.value ?? undefined,
   })
 
   /*
@@ -177,14 +195,30 @@ async function iniciarPlayer(url) {
     midia.src = url
   } else if (Hls.isSupported()) {
     /*
-     * `startPosition: 0` é o que impede o hls.js de entrar na borda "ao vivo".
      * Enquanto a conversão corre, a playlist é `EVENT` e ainda não tem
-     * `#EXT-X-ENDLIST`, então o hls.js a trata como transmissão ao vivo e
-     * posiciona o playhead nos últimos segmentos (`liveSyncDurationCount`). Com
-     * a posição zerada ele começa na primeira peça — o início do filme — e segue
-     * a playlist crescendo.
+     * `#EXT-X-ENDLIST`. Por isso o hls.js marca `details.live = true` — o
+     * `live` só vira `false` quando o `#EXT-X-ENDLIST` aparece. Nesse caminho
+     * "ao vivo" o `startPosition` da configuração é descartado: ele é forçado a
+     * `-1` e o playhead vai para a borda ao vivo (`getInitialLiveFragment()`),
+     * que muda de lugar a cada carregamento conforme a quantidade de segmentos
+     * já convertidos. Era isso que fazia o filme começar de um ponto diferente
+     * toda vez.
+     *
+     * A saída não é configurar `startPosition`, e sim desligar o carregamento
+     * automático (`autoStartLoad: false`) e mandar o hls.js começar do zero no
+     * evento `MANIFEST_PARSED`, com `startLoad(0)`. A partir daí o
+     * `setStartPosition()` mantém o início em zero, porque o ramo "ao vivo" só é
+     * escolhido quando a posição vale `-1`. O `liveDurationInfinity: false`
+     * (padrão) evita que a duração vire `Infinity`, e o `backBufferLength` alto
+     * preserva o que já foi assistido, permitindo voltar na barra sem rebuscar
+     * tudo.
      */
-    instanciaHls = new Hls({ enableWorker: true, startPosition: 0 })
+    instanciaHls = new Hls({
+      enableWorker: true,
+      autoStartLoad: false,
+      liveDurationInfinity: false,
+      backBufferLength: 90,
+    })
 
     /*
      * O `attachMedia` vem ANTES do `loadSource`. Na ordem inversa o hls.js
@@ -199,14 +233,35 @@ async function iniciarPlayer(url) {
      * O `play()` só depois do manifesto interpretado. Chamá-lo antes disso
      * esbarrava em um MediaSource ainda sem buffer, e a rejeição era engolida
      * pelo `catch` — o filme ficava parado sem nenhum aviso.
+     *
+     * O `startLoad(0)` é o que garante o início pelo começo: com o carregamento
+     * automático desligado, é ele que define a posição zero antes do primeiro
+     * `tick()` do hls.js. Sem isso, a playlist `EVENT` (live) mandaria o playhead
+     * para a borda ao vivo.
      */
     instanciaHls.on(Hls.Events.MANIFEST_PARSED, () => {
       if (cancelado) return
+
+      instanciaHls.startLoad(0)
+
+      aplicarDuracaoReal()
 
       Promise.resolve(player?.play()).catch(() => {
         if (player) player.muted = true
         Promise.resolve(player?.play()).catch(() => {})
       })
+    })
+
+    /*
+     * A cada nível atualizado a duração é recalculada. Enquanto a playlist é
+     * `EVENT`, o hls.js soma apenas os `#EXTINF` já publicados — o valor cresce
+     * junto com a conversão e fica menor que o filme. Reaplicamos a duração real
+     * para a barra não encolher a cada atualização.
+     */
+    instanciaHls.on(Hls.Events.LEVEL_UPDATED, () => {
+      if (cancelado) return
+
+      aplicarDuracaoReal()
     })
 
     // Uma falha fatal aqui é de reprodução, não de fonte: a playlist existe e
@@ -245,6 +300,37 @@ async function iniciarPlayer(url) {
       Promise.resolve(player.play()).catch(() => {})
     })
   }
+}
+
+/**
+ * Informa ao Plyr a duração real do filme.
+ *
+ * Enquanto a conversão corre, a playlist é `EVENT` e o hls.js só conhece os
+ * segmentos já publicados — a duração que ele calcula é a do trecho convertido,
+ * não a do filme. O Plyr então monta uma barra que "cresce" a cada atualização,
+ * e o usuário não vê o tempo total.
+ *
+ * O ffprobe já leu a duração total no media-service e ela chega pelo status da
+ * sessão. O Plyr aceita exatamente esse valor como duração "de fachada" pela
+ * opção `config.duration`: o getter interno dele usa esse número no lugar do
+ * `media.duration` quando ele existe. É a via suportada — bem mais estável do
+ * que sobrescrever uma propriedade somente-leitura do `<video>`.
+ *
+ * Como o Plyr só redesenha os mostradores de tempo nos eventos
+ * `durationchange loadeddata loadedmetadata`, disparamos um `durationchange`
+ * logo depois de trocar o valor. Sem isso, o texto do tempo total continuaria
+ * mostrando a duração antiga.
+ */
+function aplicarDuracaoReal() {
+  const midia = player?.media
+
+  if (!player || !midia || !duracaoTotal.value) return
+
+  if (player.config.duration === duracaoTotal.value) return
+
+  player.config.duration = duracaoTotal.value
+
+  midia.dispatchEvent(new Event('durationchange'))
 }
 
 /**
@@ -350,6 +436,13 @@ function aguardarFonte() {
           const url = streamingService.urlPlaylist(status.playlist)
 
           /*
+           * A duração vem do ffprobe no media-service. Guardamos antes de montar
+           * o player porque a playlist `EVENT` ainda não declara o fim — sem
+           * esse valor o Plyr não teria como dimensionar a barra de progresso.
+           */
+          duracaoTotal.value = status.duracao ?? null
+
+          /*
            * A fonte está boa: a playlist existe e foi servida pelo servidor.
            * Montar o player é um passo separado — se falhar, o erro é de UI e
            * não pode descartar uma fonte válida. Antes, condicionar o sucesso
@@ -363,6 +456,7 @@ function aguardarFonte() {
 
         estado.value = 'preparando'
         download.value = status.download ?? null
+        duracaoTotal.value = status.duracao ?? duracaoTotal.value
         mensagem.value = mensagemDeProgresso(status)
       } catch {
         // Falha pontual: tentamos de novo no próximo ciclo.
@@ -420,6 +514,9 @@ async function iniciar() {
   tentativaAtual.value = 0
   totalFontes.value = 0
   download.value = null
+  // A duração pertence ao filme anterior; sem zerar, a barra do novo filme
+  // herdaria o tamanho do antigo até o status trazer o valor correto.
+  duracaoTotal.value = null
 
   try {
     const fontes = await streamingService.buscarFontes(props.filme.id)
