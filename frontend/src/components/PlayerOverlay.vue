@@ -75,6 +75,25 @@ const urlPlaylist = ref(null)
 const buscandoTrecho = ref(false)
 
 /*
+ * Diagnóstico visível na tela.
+ *
+ * O console do navegador nem sempre está à mão (ou o usuário não o abre), e
+ * "o filme não começou" chega sem nenhuma pista. Este painel mostra, sobre o
+ * vídeo, o que o player está fazendo: se o manifesto foi lido, quantos trechos
+ * existem, se há buffer, se o `play()` foi recusado. É temporário e deve sair
+ * quando o fluxo estiver estável.
+ */
+const diagnostico = ref([])
+
+function anotarDiagnostico(texto) {
+  const carimbo = new Date().toLocaleTimeString('pt-BR')
+
+  diagnostico.value = [...diagnostico.value.slice(-7), `${carimbo} ${texto}`]
+
+  console.info('[player]', texto)
+}
+
+/*
  * Duração total do filme, lida pelo ffprobe no media-service.
  *
  * Enquanto a conversão corre a playlist é `EVENT`, e o hls.js a trata como
@@ -120,6 +139,16 @@ let geracao = 0
 let primeiroTrechoAncorado = false
 
 /*
+ * Marca se o usuário já conduziu uma busca nesta reprodução.
+ *
+ * A âncora do início existe para corrigir a escolha automática do primeiro
+ * trecho, não para sobrepor a vontade do usuário. Sem esta flag, uma busca feita
+ * antes de o primeiro trecho chegar seria desfeita pelo ajuste de âncora — o
+ * filme voltaria ao começo logo depois de o usuário arrastar a barra.
+ */
+let usuarioBuscou = false
+
+/*
  * Insistência no trecho buscado.
  *
  * A conversão publica os segmentos na ordem do filme, então um salto para a
@@ -147,6 +176,22 @@ let alvoDeSeek = null
 
 const LIMITE_TENTATIVAS_DE_TRECHO = 60
 const INTERVALO_TENTATIVA_DE_TRECHO_MS = 2000
+
+/*
+ * Vigia do início da reprodução.
+ *
+ * O primeiro `play()` raramente basta. A política de autoplay do navegador
+ * recusa a chamada enquanto não houve gesto do usuário, e o MediaSource só
+ * entrega imagem depois que o primeiro trecho foi anexado ao buffer. Em vez de
+ * disparar um `play()` único e torcer, um vigia insiste em intervalos até o
+ * vídeo sair da pausa — com um teto, para não insistir para sempre num fluxo
+ * que realmente parou.
+ */
+const LIMITE_TENTATIVAS_DE_PLAY = 30
+const INTERVALO_VIGIA_DE_PLAY_MS = 1000
+
+let tentativasDePlay = 0
+let timerPlay = null
 
 /*
  * Borda "ao vivo" fixada no playhead.
@@ -201,6 +246,8 @@ async function limparSessao() {
 
 /** Destrói o player e o Hls, evitando vazamento entre aberturas. */
 function destruirPlayer() {
+  pararVigia()
+
   if (instanciaHls) {
     instanciaHls.destroy()
     instanciaHls = null
@@ -229,6 +276,8 @@ function destruirPlayer() {
 async function iniciarPlayer(url, minhaGeracao) {
   if (!url) return
 
+  anotarDiagnostico(`montando player para ${url}`)
+
   urlPlaylist.value = url
 
   /*
@@ -249,6 +298,8 @@ async function iniciarPlayer(url, minhaGeracao) {
   const video = elementoVideo.value
 
   if (!video) {
+    anotarDiagnostico('elemento <video> não existe no DOM')
+
     estado.value = 'erro'
     erro.value = 'Não foi possível preparar o player.'
     return
@@ -266,7 +317,13 @@ async function iniciarPlayer(url, minhaGeracao) {
   player = new Plyr(video, {
     controls: ['play-large', 'play', 'progress', 'current-time', 'duration', 'mute', 'volume', 'settings', 'fullscreen'],
     settings: ['quality', 'speed'],
-    autoplay: true,
+    /*
+     * O autoplay fica desligado de propósito. Ligado, o Plyr tentava tocar no
+     * instante em que era montado — antes de o HLS existir — e a rejeição era
+     * descartada. Quem conduz a reprodução é `vigiarReproducao()`, que só age
+     * quando existe buffer para tocar.
+     */
+    autoplay: false,
     /*
      * Duração "de fachada" do Plyr. Enquanto a playlist é `EVENT`, a duração
      * que o hls.js calcula é apenas a do trecho já convertido, então o Plyr
@@ -305,16 +362,28 @@ async function iniciarPlayer(url, minhaGeracao) {
   if (!midia) {
     // Sem mídia o `<video>` fica sem fonte e o navegador passa a resolver a base
     // do documento como mídia — a origem da requisição nua `/media/sessao/<hash>`.
+    anotarDiagnostico('player.media nulo após o ready do Plyr')
+
     destruirPlayer()
     estado.value = 'erro'
     erro.value = 'Não foi possível preparar o player.'
     return
   }
 
-  if (midia.canPlayType('application/vnd.apple.mpegurl')) {
-    // Safari e iOS tocam HLS nativamente.
-    midia.src = url
-  } else if (Hls.isSupported()) {
+  /*
+   * A ordem importa: o hls.js vem PRIMEIRO.
+   *
+   * `canPlayType('application/vnd.apple.mpegurl')` devolve `"maybe"` no Chrome,
+   * no Edge e no Firefox — não só no Safari. Como `"maybe"` é uma string
+   * verdadeira, testar o suporte nativo antes mandava esses navegadores pelo
+   * caminho do Safari: o `<video>` recebia a playlist como `src` e ficava
+   * parado, porque nenhum deles decodifica HLS por conta própria. O hls.js é
+   * quem faz a ponte via MediaSource, então ele tem prioridade sempre que
+   * existir. O caminho nativo fica só para o Safari de verdade, onde o hls.js
+   * não é suportado.
+   */
+  if (Hls.isSupported()) {
+    anotarDiagnostico('usando hls.js')
     /*
      * Desligamos o carregamento automático (`autoStartLoad: false`) e damos a
      * partida explicitamente no `MANIFEST_PARSED`, com `startLoad(0)`. Numa
@@ -326,14 +395,52 @@ async function iniciarPlayer(url, minhaGeracao) {
      * preserva o que já foi assistido, permitindo voltar na barra sem rebuscar
      * tudo.
      */
-    // Reprodução nova: o playhead ainda não foi ancorado no primeiro trecho.
+    // Reprodução nova: o playhead ainda não foi ancorado no primeiro trecho e o
+    // usuário ainda não buscou nada nesta timeline.
     primeiroTrechoAncorado = false
+    usuarioBuscou = false
 
     instanciaHls = new Hls({
       enableWorker: true,
       autoStartLoad: false,
       liveDurationInfinity: false,
       backBufferLength: 90,
+
+      /*
+       * Folga de buffer para redes lentas.
+       *
+       * Os padrões do hls.js (30 s de buffer, 60 MB) pressupõem banda de
+       * streaming. Numa conexão de ~1 Mbps o trecho de 10 s leva mais tempo
+       * para baixar do que para tocar, o buffer esvazia e o hls.js emite
+       * `bufferStalledError` a cada poucos segundos — o vídeo engasga mesmo com
+       * a fonte saudável. Guardar mais minutos à frente absorve a variação da
+       * rede e transforma a parada em espera.
+       *
+       * `maxMaxBufferLength` é o teto que o próprio hls.js pode reduzir quando
+       * a banda cai; mantê-lo alto evita que ele encolha o buffer justamente
+       * quando a rede piora. `maxBufferSize` acompanha, para o teto de bytes
+       * não cortar o de tempo.
+       */
+      maxBufferLength: 120,
+      maxMaxBufferLength: 600,
+      maxBufferSize: 200 * 1000 * 1000,
+
+      /*
+       * Estimativa inicial de banda conservadora. O padrão (500 kbps) faz o
+       * hls.js acreditar que há mais banda do que existe e encher o buffer
+       * rápido demais; com um valor menor ele carrega em ritmo sustentável
+       * desde o primeiro trecho.
+       */
+      abrEwmaDefaultEstimate: 300 * 1000,
+
+      /*
+       * Tolerância a buracos no buffer e insistência do vigia interno. Numa
+       * rede instável o trecho pode chegar com uma pequena descontinuidade; sem
+       * folga o hls.js trata como stall e para a reprodução.
+       */
+      maxBufferHole: 0.5,
+      highBufferWatchdogPeriod: 1,
+      nudgeMaxRetry: 10,
     })
 
     /*
@@ -353,10 +460,6 @@ async function iniciarPlayer(url, minhaGeracao) {
     instanciaHls.attachMedia(midia)
 
     /*
-     * O `play()` só depois do manifesto interpretado. Chamá-lo antes disso
-     * esbarrava em um MediaSource ainda sem buffer, e a rejeição era engolida
-     * pelo `catch` — o filme ficava parado sem nenhum aviso.
-     *
      * O `startLoad(0)` é o que garante o início pelo começo: com o carregamento
      * automático desligado, é ele que define a posição zero antes do primeiro
      * `tick()` do hls.js. Sem isso, a playlist `EVENT` (live) mandaria o playhead
@@ -373,22 +476,38 @@ async function iniciarPlayer(url, minhaGeracao) {
        */
       const detalhes = instanciaHls.levels?.[instanciaHls.currentLevel]?.details
 
-      console.info('[player] manifesto:', {
-        live: detalhes?.live,
-        startSN: detalhes?.startSN,
-        endSN: detalhes?.endSN,
-        trechos: detalhes?.fragments?.length,
-        primeiroTrecho: detalhes?.fragments?.[0]?.start,
-      })
+      anotarDiagnostico(
+        `manifesto: live=${detalhes?.live} trechos=${detalhes?.fragments?.length} ` +
+          `inicio=${detalhes?.fragments?.[0]?.start}`
+      )
 
       instanciaHls.startLoad(0)
 
       aplicarDuracaoReal()
 
-      Promise.resolve(player?.play()).catch(() => {
-        if (player) player.muted = true
-        Promise.resolve(player?.play()).catch(() => {})
-      })
+      /*
+       * Sem `play()` aqui. O `MANIFEST_PARSED` só diz que a playlist foi
+       * interpretada — ainda não há um byte do filme no MediaSource, e um
+       * `play()` neste ponto esbarra num buffer vazio. O arranque fica a cargo
+       * de `FRAG_BUFFERED`, que só dispara com o primeiro trecho já anexado.
+       *
+       * O manifesto é também onde conferimos se a carga realmente andou: uma
+       * playlist ao vivo descartada pelo `startLoad` deixaria a tela parada sem
+       * nenhum erro visível, e este alarme denuncia o caso.
+       */
+      const hlsDaCarga = instanciaHls
+
+      setTimeout(() => {
+        if (cancelado || minhaGeracao !== geracao || instanciaHls !== hlsDaCarga) return
+
+        const elemento = player?.media
+
+        if (elemento?.buffered && elemento.buffered.length === 0) {
+          anotarDiagnostico('nenhum trecho em buffer após 5s; retomando a carga')
+
+          instanciaHls.startLoad(0)
+        }
+      }, 5000)
     })
 
     /*
@@ -401,6 +520,27 @@ async function iniciarPlayer(url, minhaGeracao) {
       if (cancelado || minhaGeracao !== geracao) return
 
       aplicarDuracaoReal()
+    })
+
+    /*
+     * Este é o sinal de que já dá para tocar: o trecho está carregado e anexado,
+     * e o MediaSource tem dados no buffer. Só a partir daqui o `play()` tem
+     * chance de ser aceito pelo elemento — antes disso ele é recusado ou fica
+     * pendente sem nunca virar imagem.
+     */
+    instanciaHls.on(Hls.Events.FRAG_BUFFERED, () => {
+      if (cancelado || minhaGeracao !== geracao) return
+
+      const midiaDoBuffer = player?.media
+
+      if (!midiaDoBuffer) return
+
+      anotarDiagnostico(
+        `trecho em buffer: tempo=${midiaDoBuffer.currentTime.toFixed(2)} ` +
+          `pausado=${midiaDoBuffer.paused} pronto=${midiaDoBuffer.readyState}`
+      )
+
+      if (midiaDoBuffer.paused) vigiarReproducao()
     })
 
     /*
@@ -439,10 +579,14 @@ async function iniciarPlayer(url, minhaGeracao) {
        * adiantado —, trazemos o playhead para zero. É o ajuste que faz "assistir"
        * abrir no início real, e não num pedaço do meio com o relógio em 00:00.
        *
-       * A âncora vale uma única vez por reprodução, antes de qualquer busca do
-       * usuário: daí em diante o playhead é dele.
+       * A âncora vale uma única vez por reprodução e NUNCA depois de uma busca
+       * do usuário. A checagem de `usuarioBuscou` cobre o caso em que o arrasto
+       * acontece antes de o primeiro trecho chegar: sem ela, o `FRAG_LOADED`
+       * seguinte encontraria a flag ainda limpa e devolveria o filme ao início,
+       * desfazendo a busca. É o mesmo comportamento em qualquer ordem de
+       * eventos — a intenção do usuário sempre vence a âncora.
        */
-      if (primeiroTrechoAncorado) return
+      if (primeiroTrechoAncorado || usuarioBuscou) return
 
       primeiroTrechoAncorado = true
 
@@ -450,13 +594,25 @@ async function iniciarPlayer(url, minhaGeracao) {
 
       if (!midia) return
 
-      if (inicioDoTrecho > 0.5 && instanciaHls) {
+      /*
+       * Aqui NÃO se chama `startLoad()`. A versão anterior recarregava a partir
+       * do zero quando o primeiro trecho começava longe da cabeça — e o efeito
+       * era o oposto do pretendido: `startLoad` descarta o buffer já anexado e
+       * reinicia o ciclo de carga, de modo que o `FRAG_BUFFERED` seguinte
+       * encontrava o buffer vazio de novo e o `play()` nunca chegava a valer.
+       * Com trechos de ~10 s, a carga reiniciava a cada trecho e o filme ficava
+       * eternamente no primeiro quadro.
+       *
+       * Como a borda "ao vivo" está presa ao playhead (`fixarBordaAoPlayhead`),
+       * basta mover o cursor: a carga seguinte parte de zero sozinha, sem
+       * descartar o que já está em buffer.
+       */
+      if (inicioDoTrecho > 0.5) {
         console.warn(
-          `[player] primeiro trecho em ${inicioDoTrecho.toFixed(2)}s; recarregando do início`
+          `[player] primeiro trecho em ${inicioDoTrecho.toFixed(2)}s; ancorando o playhead em 0`
         )
 
         midia.currentTime = 0
-        instanciaHls.startLoad(0)
 
         return
       }
@@ -482,12 +638,9 @@ async function iniciarPlayer(url, minhaGeracao) {
     instanciaHls.on(Hls.Events.ERROR, (_evento, dados) => {
       // O detalhe é o que distingue um stall de buffer de um erro de rede; sem
       // ele o console não ajuda a diagnosticar a tela preta.
-      console.error(
-        '[player] erro do hls.js:',
-        dados.type,
-        dados.details,
-        dados.reason ?? '',
-        dados.frag ? `trecho=${dados.frag.start}` : ''
+      anotarDiagnostico(
+        `erro hls.js: ${dados.type}/${dados.details} fatal=${dados.fatal} ` +
+          `${dados.reason ?? ''}`
       )
 
       if (!dados.fatal) return
@@ -517,12 +670,21 @@ async function iniciarPlayer(url, minhaGeracao) {
         return
       }
 
+      pararVigia()
+
       erro.value = 'Não foi possível carregar o vídeo. Tente novamente.'
       estado.value = 'erro'
     })
 
     instanciaHls.loadSource(url)
+  } else if (midia.canPlayType('application/vnd.apple.mpegurl')) {
+    // Safari e iOS tocam HLS nativamente, sem MediaSource.
+    anotarDiagnostico('HLS nativo (Safari)')
+
+    midia.src = url
   } else {
+    anotarDiagnostico('navegador sem suporte a HLS nem a MSE')
+
     erro.value = 'Seu navegador não suporta a reprodução deste vídeo.'
     estado.value = 'erro'
     return
@@ -537,15 +699,18 @@ async function iniciarPlayer(url, minhaGeracao) {
   mensagem.value = ''
 
   /*
-   * O `play()` fica a cargo do evento `MANIFEST_PARSED` (acima), quando o
-   * MediaSource já tem buffer. Aqui só cobrimos o Safari, que toca HLS nativo e
-   * não passa pelo hls.js.
+   * O `play()` fica a cargo do vigia. No caminho do hls.js ele é disparado pelo
+   * `FRAG_BUFFERED` (acima), quando o primeiro trecho já está no buffer. No
+   * caminho nativo não existe evento do hls.js para esperar, então o vigia
+   * começa aqui e cobre o intervalo até o `<video>` aceitar o `play()`.
+   *
+   * A decisão é por `instanciaHls`, e não por `canPlayType`: o Chrome também
+   * responde `"maybe"` para HLS, e usá-lo como critério fazia o vigia ser
+   * iniciado duas vezes no caminho do hls.js — ou nenhuma, quando o ramo nativo
+   * era escolhido por engano.
    */
-  if (midia.canPlayType('application/vnd.apple.mpegurl')) {
-    Promise.resolve(player.play()).catch(() => {
-      player.muted = true
-      Promise.resolve(player.play()).catch(() => {})
-    })
+  if (!instanciaHls) {
+    vigiarReproducao()
   }
 }
 
@@ -590,6 +755,108 @@ function aplicarDuracaoReal() {
   player.config.duration = duracao
 
   midia.dispatchEvent(new Event('durationchange'))
+}
+
+/**
+ * Registra no console por que a reprodução não andou.
+ *
+ * Sem isso, "o filme não começou" chega ao desenvolvedor sem pista alguma:
+ * `NotAllowedError` (autoplay bloqueado), `NotSupportedError` (faixa que o MSE
+ * não decodifica) e um simples buffer vazio produzem a mesma tela parada. O
+ * `MediaError` do elemento e o estado do buffer separam os casos.
+ */
+function registrarErroDeMidia(falha) {
+  const midia = player?.media
+  const erroDeMidia = midia?.error
+
+  if (!falha && !erroDeMidia) return
+
+  anotarDiagnostico(
+    `falha: ${falha?.name ?? '-'} ${falha?.message ?? ''} ` +
+      `midia=${erroDeMidia?.code ?? '-'} pronto=${midia?.readyState} ` +
+      `pausado=${midia?.paused} tempo=${midia?.currentTime?.toFixed(2)} ` +
+      `buffer=${midia?.buffered?.length ?? 0}`
+  )
+}
+
+/** Cancela o vigia de reprodução. */
+function pararVigia() {
+  if (timerPlay) {
+    clearTimeout(timerPlay)
+    timerPlay = null
+  }
+}
+
+/** Tenta dar play uma vez, tratando a recusa por autoplay. */
+function tentarReproduzir() {
+  if (!player) return
+
+  Promise.resolve(player.play()).catch((falha) => {
+    // Sem gesto do usuário o navegador recusa som; silenciar costuma liberar.
+    if (falha?.name === 'NotAllowedError' && !player.muted) {
+      player.muted = true
+
+      Promise.resolve(player.play()).catch((outraFalha) => registrarErroDeMidia(outraFalha))
+
+      return
+    }
+
+    registrarErroDeMidia(falha)
+  })
+}
+
+/**
+ * Insiste em iniciar a reprodução até o vídeo sair da pausa.
+ *
+ * Idempotente de propósito: enquanto o vigia está ativo, novas chamadas são
+ * ignoradas. O `FRAG_BUFFERED` dispara a cada trecho e reiniciar a contagem em
+ * cada um não faria sentido. A verificação passa pelo estado do elemento, então
+ * assim que o vídeo toca — por aqui ou pelo clique do usuário — o vigia se
+ * encerra sozinho.
+ */
+function vigiarReproducao() {
+  if (timerPlay) return
+
+  tentativasDePlay = 0
+
+  const passo = () => {
+    timerPlay = null
+
+    const midia = player?.media
+
+    /*
+     * `instanciaHls` é nulo no caminho nativo (Safari), onde não há hls.js
+     * nenhum. Exigir a instância aqui fazia o vigia sair na primeira linha e o
+     * `play()` nunca ser tentado — a tela ficava preta com o player liberado.
+     */
+    if (cancelado || !midia) return
+
+    // Já toca: o vigia cumpriu o papel.
+    if (!midia.paused) {
+      anotarDiagnostico('reprodução iniciada')
+
+      return
+    }
+
+    anotarDiagnostico(
+      `tentativa de play ${tentativasDePlay + 1}: pronto=${midia.readyState} ` +
+        `buffer=${midia.buffered?.length ?? 0}`
+    )
+
+    tentarReproduzir()
+
+    tentativasDePlay += 1
+
+    if (tentativasDePlay >= LIMITE_TENTATIVAS_DE_PLAY) {
+      registrarErroDeMidia(null)
+
+      return
+    }
+
+    timerPlay = setTimeout(passo, INTERVALO_VIGIA_DE_PLAY_MS)
+  }
+
+  timerPlay = setTimeout(passo, INTERVALO_VIGIA_DE_PLAY_MS)
 }
 
 /**
@@ -677,6 +944,25 @@ function fimDoSeekable(midia) {
 }
 
 /**
+ * Diz se o tempo alvo já está coberto pelo buffer do elemento.
+ *
+ * É a diferença que separa uma busca instantânea de uma que precisa recarregar:
+ * dentro do buffer basta mover o playhead; fora dele o trecho precisa ser
+ * buscado de novo.
+ */
+function alvoEstaEmBuffer(midia, alvo) {
+  if (!midia?.buffered?.length) return false
+
+  for (let indice = 0; indice < midia.buffered.length; indice += 1) {
+    if (alvo >= midia.buffered.start(indice) && alvo <= midia.buffered.end(indice)) {
+      return true
+    }
+  }
+
+  return false
+}
+
+/**
  * Conduz uma busca para o tempo alvo.
  *
  * O alvo é comparado com o fim do `seekable`:
@@ -692,30 +978,45 @@ function executarSeek(alvo) {
 
   if (!midia || !instanciaHls || !Number.isFinite(alvo)) return
 
+  /*
+   * A partir daqui o playhead é do usuário: a âncora do início não age mais.
+   * Sem isso, o `FRAG_LOADED` do trecho buscado reancorava o filme em zero.
+   */
+  usuarioBuscou = true
+
+  /*
+   * Alvo já em buffer: a busca é só mover o playhead.
+   *
+   * Aqui NÃO se chama `startLoad`. A versão anterior chamava em qualquer busca
+   * dentro do convertido, e `startLoad` descarta o buffer e reinicia o ciclo de
+   * carga — o `FRAG_LOADED` seguinte encontrava o playhead em zero e reancorava
+   * o filme no começo. Era a origem do "arrasto a barra e volto ao início".
+   * Com o alvo já em buffer, escrever `currentTime` é suficiente e instantâneo.
+   */
+  if (alvoEstaEmBuffer(midia, alvo)) {
+    alvoDeSeek = null
+
+    try {
+      midia.currentTime = alvo
+    } catch {
+      // O elemento pode recusar por um instante; o próximo trecho reaplica.
+    }
+
+    return
+  }
+
   const fimConvertido = fimDoSeekable(midia)
 
   /*
-   * Dentro do trecho já convertido a busca é local: basta conduzir a carga pelo
-   * hls.js e reescrever o playhead. O alvo já está em buffer (ou a caminho dele),
-   * então o mecanismo de `FRAG_LOADED` reaplica o cursor quando o trecho chega.
+   * Fora do buffer mas dentro do que já foi convertido: o trecho existe no
+   * servidor, só não está carregado. Aqui o `startLoad` é legítimo — não há
+   * buffer daquele ponto para preservar — e a borda presa ao alvo faz a carga
+   * seguir para o ponto buscado em vez de escapar para a borda da conversão.
    */
   if (alvo <= fimConvertido + 0.5) {
     alvoDeSeek = alvo
 
-    /*
-     * `startLoad` define a posição de partida antes do próximo `tick()`. Como a
-     * borda "ao vivo" está presa ao alvo, a carga segue para o ponto buscado em
-     * vez de escapar para a borda crescente da conversão.
-     */
     instanciaHls.startLoad(alvo)
-
-    if (Math.abs(midia.currentTime - alvo) > 0.5) {
-      try {
-        midia.currentTime = alvo
-      } catch {
-        // O elemento pode recusar até o buffer cobrir o alvo.
-      }
-    }
 
     return
   }
@@ -839,6 +1140,9 @@ function aguardarReposicionamento(sessao, minhaGeracao) {
 
         if (cancelado || minhaGeracao !== geracao) return resolve(null)
 
+        // Sessão morta no servidor: não há reposicionamento a esperar.
+        if (status.status === 'inexistente') return resolve(null)
+
         if (status.status === 'erro') return resolve(null)
 
         if (status.status === 'pronto' && status.playlist) return resolve(status)
@@ -959,6 +1263,17 @@ function aguardarFonte(minhaGeracao) {
         const status = await streamingService.statusSessao(sessaoDaFonte)
 
         if (cancelado || minhaGeracao !== geracao) return resolve('cancelado')
+
+        /*
+         * Sessão inexistente é terminal, não transitória. O media-service
+         * reiniciou (o mapa de sessões é em memória) ou a sessão foi encerrada
+         * por outro caminho; insistir manteria o overlay girando para sempre
+         * contra um id morto. Abandonamos a fonte na hora.
+         */
+        if (status.status === 'inexistente') {
+          await limparSessaoAtual()
+          return resolve('falhou')
+        }
 
         if (status.status === 'erro') {
           await limparSessaoAtual()
@@ -1218,6 +1533,18 @@ onUnmounted(() => {
           >
             Áudio: {{ idiomaConfirmado }}
           </span>
+
+          <!--
+            Painel de diagnóstico temporário. Fica sobre o vídeo para que o
+            usuário consiga relatar o que o player está fazendo sem abrir o
+            console do navegador. Remover quando o fluxo estiver estável.
+          -->
+          <div
+            v-if="diagnostico.length"
+            class="absolute bottom-3 left-3 z-20 max-w-[80%] rounded bg-black/75 px-3 py-2 font-mono text-[10px] leading-tight text-lime-300"
+          >
+            <p v-for="(linha, indice) in diagnostico" :key="indice">{{ linha }}</p>
+          </div>
 
           <video ref="elementoVideo" class="h-full w-full" playsinline />
         </div>

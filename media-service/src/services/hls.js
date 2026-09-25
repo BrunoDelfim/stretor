@@ -202,6 +202,16 @@ function medirIntervaloKeyframes(arquivo) {
      */
     const binario = process.env.FFPROBE_PATH || 'ffprobe'
 
+    /*
+     * `-read_intervals` limita a varredura a uma janela do arquivo. Sem ele o
+     * ffprobe percorre o arquivo inteiro até juntar os keyframes da amostra — e
+     * no caminho de fluxo o arquivo ainda está sendo baixado, então a leitura
+     * trava nos buracos do download e a medição volta vazia. Com a janela, a
+     * leitura para assim que os keyframes da amostra aparecem.
+     *
+     * A janela é generosa (alguns minutos) para caber os 12 keyframes mesmo num
+     * encode esparso de ~10 s entre keyframes.
+     */
     const processo = spawn(
       binario,
       [
@@ -209,6 +219,8 @@ function medirIntervaloKeyframes(arquivo) {
         'error',
         '-select_streams',
         'v:0',
+        '-read_intervals',
+        '%+300',
         '-show_entries',
         'packet=pts_time,flags',
         '-of',
@@ -220,6 +232,13 @@ function medirIntervaloKeyframes(arquivo) {
 
     const tempos = []
     let buffer = ''
+    let encerrado = false
+
+    const finalizar = () => {
+      if (encerrado) return
+      encerrado = true
+      resolve(calcularIntervalo(tempos))
+    }
 
     const coletar = (texto) => {
       buffer += texto
@@ -239,7 +258,13 @@ function medirIntervaloKeyframes(arquivo) {
         if (Number.isFinite(segundos)) tempos.push(segundos)
 
         if (tempos.length >= KEYFRAMES_AMOSTRADOS) {
+          /*
+           * Já temos a amostra. Matamos o processo e resolvemos na hora, sem
+           * esperar o `close`: num arquivo parcial o ffprobe pode demorar para
+           * encerrar sozinho depois de ler o trecho disponível.
+           */
           processo.kill('SIGKILL')
+          finalizar()
           return
         }
       }
@@ -250,8 +275,11 @@ function medirIntervaloKeyframes(arquivo) {
 
     // Qualquer falha na medição não pode derrubar a análise: sem o intervalo,
     // `decidirModo` mantém a decisão por codec.
-    processo.on('error', () => resolve(null))
-    processo.on('close', () => resolve(calcularIntervalo(tempos)))
+    processo.on('error', () => {
+      encerrado = true
+      resolve(null)
+    })
+    processo.on('close', finalizar)
   })
 }
 

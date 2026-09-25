@@ -355,13 +355,20 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
 - **Modo decidido também pelos keyframes**: como `-c copy` não permite forçar
   keyframes, um encode com keyframes esparsos continuaria gerando segmentos
   irregulares mesmo em `remux`. Por isso [`analisarArquivo`](../media-service/src/services/hls.js:94)
-  mede o intervalo médio entre keyframes com [`medirIntervaloKeyframes`](../media-service/src/services/hls.js:156)
+  mede o intervalo médio entre keyframes com [`medirIntervaloKeyframes`](../media-service/src/services/hls.js:196)
   (amostra dos primeiros 12, via `ffprobe -show_entries packet=pts_time,flags`).
-  Se o intervalo passa de `INTERVALO_KEYFRAME_MAXIMO` (6 s), [`decidirModo`](../media-service/src/services/hls.js:251)
-  promove o modo para `video` — aceita o custo de CPU em troca de uma timeline
-  regular. A medição só roda quando o vídeo é compatível, único caso em que a
-  decisão depende dela. O intervalo medido aparece no log da sessão
-  (`keyframes=10.00s`) para diagnóstico.
+  A varredura é limitada por `-read_intervals %+300`: sem essa janela o ffprobe
+  percorre o arquivo inteiro até juntar a amostra e, no caminho de fluxo — com o
+  arquivo ainda sendo baixado —, trava nos buracos do download e devolve `null`.
+  Com a medição vazia, `decidirModo` mantinha o `remux` mesmo com keyframes
+  esparsos, e era daí que saíam os segmentos irregulares de ~10,4 s. A janela
+  também permite resolver assim que a amostra fecha, sem esperar o processo
+  encerrar sozinho. Se o intervalo passa de `INTERVALO_KEYFRAME_MAXIMO` (6 s),
+  [`decidirModo`](../media-service/src/services/hls.js:291) promove o modo para
+  `video` — aceita o custo de CPU em troca de uma timeline regular. A medição só
+  roda quando o vídeo é compatível, único caso em que a decisão depende dela. O
+  intervalo medido aparece no log da sessão (`keyframes=10.00s`) para
+  diagnóstico.
 - **Normalização de timestamps**: `-fflags +genpts` gera PTS monotônicos e
   `-avoid_negative_ts make_zero` ancora a timeline em zero. Sem isso o `#EXTINF`
   da playlist deixa de bater com os PTS reais e o `hls.js` trava no MSE (anexa o
@@ -427,6 +434,17 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   baixados) e o diretório da sessão é removido. Sem isso, o torrent do filme
   anterior continuava baixando e o próximo "Assistir" podia reencontrá-lo pela
   metade.
+- **Sessões são voláteis**: o registro de sessões é um `Map` **em memória**, sem
+  persistência. Um reinício do processo — inclusive o automático do
+  `restart: unless-stopped` depois de uma queda — apaga todas as sessões, e o
+  `GET /sessao/<id>/status` passa a devolver `404 Sessão não encontrada`. O
+  frontend trata esse 404 como estado terminal (`inexistente`) e desiste da
+  fonte em vez de consultar para sempre — ver
+  [Frontend](frontend.md#sessão-que-sumiu-do-servidor). Vale lembrar que os
+  handlers de `uncaughtException`/`unhandledRejection` em
+  [`index.js`](../media-service/src/index.js:1) apenas registram o erro e deixam
+  o processo seguir, então uma exceção não tratada pode deixar o serviço num
+  estado inconsistente antes de o contêiner reiniciar.
 
 ### Endereço do media-service no frontend
 

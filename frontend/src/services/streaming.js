@@ -71,11 +71,28 @@ export const streamingService = {
     return data
   },
 
-  /** Estado atual da sessão (conectando, convertendo, pronto ou erro). */
+  /**
+   * Estado atual da sessão (conectando, convertendo, pronto ou erro).
+   *
+   * O 404 é traduzido para um estado próprio em vez de subir como exceção. Ele
+   * significa que a sessão não existe mais no media-service — o processo
+   * reiniciou (o mapa de sessões é em memória) ou a sessão foi encerrada por
+   * outro caminho. Sem essa distinção o chamador tratava o 404 como falha
+   * pontual de rede e continuava consultando um id morto para sempre, deixando
+   * o overlay preso no spinner.
+   */
   async statusSessao(sessaoId) {
-    const { data } = await clienteMedia().get(`${BASE_SESSAO}/${sessaoId}/status`)
+    try {
+      const { data } = await clienteMedia().get(`${BASE_SESSAO}/${sessaoId}/status`)
 
-    return data
+      return data
+    } catch (falha) {
+      if (falha?.response?.status === 404) {
+        return { status: 'inexistente' }
+      }
+
+      throw falha
+    }
   },
 
   /**
