@@ -80,7 +80,7 @@ paravam de ser requisitados e — o mais grave — uma fonte já pronta era desc
 em sequência até esgotar a lista.
 
 O fluxo correto, implementado em
-[`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:93):
+[`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:95):
 
 1. O container do vídeo usa **`v-if="estado === 'reproduzindo'"`** (não `v-show`),
    então o elemento só existe no DOM quando deve aparecer. Com `v-show`, o Plyr
@@ -96,8 +96,15 @@ O fluxo correto, implementado em
    do próprio wrapper; se o `hls.js` já estivesse anexado, essa movimentação
    quebrava a associação com o MediaSource, os segmentos deixavam de ser
    requisitados e o player tentava carregar a fonte por conta própria.
-5. O `play()` é chamado explicitamente — a rejeição por política de autoplay é
-   ignorada, deixando os controles disponíveis.
+5. O `play()` é chamado explicitamente. Como a interação do usuário se perde no
+   meio das requisições assíncronas, o navegador recusa o autoplay com som; se
+   isso acontecer, repetimos `play()` **mutado**, que é sempre permitido — o
+   filme começa de verdade e o usuário só precisa subir o volume.
+
+O `hls.js` é criado com **`startPosition: 0`**. Enquanto a conversão corre, a
+playlist é `#EXT-X-PLAYLIST-TYPE:EVENT` e ainda não tem `#EXT-X-ENDLIST`; sem
+essa opção o `hls.js` a trata como transmissão ao vivo e posiciona o playhead
+nos últimos segmentos (`liveSyncDurationCount`), pulando o começo do filme.
 
 O CSS do componente força `.plyr` e `.plyr__video-wrapper` a ocuparem 100% da
 altura do container com `aspect-video`; sem isso o wrapper não herda a área e o
@@ -108,8 +115,8 @@ estado de erro, em vez de deixar a tela preta sem aviso.
 
 A fonte é considerada **vencedora assim que a playlist fica pronta no servidor**
 (`status === 'pronto'` com `playlist` preenchido), em
-[`aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:255). Montar o
-player é um passo separado: [`iniciarPlayer()`](../frontend/src/components/PlayerOverlay.vue:93)
+[`aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:265). Montar o
+player é um passo separado: [`iniciarPlayer()`](../frontend/src/components/PlayerOverlay.vue:95)
 não devolve mais booleano e não decide mais o destino da fonte.
 
 Essa separação corrigiu um problema sério: antes, condicionar o sucesso ao
@@ -122,7 +129,7 @@ anteriores: com várias fontes na fila, uma fonte morta prendia o usuário por
 minutos.
 
 Ao descartar uma fonte por falha real (timeout ou `status === 'erro'`),
-[`limparSessaoAtual()`](../frontend/src/components/PlayerOverlay.vue:304) faz
+[`limparSessaoAtual()`](../frontend/src/components/PlayerOverlay.vue:316) faz
 duas limpezas:
 
 1. **Destrói o `hls.js`** (`destruirPlayer()`). Sem isso, a instância antiga

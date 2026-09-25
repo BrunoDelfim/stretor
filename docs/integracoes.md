@@ -76,25 +76,28 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   os dois formatos e é reaplicado automaticamente pelo `postinstall`
   (`patch-package`).
 - **Cabeçalho no fim do arquivo**: muitos MP4 de torrent guardam o átomo `moov`
-  no final. O serviço prioriza esse trecho no WebTorrent antes de ler os
-  metadados, e só aceita a análise quando vídeo e áudio foram identificados —
-  um cabeçalho lido pela metade faria o FFmpeg "concluir" sem gerar segmento.
-- **Conversão supervisionada**: o FFmpeg lê o arquivo como se fosse local e
-  aborta ao alcançar a fronteira do download (código 183). Isso não é falha: o
-  supervisor espera o torrent avançar e retoma a conversão de onde parou,
-  anexando os novos segmentos à mesma playlist.
-- **`append_list` só na retomada**: a flag `-hls_flags append_list` existe para
-  continuar uma playlist já criada. Usá-la na primeira passada impedia o FFmpeg
-  de escrever o cabeçalho corretamente e deixava a playlist sem
-  `#EXT-X-ENDLIST` — o `hls.js` então tratava o stream como transmissão ao vivo
-  e nunca liberava a reprodução (player abria parado). Agora a flag é aplicada
-  apenas quando `inicioSegmento > 0`, e a tag `#EXT-X-ENDLIST` é anexada ao
-  final da conversão.
-- **Margem de dados antes de converter**: o mínimo de dados baixados para
-  iniciar o FFmpeg subiu de 5 MB para 20 MB. Com 5 MB a conversão produzia dois
-  ou três segmentos e já batia na fronteira do download, interrompendo a
-  passada. O critério de retomada também aceita um avanço absoluto pequeno
-  (0,05%), não só 1%, para torrents lentos.
+  no final. A análise insiste até o cabeçalho ficar legível e só a aceita quando
+  vídeo e áudio foram identificados — um cabeçalho lido pela metade faria o
+  FFmpeg "concluir" sem gerar segmento nenhum.
+- **Conversão a partir do fluxo do torrent** (`createReadStream`): o FFmpeg
+  consome o `Readable` do WebTorrent, não o arquivo em disco. Ler o arquivo
+  parcial fazia o FFmpeg atravessar as regiões ainda não baixadas (que o disco
+  devolve como zeros) em altíssima velocidade, morrer na primeira lacuna com
+  código 183 e ser retomado com `-ss`. Cada retomada reiniciava os timestamps e
+  começava fora de um keyframe, gerando segmentos sem IDR — o meio do filme
+  ficava ilegível e o player parava. Com o stream, o WebTorrent entrega os bytes
+  em ordem e **bloqueia** até a peça necessária baixar: uma única passada, com
+  timestamps monotônicos.
+- **Retomada removida**: com o fluxo contínuo, `-ss`, `-hls_flags append_list` e
+  toda a lógica de "passada interrompida" deixaram de existir. A playlist usa
+  `-hls_list_size 0` (mantém todos os segmentos) e `#EXT-X-ENDLIST` é anexado só
+  ao final da conversão — sem essa tag o `hls.js` continuaria esperando
+  segmentos que nunca viriam.
+- **Seleção do arquivo antes da análise**: `arquivo.select(1)` manda o WebTorrent
+  baixar o arquivo inteiro em ordem, do começo para frente — exatamente o trecho
+  que a conversão consome. A prioridade explícita evita o valor 0 ("sem
+  prioridade"), que ainda desperta o interesse do torrent mas deixa a intenção
+  obscura.
 
 ### Endereço do media-service no frontend
 
@@ -117,7 +120,7 @@ para que os dois cenários funcionem:
 Atenção ao segundo caso: tratar `http://localhost/media` como "porta crua"
 gerava o caminho duplicado `/api/media/api/media/sessao`, e o Express respondia
 `Cannot POST /api/media/api/media/sessao`. Como o overlay percorre as fontes em
-sequência ([`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:165)),
+sequência ([`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:223)),
 o erro se repetia uma vez por fonte — daí a rajada de requisições com o mesmo
 404.
 

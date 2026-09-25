@@ -169,7 +169,15 @@ async function iniciarPlayer(url) {
     // Safari e iOS tocam HLS nativamente.
     midia.src = url
   } else if (Hls.isSupported()) {
-    instanciaHls = new Hls({ enableWorker: true })
+    /*
+     * `startPosition: 0` é o que impede o hls.js de entrar na borda "ao vivo".
+     * Enquanto a conversão corre, a playlist é `EVENT` e ainda não tem
+     * `#EXT-X-ENDLIST`, então o hls.js a trata como transmissão ao vivo e
+     * posiciona o playhead nos últimos segmentos (`liveSyncDurationCount`). Com
+     * a posição zerada ele começa na primeira peça — o início do filme — e segue
+     * a playlist crescendo.
+     */
+    instanciaHls = new Hls({ enableWorker: true, startPosition: 0 })
 
     // Uma falha fatal aqui é de reprodução, não de fonte: a playlist existe e
     // foi servida. Avisamos o usuário sem mexer no fluxo de fontes, que já
@@ -193,10 +201,17 @@ async function iniciarPlayer(url) {
   estado.value = 'reproduzindo'
   mensagem.value = ''
 
-  // O `autoplay` do Plyr pode ser recusado pela política do navegador. Como o
-  // usuário clicou em "Assistir", a interação já existe — tentamos o play e
-  // ignoramos a rejeição, deixando os controles disponíveis para o clique.
-  player.play()?.catch(() => {})
+  /*
+   * O navegador recusa autoplay com som quando a interação do usuário já se
+   * perdeu no meio das requisições assíncronas — e é o nosso caso, porque o
+   * clique em "Assistir" aconteceu muito antes de a playlist ficar pronta. Se o
+   * play com som for barrado, repetimos mutado, que é sempre permitido: assim o
+   * filme começa de verdade e o usuário só precisa subir o volume.
+   */
+  Promise.resolve(player.play()).catch(() => {
+    player.muted = true
+    Promise.resolve(player.play()).catch(() => {})
+  })
 }
 
 /**

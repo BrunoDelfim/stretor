@@ -97,19 +97,16 @@ async function prepararSessao(sessao) {
   // o arquivo no diretório de trabalho do processo e falha com "No such file".
   const caminho = path.join(torrent.path, arquivo.path)
 
-  // Muitos MP4 de torrent guardam o cabeçalho (`moov`) no fim do arquivo. Se
-  // baixarmos só o começo, o ffprobe lê lixo e falha. Por isso pedimos primeiro
-  // o trecho final, que é pequeno e traz os metadados, e só depois priorizamos
-  // o começo para a reprodução sequencial.
-  priorizarFinal(torrent, arquivo)
+  /*
+   * Selecionar o arquivo inteiro (prioridade 1) manda o WebTorrent baixar em
+   * ordem, do começo para frente — exatamente o trecho que a conversão consome,
+   * já que ela lê o fluxo do torrent e não o arquivo em disco. Sem uma
+   * prioridade explícita o valor vira 0 ("sem prioridade"), o que ainda desperta
+   * o interesse do torrent mas não deixa a intenção óbvia.
+   */
+  arquivo.select(1)
 
   const analise = await analisarComEspera(caminho, arquivo)
-
-  // Cabeçalho lido: agora o que importa é o início, de onde o FFmpeg lê em
-  // ordem. O WebTorrent passa a baixar do começo para frente.
-  arquivo.select()
-
-  await aguardarDadosIniciais(arquivo)
 
   sessao.status = 'convertendo'
   sessao.mensagem = 'Preparando a conversão...'
@@ -121,12 +118,11 @@ async function prepararSessao(sessao) {
   sessao.mensagem = mensagemDoModo(analise.modo)
 
   sessao.comando = iniciarConversao({
-    arquivo: caminho,
+    // Passamos o arquivo do torrent, não o caminho em disco: a conversão lê o
+    // fluxo, que espera as peças que faltam em vez de devolver zeros.
+    arquivo,
     diretorio: sessao.diretorio,
     modo: analise.modo,
-    // O supervisor da conversão precisa saber o quanto já baixou para decidir
-    // quando retomar depois de bater na fronteira do download.
-    progressoDownload: () => arquivo.progress,
     aoProgredir: (progresso) => {
       sessao.progresso = progresso
     },
@@ -185,58 +181,6 @@ function escolherArquivoDeVideo(torrent) {
   }
 
   return videos.sort((a, b) => b.length - a.length)[0]
-}
-
-/**
- * Aguarda o arquivo ter dados suficientes para o FFmpeg começar a ler.
- *
- * O mínimo era 5 MB, o que dava pouca margem: o FFmpeg produzia dois ou três
- * segmentos e já batia na fronteira do download, interrompendo a passada. Com
- * 20 MB ele mantém uma folga confortável à frente do ponto de leitura.
- *
- * @param {import('webtorrent').TorrentFile} arquivo
- */
-function aguardarDadosIniciais(arquivo, minimoBytes = 20 * 1024 * 1024, timeoutMs = 60000) {
-  const inicio = Date.now()
-
-  return new Promise((resolve, reject) => {
-    const verificar = () => {
-      if (arquivo.downloaded >= minimoBytes) {
-        return resolve(true)
-      }
-
-      if (Date.now() - inicio > timeoutMs) {
-        return reject(new Error('Tempo esgotado aguardando dados da fonte.'))
-      }
-
-      setTimeout(verificar, 500)
-    }
-
-    verificar()
-  })
-}
-
-/**
- * Pede ao WebTorrent que baixe primeiro o trecho final do arquivo.
- *
- * O átomo `moov` de um MP4 pode estar no fim, e é ele que descreve os streams.
- * Baixar o final antes do começo custa poucos megabytes e evita ficar preso
- * esperando o filme inteiro só para ler os metadados.
- *
- * @param {import('webtorrent').Torrent} torrent
- * @param {import('webtorrent').TorrentFile} arquivo
- */
-function priorizarFinal(torrent, arquivo) {
-  const { pieceLength } = torrent
-  const inicio = arquivo._startPiece
-  const fim = arquivo._endPiece
-
-  // Reservamos uma janela no fim do arquivo. Se o arquivo for menor que a
-  // janela, priorizamos ele inteiro.
-  const janela = Math.max(1, Math.ceil((2 * 1024 * 1024) / pieceLength))
-  const inicioJanela = Math.max(inicio, fim - janela + 1)
-
-  torrent.select(inicioJanela, fim, 10)
 }
 
 /**
