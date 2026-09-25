@@ -116,6 +116,28 @@ done
 echo "[backend] Postgres disponível."
 
 # ---------------------------------------------------------------------------
+# 5.1. Prowlarr: configuração automática (degrau 2 da busca)
+# ---------------------------------------------------------------------------
+# O Prowlarr sobe junto com o stack, mas nasce sem chave conhecida pelo backend
+# e sem nenhum indexador cadastrado. O comando abaixo lê a chave da API direto
+# do config.xml do volume compartilhado e cadastra os indexadores públicos
+# PT-BR. Se TORRENTS_TORZNAB_KEY já vier preenchida (Prowlarr externo), não
+# mexemos em nada. Qualquer falha aqui é deliberadamente ignorada: sem o
+# Prowlarr, o backend continua servindo a busca nativa e o YTS.
+if [ -z "${TORRENTS_TORZNAB_KEY:-}" ]; then
+  echo "[backend] Provisionando o Prowlarr (pode levar alguns segundos)..."
+  PROWLARR_SAIDA="$(php artisan prowlarr:provisionar 2>&1 || true)"
+  printf '%s\n' "$PROWLARR_SAIDA" | grep '^\[prowlarr\]' || true
+  PROWLARR_CHAVE="$(printf '%s\n' "$PROWLARR_SAIDA" | sed -n 's/^PROWLARR_API_KEY=//p' | tail -n1)"
+  if [ -n "$PROWLARR_CHAVE" ]; then
+    sync_env_var "TORRENTS_TORZNAB_KEY" "$PROWLARR_CHAVE"
+    export TORRENTS_TORZNAB_KEY="$PROWLARR_CHAVE"
+  else
+    echo "[backend] AVISO: chave do Prowlarr não obtida. A busca seguirá sem o degrau 2."
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # 6. Migrations (idempotente, com sentinela para pular quando nada mudou)
 # ---------------------------------------------------------------------------
 MIGRATION_SENTINEL="storage/framework/.migrations-done"

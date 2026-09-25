@@ -19,6 +19,9 @@ services:
     volumes:
       - ./backend:/var/www/backend
       - ./docker/backend/php.ini:/usr/local/etc/php/conf.d/custom.ini
+      # O backend lê o config.xml do Prowlarr daqui para descobrir a chave da
+      # API e provisionar os indexadores sozinho na subida (somente leitura).
+      - prowlarr_config:/prowlarr-config:ro
     environment:
       - APP_ENV=${APP_ENV:-local}
       - APP_DEBUG=${APP_DEBUG:-true}
@@ -40,8 +43,13 @@ services:
       - TMDB_REGION=${TMDB_REGION:-BR}
       - TMDB_MAX_PAGES=${TMDB_MAX_PAGES:-25}
       - TORRENTS_TORZNAB_URL=${TORRENTS_TORZNAB_URL:-http://prowlarr:9696}
-      - TORRENTS_TORZNAB_KEY=${TORRENTS_TORZNAB_KEY}
+      # Normalmente vazio: o entrypoint grava aqui a chave descoberta no
+      # Prowlarr. Só defina no .env para usar um Prowlarr externo.
+      - TORRENTS_TORZNAB_KEY=${TORRENTS_TORZNAB_KEY:-}
       - TORRENTS_TORZNAB_CATEGORIA=${TORRENTS_TORZNAB_CATEGORIA:-2000}
+      # Usados pelo comando `prowlarr:provisionar` na subida do container.
+      - PROWLARR_URL=${PROWLARR_URL:-http://prowlarr:9696}
+      - PROWLARR_CONFIG_PATH=${PROWLARR_CONFIG_PATH:-/prowlarr-config/config.xml}
       # Reserva de torrents (YTS) usada quando o indexador não responde.
       - TORRENTS_BASE_URL=${TORRENTS_BASE_URL:-https://yts.gg}
       - TORRENTS_CACHE_TTL=${TORRENTS_CACHE_TTL:-1800}

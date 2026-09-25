@@ -1,4 +1,4 @@
-.PHONY: up up-fast down restart logs ps build fresh reset-init
+.PHONY: up up-fast down restart logs ps build fresh reset-init cache-clear prowlarr
 
 up:
 	docker compose up -d --build
@@ -23,6 +23,17 @@ reset-init:
 
 restart:
 	docker compose restart
+
+# As listas de fontes ficam em cache por 30 min. Depois de mexer na busca do
+# Torznab, limpe o cache para não testar com a resposta antiga guardada.
+cache-clear:
+	docker compose exec -T backend php artisan cache:clear
+
+# Reexecuta o provisionamento do Prowlarr: descobre a chave da API e cadastra
+# os indexadores públicos PT-BR. Útil depois de limpar o volume do Prowlarr
+# (`make fresh`) ou ao adicionar uma definição nova em docker/prowlarr.
+prowlarr:
+	docker compose exec -T backend php artisan prowlarr:provisionar
 
 logs:
 	docker compose logs -f
