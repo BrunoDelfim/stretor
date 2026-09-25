@@ -75,6 +75,8 @@ lista inteira até encontrar uma que conecte.
         "qualidade": "1080p",
         "idioma": "pt-BR",
         "idioma_rotulo": "Dublado",
+        "provedor": "torznab",
+        "provedor_rotulo": "Indexador (Torznab)",
         "tamanho": "2,1 GB",
         "seeds": 120,
         "peers": 30,
@@ -84,6 +86,12 @@ lista inteira até encontrar uma que conecte.
   }
 }
 ```
+
+`provedor` identifica a origem da fonte (`torznab` para o indexador, `yts` para a
+reserva em inglês) e `provedor_rotulo` é o texto pronto para exibição. O overlay
+do player mostra esse rótulo junto do idioma, o que explica de relance por que um
+filme veio com áudio original. Detalhes em
+[Integrações](integracoes.md#de-onde-veio-a-fonte).
 
 A busca é cacheada no Redis (`TORRENTS_CACHE_TTL`, padrão 1800s) e o provedor
 fica isolado no `TorrentService` — trocar de API significa reescrever apenas a
@@ -107,6 +115,16 @@ player consome.
   seguem em segundo plano.
 - `GET /api/media/sessao/{id}/status` — estado atual (`conectando`,
   `aguardando`, `convertendo`, `pronto` ou `erro`), com a mensagem do momento.
+  Depois que a conversão começa, o status traz também `duracao`, `tempo_base`
+  (deslocamento da timeline local após um seek remoto) e o idioma real lido por
+  `ffprobe` na faixa de áudio: `idioma_audio` (código ISO), `idioma_audio_rotulo`
+  (rótulo em PT-BR, ex. `Português (Brasil)`) e `idiomas_audio` (todas as faixas,
+  com número de canais e marcação de faixa padrão). É esse rótulo que o player
+  mostra como selo "Áudio: ..." sobre o vídeo, confirmando a dublagem.
+- `POST /api/media/sessao/{id}/seek` — reposiciona a conversão a partir de um
+  tempo alvo em segundos (`{ "tempo": 1234.5 }`). É chamado quando o usuário
+  arrasta a barra para além do trecho já convertido; a timeline reinicia do
+  ponto escolhido e o `tempo_base` passa a ser o novo zero.
 - `GET /api/media/sessao/{id}/playlist.m3u8` — playlist HLS consumida pelo Plyr.
 - `GET /api/media/sessao/{id}/segmento/{arquivo}` — segmentos de vídeo.
 - `DELETE /api/media/sessao/{id}` — encerra a sessão e libera o torrent e o

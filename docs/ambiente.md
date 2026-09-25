@@ -67,13 +67,24 @@ Pronto. Nesta única etapa o sistema executa, de forma automática e idempotente
 ### 3. Configurar o indexador de torrents (Prowlarr)
 
 O Prowlarr sobe junto com a stack e é o que dá acesso às fontes dubladas em
-PT-BR. A configuração é feita uma única vez, pelo painel:
+PT-BR. **Não há nada para configurar à mão**: na primeira subida o backend roda
+`php artisan prowlarr:provisionar`
+([`ProwlarrService.php`](../backend/app/Services/ProwlarrService.php:1)), que
 
-1. Acesse http://localhost:9696 e conclua o assistente inicial.
-2. Em **Indexers**, cadastre os trackers que você quer consultar.
-3. Em **Settings → General**, copie a **API Key**.
-4. Cole o valor em `TORRENTS_TORZNAB_KEY` no `.env` e reinicie o backend
-   (`docker compose restart backend`).
+1. lê a chave da API direto do `config.xml` que o Prowlarr grava no volume
+   compartilhado (`prowlarr_config`) — você não copia nem cola chave;
+2. espera o Prowlarr responder (na primeira subida ele gasta alguns segundos
+   criando o banco interno antes de aceitar requisições);
+3. cadastra os indexadores públicos PT-BR versionados no projeto, sem duplicar
+   o que já existe.
+
+A chave descoberta é gravada em `TORRENTS_TORZNAB_KEY` no `.env` do backend e
+exportada para o php-fpm, destravando o degrau 2 da busca. Para refazer o
+provisionamento a qualquer momento, rode `make prowlarr`.
+
+> Se o provisionamento falhar (Prowlarr fora do ar, volume recém-apagado), a
+> subida **não** é interrompida: a busca simplesmente cai para o degrau 1
+> (nativa) e, em seguida, para o degrau 3 (YTS).
 
 #### Definição customizada de indexador público PT-BR
 
@@ -81,7 +92,7 @@ O Prowlarr só traz, de fábrica, trackers brasileiros **privados** (que exigem
 conta e convite). Para um indexador público, o projeto versiona uma definição
 própria em [`docker/prowlarr/Definitions/Custom/`](../docker/prowlarr/Definitions/Custom/torrentdosfilmes.yml:1),
 montada em `/config/Definitions/Custom/` dentro do container pelo
-[`docker-compose.yml`](../docker-compose.yml:188). Assim a definição sobrevive a
+[`docker-compose.yml`](../docker-compose.yml:204). Assim a definição sobrevive a
 recriações do container e é versionada junto com o código.
 
 > **Domínio instável**: os trackers públicos brasileiros trocam de endereço com
@@ -111,12 +122,15 @@ valores reais. As variáveis que exigem atenção:
 | `TMDB_API_KEY` | **Sim** | Chave da API do TMDB. Sem ela a Home não carrega filmes. |
 | `TMDB_CACHE_TTL` | Não | Tempo de cache das respostas do TMDB no Redis (padrão `3600`s). |
 | `TMDB_MAX_PAGES` | Não | Teto de páginas da rolagem infinita (padrão `25`, ~500 filmes). |
-| `TORRENTS_TORZNAB_KEY` | **Sim** | Chave da API do Prowlarr. Sem ela não há fontes dubladas em PT-BR. |
+| `TORRENTS_TORZNAB_KEY` | Não | Chave da API do Prowlarr. É **preenchida automaticamente** na subida; só defina para apontar a um Prowlarr externo. |
 | `TORRENTS_TORZNAB_URL` | Não | URL interna do indexador (padrão `http://prowlarr:9696`). |
 | `TORRENTS_TORZNAB_CATEGORIA` | Não | Categoria Torznab de filmes (padrão `2000`). |
 | `TORRENTS_BASE_URL` | Não | Provedor de reserva (YTS), usado quando o indexador não está configurado. |
 | `TORRENTS_CACHE_TTL` | Não | Tempo de cache da busca de fontes (padrão `1800`s). |
 | `PROWLARR_PORT` | Não | Porta do painel do Prowlarr (padrão `9696`). |
+| `PROWLARR_URL` | Não | Endereço interno do Prowlarr usado no provisionamento (padrão `http://prowlarr:9696`). |
+| `PROWLARR_CONFIG_PATH` | Não | Caminho do `config.xml` dentro do backend (padrão `/prowlarr-config/config.xml`). Vazio desativa o provisionamento. |
+| `PROWLARR_TEMPO_LIMITE` | Não | Tempo limite, em segundos, das chamadas de provisionamento (padrão `20`). |
 
 ## A sentinela `.bootstrap-done`
 

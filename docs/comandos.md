@@ -14,6 +14,8 @@ encapsula as operações mais comuns do Docker.
 | `make logs` | Acompanha os logs de todos os serviços. |
 | `make ps` | Lista o estado dos containers. |
 | `make build` | Apenas constrói as imagens. |
+| `make cache-clear` | Limpa o cache do Laravel (`php artisan cache:clear`). As listas de fontes ficam em cache por 30 min, então rode isto depois de mexer na busca do Torznab — senão você testa com a resposta antiga. |
+| `make prowlarr` | Reexecuta o provisionamento do Prowlarr: descobre a chave da API e cadastra os indexadores públicos PT-BR. Útil depois de `make fresh` ou ao adicionar uma definição nova. |
 | `make fresh` | Remove a sentinela, apaga os volumes e sobe tudo do zero. |
 | `make reset-init` | Remove a sentinela, forçando o bootstrap na próxima subida. |
 
@@ -41,6 +43,9 @@ docker compose exec backend php artisan migrate
 
 # Rodar queue worker
 docker compose exec backend php artisan queue:work
+
+# Reprovisionar o Prowlarr (descobre a chave da API e cadastra os indexadores PT-BR)
+docker compose exec backend php artisan prowlarr:provisionar
 ```
 
 > As migrations rodam sozinhas na subida do backend. O comando manual existe

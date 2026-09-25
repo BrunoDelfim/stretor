@@ -128,6 +128,13 @@ O backend segue separação por camadas, conforme as regras do projeto:
 
 - **Controllers** — orquestram a requisição e devolvem a resposta.
 - **Services** — concentram as regras de negócio (ex.: [`TmdbService.php`](../backend/app/Services/TmdbService.php:1)).
+- **Services/Torrents/** — provedores de torrents plugáveis atrás do contrato
+  [`ProvedorTorrents`](../backend/app/Contracts/ProvedorTorrents.php:1), com o
+  registro/cascata em [`CatalogoProvedores.php`](../backend/app/Services/Torrents/CatalogoProvedores.php:1)
+  e o trait de normalização [`NormalizaFonte.php`](../backend/app/Services/Torrents/NormalizaFonte.php:1).
+  O [`ProwlarrService.php`](../backend/app/Services/ProwlarrService.php:1) cuida do
+  provisionamento automático do Prowlarr na subida.
+- **Commands** — tarefas de linha de comando (ex.: [`ProvisionarProwlarr.php`](../backend/app/Console/Commands/ProvisionarProwlarr.php:1)).
 - **Models** — representam as entidades persistidas.
 - **Migrations / Seeds** — versionam e populam o banco.
 - **Enums** — valores de domínio tipados (ex.: [`Genero.php`](../backend/app/Enums/Genero.php:1)).
