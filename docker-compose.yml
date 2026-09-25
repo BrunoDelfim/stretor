@@ -38,6 +38,9 @@ services:
       - TMDB_API_KEY=${TMDB_API_KEY}
       - TMDB_LANGUAGE=${TMDB_LANGUAGE:-pt-BR}
       - TMDB_REGION=${TMDB_REGION:-BR}
+      - TORRENTS_TORZNAB_URL=${TORRENTS_TORZNAB_URL:-http://prowlarr:9696}
+      - TORRENTS_TORZNAB_KEY=${TORRENTS_TORZNAB_KEY}
+      - TORRENTS_TORZNAB_CATEGORIA=${TORRENTS_TORZNAB_CATEGORIA:-2000}
     depends_on:
       init:
         condition: service_completed_successfully
@@ -45,6 +48,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      prowlarr:
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "php -r \"exit(@fsockopen('127.0.0.1', 9000) ? 0 : 1);\""]
       interval: 10s
@@ -167,6 +172,24 @@ services:
     networks:
       - stretor
 
+  # Indexador que unifica os trackers (públicos e privados) e expõe a API Torznab.
+  # É por aqui que o backend encontra os torrents dublados em PT-BR, já que os
+  # sites generalistas não oferecem uma API limpa como o YTS.
+  prowlarr:
+    image: linuxserver/prowlarr:latest
+    container_name: stretor_prowlarr
+    restart: unless-stopped
+    ports:
+      - "${PROWLARR_PORT:-9696}:9696"
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-America/Sao_Paulo}
+    volumes:
+      - prowlarr_config:/config
+    networks:
+      - stretor
+
 networks:
   stretor:
     driver: bridge
@@ -175,3 +198,4 @@ volumes:
   postgres_data:
   redis_data:
   media_storage:
+  prowlarr_config:

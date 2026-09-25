@@ -112,10 +112,31 @@ andamento. O `hls.js` acompanha a playlist que cresce e pede cada novo segmento
 conforme o playhead avança — enquanto um trecho toca, o próximo é baixado e
 convertido, sem interrupção.
 
+### Duração e barra de progresso (sem tocar no Plyr)
+
+Enquanto a playlist é `EVENT`, o `hls.js` a enxerga como transmissão ao vivo: a
+duração total fica `Infinity`, a barra não anda e o tempo decorrido sai errado.
+A correção **não** mexe no Plyr — o player nunca é manipulado por código. O
+ajuste é no servidor: ao concluir a conversão, a playlist vira
+`#EXT-X-PLAYLIST-TYPE:VOD` com `#EXT-X-ENDLIST`, e o Plyr passa a ler a duração
+real sozinho.
+
+A duração também é exposta no status da sessão (`duracao`), o que permite ao
+overlay exibir o tempo restante durante a conversão sem tocar no player.
+
 O CSS do componente força `.plyr` e `.plyr__video-wrapper` a ocuparem 100% da
 altura do container com `aspect-video`; sem isso o wrapper não herda a área e o
 vídeo colapsa. Falhas fatais do `hls.js` são capturadas e levam o overlay ao
 estado de erro, em vez de deixar a tela preta sem aviso.
+
+### Mensagens de progresso
+
+O overlay traduz o status cru do media-service em mensagens úteis via
+`mensagemDeProgresso()`. Quando a fonte conectou mas não há peers, a mensagem
+ganha o sufixo "(sem peers)"; quando há tráfego, mostra a contagem de peers e a
+velocidade. Isso distingue "conectando" de "baixando de verdade" — antes, uma
+fonte morta exibia "Aguardando dados da fonte..." indefinidamente sem que o
+usuário soubesse o motivo.
 
 ### Desistência de uma fonte
 
@@ -124,6 +145,10 @@ A fonte é considerada **vencedora assim que a playlist fica pronta no servidor*
 [`aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:265). Montar o
 player é um passo separado: [`iniciarPlayer()`](../frontend/src/components/PlayerOverlay.vue:95)
 não devolve mais booleano e não decide mais o destino da fonte.
+
+O media-service também falha rápido quando a fonte não envia dados: se nenhum
+byte chegar em 30 s, a sessão vai para `erro` e o overlay passa para a próxima
+fonte sem esperar o timeout de 90 s.
 
 Essa separação corrigiu um problema sério: antes, condicionar o sucesso ao
 retorno de `iniciarPlayer` fazia uma falha de montagem do Plyr (evento `ready`

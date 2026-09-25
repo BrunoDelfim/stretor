@@ -56,6 +56,9 @@ sync_env_var "TMDB_LANGUAGE" "${TMDB_LANGUAGE:-}"
 sync_env_var "TMDB_REGION" "${TMDB_REGION:-}"
 sync_env_var "TMDB_MAX_PAGES" "${TMDB_MAX_PAGES:-}"
 sync_env_var "MEDIA_SERVICE_URL" "${MEDIA_SERVICE_URL:-}"
+sync_env_var "TORRENTS_TORZNAB_URL" "${TORRENTS_TORZNAB_URL:-}"
+sync_env_var "TORRENTS_TORZNAB_KEY" "${TORRENTS_TORZNAB_KEY:-}"
+sync_env_var "TORRENTS_TORZNAB_CATEGORIA" "${TORRENTS_TORZNAB_CATEGORIA:-}"
 
 # ---------------------------------------------------------------------------
 # 2. Dependências PHP

@@ -21,15 +21,54 @@ A integração com o catálogo mundial de filmes usa a API do
 O Redis guarda o cache das respostas do TMDB. É o que evita bater na API externa
 a cada carregamento da Home.
 
-## Torrents — implementado (parcial)
+## Torrents — implementado
 
 A busca de fontes de torrent já funciona: ao clicar em "Assistir", o backend
-consulta o provedor configurado (`TORRENTS_BASE_URL`, padrão `https://yts.gg`) e
-devolve a lista ordenada por prioridade — dublado em PT-BR primeiro.
+consulta o indexador configurado e devolve a lista ordenada por prioridade —
+dublado em PT-BR primeiro.
 
-- Regras de negócio em [`TorrentService.php`](../backend/app/Services/TorrentService.php:1).
-- O provedor fica isolado atrás de um contrato normalizado: trocar de API
-  significa reescrever apenas a normalização.
+### Indexador Torznab (Prowlarr) — provedor principal
+
+Os sites generalistas de torrent não oferecem uma API limpa como o YTS, e o
+catálogo do YTS é quase todo em inglês. Para chegar às fontes dubladas, o
+provedor principal é um **indexador Torznab** — o [Prowlarr](https://prowlarr.com/)
+sobe junto com a stack e unifica vários trackers (públicos e privados) atrás de
+uma única API.
+
+- O Prowlarr roda no serviço `prowlarr` do [`docker-compose.yml`](../docker-compose.yml:170)
+  e o painel fica em `http://localhost:9696`.
+- **Configuração manual única**: cadastrar os trackers no painel e copiar a
+  chave da API para `TORRENTS_TORZNAB_KEY` no `.env`. Sem essa chave o sistema
+  cai para o YTS (catálogo em inglês).
+- Regras de negócio em [`TorznabService.php`](../backend/app/Services/TorznabService.php:1)
+  e [`TorrentService.php`](../backend/app/Services/TorrentService.php:1).
+- A consulta usa `t=search` com a categoria de filmes (`TORRENTS_TORZNAB_CATEGORIA`,
+  padrão `2000`) e lê os atributos `seeders`/`peers`/`magneturl`/`infohash` de
+  cada item.
+- O YTS continua como **reserva**, consultado só quando o indexador não está
+  configurado.
+
+### Prioridade de idioma
+
+O usuário quer o filme **dublado em PT-BR**. A ordenação coloca as fontes
+marcadas como dubladas no topo; inglês ou idioma original só entram quando não
+existe torrent em PT-BR com peers. A dedução do idioma pelo título fica em
+[`IdiomaFonte.php`](../backend/app/Enums/IdiomaFonte.php:59), que reconhece tags
+como `dublado`, `nacional`, `pt-br` e `áudio pt`.
+
+### Fontes sem peers são descartadas
+
+Uma fonte sem peers conecta mas nunca envia dados — era a causa das sessões
+presas em `aguardando` com `percentual: 0`. Duas defesas:
+
+- O backend **filtra** qualquer fonte com `seeds === 0` ou magnet vazio antes de
+  devolver a lista.
+- O media-service expõe `POST /verificar`, que adiciona o magnet, espera alguns
+  segundos e responde `{ ok, peers, seeds, velocidade }` — o backend pode testar
+  a fonte antes de entregá-la ao micro-serviço.
+
+### Demais regras
+
 - A busca prioriza o `imdb_id` (mais preciso que o título, que traz remakes).
   Quando só há o título, os resultados são filtrados pelo ano do filme.
 - O YTS devolve em `url` um link de download, não uma lista de trackers; o
@@ -87,10 +126,24 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   busca o índice depois de atravessar o `mdat` (aborta com `partial file`).
   Reordenar o fluxo também não serve, porque as tabelas de amostras do `moov`
   (`stco`/`co64`) guardam offsets absolutos do arquivo original — mover o índice
-  para a frente invalida esses offsets e o segmento sai com 0 byte. Nesses casos
-  aguardamos o download completo e convertemos do disco. A detecção fica em
-  [`localizarMoov`](../media-service/src/services/hls.js:311) e a decisão em
-  [`indiceEstaNoFim`](../media-service/src/services/sessoes.js:219).
+  para a frente invalida esses offsets e o segmento sai com 0 byte. A detecção
+  fica em [`localizarMoov`](../media-service/src/services/hls.js:341) e a decisão
+  em [`indiceEstaNoFim`](../media-service/src/services/sessoes.js:254).
+- **`moov` no fim sem esperar o download inteiro**: em vez de aguardar o arquivo
+  completo, [`priorizarIndice`](../media-service/src/services/sessoes.js:298)
+  localiza o `moov` e pede ao WebTorrent **apenas aquele intervalo**
+  (`arquivo.select(10, inicio, fim)`). Assim que o trecho chega,
+  [`aguardarTrecho`](../media-service/src/services/sessoes.js:334) libera a
+  conversão do disco — o filme abre sem esperar os vários GB do `mdat`. Só se o
+  `moov` não for localizável é que caímos no download completo.
+- **Timeout de dados da fonte**: o evento `ready` do WebTorrent só garante os
+  metadados, não que existam peers enviando bytes. Sem essa checagem, uma fonte
+  morta prendia a sessão por 120 s. [`aguardarDados`](../media-service/src/services/sessoes.js:517)
+  falha em 30 s (`TIMEOUT_DADOS_MS`) se nenhum byte chegar, liberando o frontend
+  para tentar a próxima fonte.
+- **Telemetria de download**: o status da sessão expõe `peers`, `velocidade` e
+  `baixado`, além do `percentual`. É o que permite ao overlay mostrar "(sem
+  peers)" e distinguir "conectando" de "baixando de verdade".
 - **Buffer inicial**: o player só é liberado com 8 segmentos (~32 s de vídeo) em
   disco, folga suficiente para uma conexão de 4 Mbps converter o próximo trecho
   enquanto o atual toca, sem interrupção.
@@ -99,6 +152,13 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   (mantém todos os segmentos) e `#EXT-X-ENDLIST` é anexado só ao final da
   conversão — sem essa tag o `hls.js` continuaria esperando segmentos que nunca
   viriam.
+- **Playlist `EVENT` → `VOD` ao concluir**: enquanto a conversão corre a playlist
+  é `#EXT-X-PLAYLIST-TYPE:EVENT`, que o `hls.js` trata como transmissão ao vivo —
+  a duração total fica `Infinity` e a barra de progresso não anda. Ao terminar,
+  [`finalizarPlaylist`](../media-service/src/services/hls.js:237) troca o tipo
+  para `VOD` e anexa `#EXT-X-ENDLIST`; a partir daí o Plyr lê a duração real
+  **sem nenhuma manipulação do player**. A duração também é exposta no status da
+  sessão para o overlay exibir o tempo restante.
 - **Normalização de timestamps**: `-fflags +genpts` gera PTS monotônicos e
   `-avoid_negative_ts make_zero` ancora a timeline em zero. Sem isso o `#EXTINF`
   da playlist deixa de bater com os PTS reais e o `hls.js` trava no MSE (anexa o

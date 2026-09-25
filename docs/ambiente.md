@@ -37,6 +37,10 @@ cp .env.example .env
 > [TMDB](https://www.themoviedb.org/settings/api). Sem ela a Home não carrega os
 > filmes e exibe uma mensagem de erro amigável. A chave fica apenas no backend e
 > nunca é exposta ao browser.
+>
+> **Para fontes dubladas:** preencha `TORRENTS_TORZNAB_KEY` com a chave da API do
+> Prowlarr (veja abaixo). Sem ela o sistema cai para o YTS, cujo catálogo é quase
+> todo em inglês.
 
 ### 2. Subir os containers
 
@@ -60,7 +64,18 @@ Pronto. Nesta única etapa o sistema executa, de forma automática e idempotente
 > As etapas são idempotentes: subir novamente não reinstala nem reexecuta o que
 > já está pronto. Para forçar tudo do zero, use `make fresh`.
 
-### 3. Acessar os serviços
+### 3. Configurar o indexador de torrents (Prowlarr)
+
+O Prowlarr sobe junto com a stack e é o que dá acesso às fontes dubladas em
+PT-BR. A configuração é feita uma única vez, pelo painel:
+
+1. Acesse http://localhost:9696 e conclua o assistente inicial.
+2. Em **Indexers**, cadastre os trackers que você quer consultar.
+3. Em **Settings → General**, copie a **API Key**.
+4. Cole o valor em `TORRENTS_TORZNAB_KEY` no `.env` e reinicie o backend
+   (`docker compose restart backend`).
+
+### 4. Acessar os serviços
 
 Tudo é servido pelo Nginx na **porta 80**:
 
@@ -68,6 +83,7 @@ Tudo é servido pelo Nginx na **porta 80**:
 - API health check: http://localhost/api/health
 - Media Service (via proxy): http://localhost/media/health
 - Media Service (direto): http://localhost:3000/health
+- Painel do Prowlarr: http://localhost:9696
 
 ## Variáveis de ambiente
 
@@ -79,6 +95,12 @@ valores reais. As variáveis que exigem atenção:
 | `TMDB_API_KEY` | **Sim** | Chave da API do TMDB. Sem ela a Home não carrega filmes. |
 | `TMDB_CACHE_TTL` | Não | Tempo de cache das respostas do TMDB no Redis (padrão `3600`s). |
 | `TMDB_MAX_PAGES` | Não | Teto de páginas da rolagem infinita (padrão `25`, ~500 filmes). |
+| `TORRENTS_TORZNAB_KEY` | **Sim** | Chave da API do Prowlarr. Sem ela não há fontes dubladas em PT-BR. |
+| `TORRENTS_TORZNAB_URL` | Não | URL interna do indexador (padrão `http://prowlarr:9696`). |
+| `TORRENTS_TORZNAB_CATEGORIA` | Não | Categoria Torznab de filmes (padrão `2000`). |
+| `TORRENTS_BASE_URL` | Não | Provedor de reserva (YTS), usado quando o indexador não está configurado. |
+| `TORRENTS_CACHE_TTL` | Não | Tempo de cache da busca de fontes (padrão `1800`s). |
+| `PROWLARR_PORT` | Não | Porta do painel do Prowlarr (padrão `9696`). |
 
 ## A sentinela `.bootstrap-done`
 

@@ -51,7 +51,10 @@ enum IdiomaFonte: string
      *
      * As APIs de torrents não têm um campo confiável de idioma, então a
      * classificação sai das tags que a comunidade usa nos nomes dos arquivos
-     * (ex.: "Dublado", "Dual Áudio", "Legendado").
+     * (ex.: "Dublado", "Dual Áudio", "Legendado", "Nacional", "PT-BR").
+     *
+     * Os indexadores Torznab agregam trackers PT-BR, cujos títulos trazem essas
+     * tags com frequência — é o que permite priorizar o dublado de verdade.
      */
     public static function deduzirDoTitulo(string $titulo): self
     {
@@ -63,8 +66,28 @@ enum IdiomaFonte: string
             return self::DUAL_AUDIO;
         }
 
-        if (str_contains($texto, 'dublado') || str_contains($texto, 'dublada') || str_contains($texto, ' pt-br')) {
-            return self::DUBLADO;
+        /*
+         * Tags de dublagem PT-BR. Além de "dublado", os trackers nacionais usam
+         * "nacional" (produção brasileira), "pt-br"/"ptbr" e "br" isolado em
+         * alguns casos. Verificamos " pt-br" com espaço para não casar com
+         * "pt-br" dentro de outra palavra.
+         */
+        $tagsDublado = [
+            'dublado',
+            'dublada',
+            'nacional',
+            ' pt-br',
+            ' ptbr',
+            'pt-br',
+            'ptbr',
+            'áudio pt',
+            'audio pt',
+        ];
+
+        foreach ($tagsDublado as $tag) {
+            if (str_contains($texto, $tag)) {
+                return self::DUBLADO;
+            }
         }
 
         if (str_contains($texto, 'legendado') || str_contains($texto, 'legenda')) {

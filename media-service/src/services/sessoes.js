@@ -39,6 +39,18 @@ const sessoes = new Map()
 const EXTENSOES_VIDEO = ['.mkv', '.mp4', '.avi', '.mov', '.m4v', '.webm']
 
 /**
+ * Tempo máximo aguardando o primeiro byte de dados, em ms.
+ *
+ * O evento `ready` do torrent só garante que os metadados do magnet foram
+ * lidos — não que exista algum peer disposto a enviar dados. Uma fonte sem
+ * peers ficava presa em `analisarComEspera` por 120 s, enquanto o frontend já
+ * havia desistido aos 90 s. Este limite falha rápido para o frontend seguir
+ * para a próxima fonte, e fica abaixo do `TIMEOUT_FONTE_MS` do frontend para
+ * que o backend seja o primeiro a desistir.
+ */
+const TIMEOUT_DADOS_MS = 30000
+
+/**
  * Cria uma sessão e começa a preparar a reprodução.
  *
  * A função devolve o id imediatamente: a conexão do torrent e a conversão
@@ -66,6 +78,7 @@ export function criarSessao({ magnet, filmeId }) {
     erro: null,
     progresso: null,
     download: null,
+    duracao: null,
     criadaEm: Date.now(),
   }
 
@@ -131,6 +144,15 @@ async function prepararSessao(sessao) {
   acompanharDownload(sessao, torrent)
 
   /*
+   * Antes de qualquer análise, confirmamos que a fonte realmente envia dados.
+   * O `ready` do torrent só diz que os metadados foram lidos; sem este passo,
+   * uma fonte sem peers ficava 120 s em `analisarComEspera` enquanto o
+   * frontend já tinha desistido. Falhamos rápido para o frontend tentar a
+   * próxima fonte.
+   */
+  await aguardarDados(sessao, torrent)
+
+  /*
    * Descobrimos se o índice está acessível desde o começo. Enquanto o arquivo
    * não tem bytes suficientes, `localizarMoov` devolve `null`; nesse caso
    * assumimos o caminho progressivo e deixamos o `analisarComEspera` aguardar o
@@ -141,23 +163,36 @@ async function prepararSessao(sessao) {
 
   const analise = await analisarComEspera(caminho, arquivo)
 
+  /*
+   * Guardamos a duração assim que o ffprobe a lê. O Plyr não consegue deduzi-la
+   * de uma playlist `EVENT` em crescimento, então o frontend a usa como fonte
+   * de verdade enquanto a conversão não termina.
+   */
+  sessao.duracao = analise.duracao ?? null
+
   sessao.status = 'convertendo'
   sessao.mensagem = 'Preparando a conversão...'
 
   logger.info(
-    `[sessao ${sessao.id}] modo=${analise.modo} video=${analise.videoCodec} audio=${analise.audioCodec} progressivo=${!indiceNoFim}`
+    `[sessao ${sessao.id}] modo=${analise.modo} video=${analise.videoCodec} audio=${analise.audioCodec} duracao=${sessao.duracao ?? '?'} progressivo=${!indiceNoFim}`
   )
 
   sessao.mensagem = mensagemDoModo(analise.modo)
 
   if (indiceNoFim) {
     /*
-     * Sem pipe: o índice só é legível com o arquivo inteiro em disco. Esperamos
-     * o download terminar e convertemos do caminho — o FFmpeg busca o `moov`
-     * normalmente porque o arquivo é buscável.
+     * Sem pipe: o FFmpeg lê o MP4 sequencialmente e não busca o `moov` no fim.
+     * A saída é converter do disco, que é buscável — mas esperar o download
+     * inteiro deixaria o usuário minutos sem imagem.
+     *
+     * Priorizamos o trecho do `moov` (o índice) e só então abrimos a conversão.
+     * Com o índice em disco, o FFmpeg consegue montar a timeline e lê o `mdat`
+     * conforme os bytes chegam, sem precisar do arquivo completo.
      */
-    sessao.mensagem = 'Baixando o filme...'
-    await aguardarDownload(sessao, torrent)
+    sessao.mensagem = 'Baixando o índice do filme...'
+    await priorizarIndice(sessao, arquivo, caminho)
+
+    sessao.mensagem = 'Convertendo o filme...'
 
     sessao.comando = iniciarConversao({
       caminho,
@@ -244,28 +279,110 @@ async function indiceEstaNoFim(sessao, arquivo, caminho) {
 }
 
 /**
- * Aguarda o download do torrent terminar.
+ * Baixa o trecho do índice (`moov`) antes do resto do arquivo.
  *
- * Usado apenas no caminho não progressivo (MP4 com `moov` no fim), em que a
- * conversão precisa do arquivo inteiro em disco. O progresso é refletido no
- * overlay para o usuário saber que ainda está baixando.
+ * No caminho não progressivo (MP4 com `moov` no fim) o FFmpeg precisa do índice
+ * em disco para montar a timeline. Em vez de esperar o download inteiro,
+ * pedimos ao WebTorrent o intervalo exato do `moov` com prioridade máxima e
+ * aguardamos só esse trecho. Com o índice presente, a conversão começa do disco
+ * e o FFmpeg lê o `mdat` conforme os bytes chegam — o arquivo em disco é
+ * buscável, então ele consegue esperar/relê-lo.
+ *
+ * Se o `moov` não puder ser localizado (arquivo ainda sem bytes suficientes),
+ * caímos para a espera do download completo, que é o comportamento antigo.
  *
  * @param {object} sessao
- * @param {import('webtorrent').Torrent} torrent
+ * @param {import('webtorrent').TorrentFile} arquivo
+ * @param {string} caminho caminho do arquivo em disco
  */
-function aguardarDownload(sessao, torrent) {
-  return new Promise((resolve) => {
-    if (torrent.progress >= 1) {
-      resolve()
-      return
+async function priorizarIndice(sessao, arquivo, caminho) {
+  const moov = localizarMoov(caminho, arquivo.length)
+
+  if (!moov) {
+    // Sem o índice localizável não há como priorizar: esperamos o download
+    // completo, como antes.
+    logger.info(`[sessao ${sessao.id}] moov não localizado; aguardando o download completo`)
+    await aguardarDownloadCompleto(sessao, arquivo)
+    return
+  }
+
+  /*
+   * `select(prioridade, inicio, fim)` pede ao WebTorrent apenas o intervalo do
+   * índice. A prioridade 10 (acima da do arquivo inteiro, que é 1) garante que
+   * esses bytes sejam pedidos antes de tudo.
+   */
+  arquivo.select(10, moov.inicio, moov.fim)
+
+  logger.info(
+    `[sessao ${sessao.id}] priorizando o moov (${moov.inicio}–${moov.fim}); convertendo do disco`
+  )
+
+  await aguardarTrecho(sessao, arquivo, moov.fim)
+}
+
+/**
+ * Aguarda o arquivo ter bytes até a posição informada.
+ *
+ * Usado para esperar o trecho do `moov` chegar ao disco. Verificamos o
+ * progresso do arquivo a cada segundo; o download segue em paralelo.
+ *
+ * @param {object} sessao
+ * @param {import('webtorrent').TorrentFile} arquivo
+ * @param {number} posicao byte até onde precisamos dos dados
+ * @param {number} timeoutMs tempo máximo de espera
+ */
+function aguardarTrecho(sessao, arquivo, posicao, timeoutMs = 120000) {
+  const inicio = Date.now()
+
+  return new Promise((resolve, reject) => {
+    const verificar = () => {
+      // `arquivo.progress` é a fração baixada do arquivo; multiplicada pelo
+      // tamanho, dá os bytes disponíveis. Se já cobrem o índice, seguimos.
+      const baixado = arquivo.progress * arquivo.length
+
+      if (baixado >= posicao || arquivo.progress >= 1) {
+        return resolve()
+      }
+
+      if (Date.now() - inicio > timeoutMs) {
+        return reject(new Error('Tempo esgotado aguardando o índice do vídeo.'))
+      }
+
+      setTimeout(verificar, 1000)
     }
 
-    const concluir = () => {
-      torrent.off('done', concluir)
-      resolve()
+    verificar()
+  })
+}
+
+/**
+ * Aguarda o download completo do arquivo.
+ *
+ * Reserva do caminho não progressivo, usada quando o `moov` não pôde ser
+ * localizado. Tem um teto de tempo para não deixar a sessão presa para sempre
+ * caso o download estagne.
+ *
+ * @param {object} sessao
+ * @param {import('webtorrent').TorrentFile} arquivo
+ * @param {number} timeoutMs tempo máximo de espera
+ */
+function aguardarDownloadCompleto(sessao, arquivo, timeoutMs = 10 * 60 * 1000) {
+  const inicio = Date.now()
+
+  return new Promise((resolve, reject) => {
+    const verificar = () => {
+      if (arquivo.progress >= 1) {
+        return resolve()
+      }
+
+      if (Date.now() - inicio > timeoutMs) {
+        return reject(new Error('Tempo esgotado aguardando o download do filme.'))
+      }
+
+      setTimeout(verificar, 1000)
     }
 
-    torrent.on('done', concluir)
+    verificar()
   })
 }
 
@@ -343,21 +460,33 @@ function escolherArquivoDeVideo(torrent) {
  * registramos o andamento. O download corre junto com a conversão, então o
  * percentual serve de contexto no overlay enquanto os segmentos são gerados.
  *
+ * Além do percentual, expomos a velocidade e a contagem de peers: sem eles o
+ * overlay não distingue uma fonte morta (0 peers) de uma fonte apenas lenta,
+ * e o usuário fica sem saber se deve esperar ou trocar de fonte.
+ *
  * @param {object} sessao
  * @param {import('webtorrent').Torrent} torrent
  */
 function acompanharDownload(sessao, torrent) {
   const atualizar = () => {
-    const percentual = Math.round(torrent.progress * 100)
-
-    sessao.download = { percentual }
+    sessao.download = {
+      percentual: Math.round(torrent.progress * 100),
+      velocidade: torrent.downloadSpeed ?? 0,
+      peers: torrent.numPeers ?? 0,
+      baixado: torrent.downloaded ?? 0,
+    }
   }
 
   const concluir = () => {
     torrent.off('download', atualizar)
     torrent.off('done', concluir)
 
-    sessao.download = { percentual: 100 }
+    sessao.download = {
+      percentual: 100,
+      velocidade: 0,
+      peers: torrent.numPeers ?? 0,
+      baixado: torrent.downloaded ?? 0,
+    }
   }
 
   if (torrent.progress >= 1) {
@@ -369,6 +498,64 @@ function acompanharDownload(sessao, torrent) {
   torrent.on('done', concluir)
 
   atualizar()
+}
+
+/**
+ * Aguarda o primeiro byte de dados, falhando rápido se a fonte estiver morta.
+ *
+ * O evento `ready` do torrent só confirma que os metadados do magnet foram
+ * lidos — não que exista peer enviando dados. Sem esta espera, uma fonte sem
+ * peers prendia a sessão em `analisarComEspera` por 120 s, muito além do
+ * `TIMEOUT_FONTE_MS` do frontend (90 s), deixando a sessão órfã no backend.
+ *
+ * Resolve assim que qualquer byte chega; rejeita se o tempo esgotar sem
+ * tráfego. O frontend então recebe `status: 'erro'` e tenta a próxima fonte.
+ *
+ * @param {object} sessao
+ * @param {import('webtorrent').Torrent} torrent
+ */
+function aguardarDados(sessao, torrent) {
+  return new Promise((resolve, reject) => {
+    // Um torrent já completo (ou com dados em disco) não precisa esperar.
+    if (torrent.downloaded > 0 || torrent.progress >= 1) {
+      resolve()
+      return
+    }
+
+    let concluido = false
+
+    const finalizar = () => {
+      if (concluido) return
+      concluido = true
+      clearTimeout(temporizador)
+      torrent.off('download', aoBaixar)
+      resolve()
+    }
+
+    const aoBaixar = () => {
+      if (torrent.downloaded > 0) {
+        finalizar()
+      }
+    }
+
+    const temporizador = setTimeout(() => {
+      if (concluido) return
+      concluido = true
+      torrent.off('download', aoBaixar)
+
+      reject(
+        new Error(
+          `A fonte não enviou dados em ${TIMEOUT_DADOS_MS / 1000}s (peers: ${torrent.numPeers ?? 0}).`
+        )
+      )
+    }, TIMEOUT_DADOS_MS)
+
+    torrent.on('download', aoBaixar)
+
+    // O evento `download` só dispara quando chegam bytes; uma verificação
+    // imediata cobre o caso de os dados já terem começado antes do listener.
+    aoBaixar()
+  })
 }
 
 /**
@@ -438,9 +625,19 @@ export function obterSessao(id) {
     mensagem: sessao.mensagem,
     erro: sessao.erro,
     progresso: sessao.progresso ?? null,
-    // O download corre em paralelo à conversão; expomos o percentual para o
-    // overlay mostrar o quanto da fonte já chegou.
+    /*
+     * O download corre em paralelo à conversão. Além do percentual, expomos a
+     * velocidade e a contagem de peers para o overlay distinguir uma fonte
+     * morta (0 peers) de uma apenas lenta.
+     */
     download: sessao.download ?? null,
+    /*
+     * Duração total do filme, lida pelo ffprobe. O Plyr não consegue deduzir a
+     * duração de uma playlist `EVENT` ainda em crescimento (o hls.js a trata
+     * como ao vivo e reporta `Infinity`), então o frontend usa este valor como
+     * fonte de verdade enquanto a conversão não termina.
+     */
+    duracao: sessao.duracao ?? null,
     // A URL só é exposta quando a playlist está pronta para ser consumida.
     playlist: sessao.status === 'pronto' ? `/api/media/sessao/${sessao.id}/playlist.m3u8` : null,
   }
@@ -499,6 +696,54 @@ export function encerrarSessao(id) {
   sessoes.delete(id)
 
   return true
+}
+
+/**
+ * Testa uma fonte sem criar sessão: conecta o magnet e mede a malha.
+ *
+ * O backend usa isto para descartar fontes sem peers antes de oferecê-las ao
+ * usuário. O `seeds`/`peers` do provedor é estático e pode estar desatualizado;
+ * aqui medimos a malha real por alguns segundos.
+ *
+ * O torrent é removido ao fim do teste para não deixar lixo no cliente — a
+ * sessão de reprodução, se houver, adiciona o magnet de novo.
+ *
+ * @param {string} magnet
+ * @param {number} esperaMs tempo de observação da malha
+ * @returns {Promise<{ok: boolean, peers: number, seeds: number, velocidade: number}>}
+ */
+export async function verificarFonte(magnet, esperaMs = 8000) {
+  let torrent
+
+  try {
+    torrent = await adicionarTorrent(magnet)
+  } catch (erro) {
+    logger.warn('[verificar] falha ao conectar a fonte:', erro.message)
+    return { ok: false, peers: 0, seeds: 0, velocidade: 0 }
+  }
+
+  // Observamos a malha por alguns segundos: o número de peers sobe conforme as
+  // conexões se estabelecem, então uma leitura imediata subestimaria a fonte.
+  await new Promise((resolve) => setTimeout(resolve, esperaMs))
+
+  const peers = torrent.numPeers ?? 0
+  const velocidade = torrent.downloadSpeed ?? 0
+  const baixou = (torrent.downloaded ?? 0) > 0
+
+  // Consideramos a fonte viva se há peers e algum tráfego (ou se já baixou).
+  const ok = peers > 0 && (velocidade > 0 || baixou)
+
+  const resultado = { ok, peers, seeds: peers, velocidade }
+
+  // O teste não deve deixar o torrent vivo: a sessão de reprodução o adiciona
+  // de novo quando o usuário escolhe a fonte.
+  try {
+    cliente.remove(torrent, { destroyStore: true })
+  } catch (erro) {
+    logger.warn('[verificar] falha ao remover o torrent de teste:', erro.message)
+  }
+
+  return resultado
 }
 
 /**

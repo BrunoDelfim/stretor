@@ -33,12 +33,28 @@ return [
 
     /*
      * Provedor de torrents usado na busca de fontes para reprodução.
+     *
+     * O provedor principal é um indexador Torznab (Prowlarr/Jackett), que
+     * agrega trackers PT-BR e expõe uma API única. Sites públicos nacionais não
+     * têm API limpa como o YTS, então o indexador é o caminho padrão para obter
+     * fontes dubladas. O YTS fica como reserva caso o indexador não responda.
+     *
      * O provedor fica isolado no TorrentService — trocar a API significa mexer
      * apenas na normalização, sem afetar o contrato consumido pelo frontend.
      */
     'torrents' => [
-        // O domínio principal do YTS (yts.mx) é bloqueado por DNS em vários
-        // provedores de hospedagem. O espelho yts.gg responde com o mesmo
+        /*
+         * Indexador Torznab (Prowlarr/Jackett). A `base_url` aponta para a raiz
+         * do indexador e a `api_key` é a chave gerada nele. Sem a chave, o
+         * serviço cai para o YTS.
+         */
+        'torznab_url' => env('TORRENTS_TORZNAB_URL', ''),
+        'torznab_key' => env('TORRENTS_TORZNAB_KEY', ''),
+        // Categoria Torznab de filmes (2000 = Movies).
+        'torznab_categoria' => env('TORRENTS_TORZNAB_CATEGORIA', '2000'),
+
+        // Reserva: o domínio principal do YTS (yts.mx) é bloqueado por DNS em
+        // vários provedores de hospedagem. O espelho yts.gg responde com o mesmo
         // contrato da API v2, então é ele que fica como padrão.
         'base_url' => env('TORRENTS_BASE_URL', 'https://yts.gg'),
         'cache_ttl' => (int) env('TORRENTS_CACHE_TTL', 1800),

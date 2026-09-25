@@ -36,6 +36,13 @@ const tentativaAtual = ref(0)
 const totalFontes = ref(0)
 const erro = ref(null)
 
+/*
+ * Telemetria do download, exibida no overlay enquanto a fonte prepara o vídeo.
+ * Sem ela o usuário não distingue uma fonte morta (0 peers) de uma apenas
+ * lenta — as duas mostram "Aguardando dados da fonte..." e percentual 0.
+ */
+const download = ref(null)
+
 const elementoVideo = ref(null)
 const urlPlaylist = ref(null)
 
@@ -282,6 +289,35 @@ async function tentarFontes(fontes) {
 }
 
 /**
+ * Monta a mensagem do overlay a partir do status da sessão.
+ *
+ * O backend manda a mensagem base ("Aguardando dados da fonte..."), mas ela
+ * sozinha não distingue uma fonte morta de uma lenta. Quando há telemetria de
+ * download, acrescentamos peers e velocidade para o usuário saber se vale
+ * esperar ou trocar de fonte.
+ */
+function mensagemDeProgresso(status) {
+  const base = status.mensagem || 'Preparando o vídeo...'
+  const info = status.download
+
+  if (!info) return base
+
+  // Sem peers não há de onde baixar: avisamos em vez de deixar o usuário
+  // esperando por uma fonte que não vai responder.
+  if (info.peers === 0) {
+    return `${base} (sem peers)`
+  }
+
+  if (info.velocidade > 0) {
+    const mbps = (info.velocidade / 1024 / 1024).toFixed(2)
+
+    return `${base} — ${info.peers} peers, ${mbps} MB/s`
+  }
+
+  return `${base} — ${info.peers} peers`
+}
+
+/**
  * Aguarda o desfecho de uma única fonte.
  *
  * Devolve `pronto` quando a playlist ficou disponível no servidor, ou `falhou`
@@ -326,7 +362,8 @@ function aguardarFonte() {
         }
 
         estado.value = 'preparando'
-        mensagem.value = status.mensagem || 'Preparando o vídeo...'
+        download.value = status.download ?? null
+        mensagem.value = mensagemDeProgresso(status)
       } catch {
         // Falha pontual: tentamos de novo no próximo ciclo.
       }
@@ -382,6 +419,7 @@ async function iniciar() {
   mensagem.value = 'Procurando fontes...'
   tentativaAtual.value = 0
   totalFontes.value = 0
+  download.value = null
 
   try {
     const fontes = await streamingService.buscarFontes(props.filme.id)

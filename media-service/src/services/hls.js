@@ -58,8 +58,13 @@ const FORMATOS_CONTAINER = {
 /**
  * Extrai os metadados do arquivo para decidir o modo de conversão.
  *
+ * Além dos codecs, devolvemos a duração total. O Plyr não consegue deduzi-la de
+ * uma playlist `EVENT` em crescimento — o hls.js a trata como transmissão ao
+ * vivo e reporta `Infinity` — então o frontend usa este valor como fonte de
+ * verdade enquanto a conversão não termina.
+ *
  * @param {string} arquivo caminho do arquivo de vídeo dentro do torrent
- * @returns {Promise<{modo: string, videoCodec: string, audioCodec: string}>}
+ * @returns {Promise<{modo: string, videoCodec: string, audioCodec: string, duracao: number|null}>}
  */
 export function analisarArquivo(arquivo) {
   return new Promise((resolve, reject) => {
@@ -73,10 +78,16 @@ export function analisarArquivo(arquivo) {
       const videoCodec = (video?.codec_name ?? '').toLowerCase()
       const audioCodec = (audio?.codec_name ?? '').toLowerCase()
 
+      // `format.duration` é a duração do contêiner inteiro; é mais confiável
+      // que a duração de um stream isolado quando há faixas de tamanhos
+      // diferentes. Convertemos para número porque o ffprobe devolve string.
+      const duracao = Number.parseFloat(metadados?.format?.duration ?? '')
+
       resolve({
         modo: decidirModo(videoCodec, audioCodec),
         videoCodec,
         audioCodec,
+        duracao: Number.isFinite(duracao) ? duracao : null,
       })
     })
   })
@@ -214,16 +225,32 @@ export function iniciarConversao({ fluxo, caminho, extensao, diretorio, modo, ao
 }
 
 /**
- * Anexa `#EXT-X-ENDLIST` à playlist, declarando que não virão mais segmentos.
+ * Finaliza a playlist: troca `EVENT` por `VOD` e anexa `#EXT-X-ENDLIST`.
+ *
+ * Enquanto a conversão corre, a playlist é `EVENT` e cresce — o hls.js a trata
+ * como transmissão ao vivo e reporta duração `Infinity`, o que impede o Plyr de
+ * mostrar o tempo total e mover a barra. Ao terminar, declaramos `VOD` com
+ * `#EXT-X-ENDLIST`: o hls.js passa a enxergar uma playlist completa, calcula a
+ * duração a partir dos `#EXTINF` e o Plyr a exibe sozinho — sem nenhuma
+ * manipulação do player.
  */
 function finalizarPlaylist(playlist) {
   try {
-    const conteudo = fs.readFileSync(playlist, 'utf8')
+    let conteudo = fs.readFileSync(playlist, 'utf8')
 
     if (conteudo.includes('#EXT-X-ENDLIST')) return
 
-    fs.appendFileSync(playlist, '\n#EXT-X-ENDLIST\n')
-    logger.info('[hls] playlist finalizada com #EXT-X-ENDLIST')
+    // A playlist do FFmpeg traz `#EXT-X-PLAYLIST-TYPE:EVENT`. Trocamos por
+    // `VOD` para o hls.js tratá-la como conteúdo completo, não ao vivo.
+    conteudo = conteudo.replace(
+      '#EXT-X-PLAYLIST-TYPE:EVENT',
+      '#EXT-X-PLAYLIST-TYPE:VOD'
+    )
+
+    conteudo = `${conteudo.trimEnd()}\n#EXT-X-ENDLIST\n`
+
+    fs.writeFileSync(playlist, conteudo)
+    logger.info('[hls] playlist finalizada como VOD com #EXT-X-ENDLIST')
   } catch (erro) {
     logger.warn('[hls] falha ao finalizar a playlist:', erro.message)
   }
