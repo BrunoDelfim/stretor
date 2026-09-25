@@ -147,10 +147,31 @@ async function prepararSessao(sessao) {
 /**
  * Adiciona o magnet ao cliente e resolve quando o torrent estiver pronto.
  *
+ * Se o mesmo torrent já estiver no cliente — o usuário reabriu o filme sem que
+ * a sessão anterior tivesse sido encerrada — reaproveitamos a instância em vez
+ * de tentar adicionar de novo. O `cliente.add` recusa duplicatas com "Cannot add
+ * duplicate torrent", o que derrubava a segunda tentativa de assistir.
+ *
+ * No WebTorrent 2.x o `cliente.get()` devolve uma Promise, então a função é
+ * assíncrona para poder aguardá-la.
+ *
  * @param {string} magnet
  * @returns {Promise<import('webtorrent').Torrent>}
  */
-function adicionarTorrent(magnet) {
+async function adicionarTorrent(magnet) {
+  const existente = await cliente.get(magnet)
+
+  if (existente) {
+    if (existente.ready) {
+      return existente
+    }
+
+    return new Promise((resolve, reject) => {
+      existente.once('ready', () => resolve(existente))
+      existente.once('error', reject)
+    })
+  }
+
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       reject(new Error('Tempo esgotado ao conectar na fonte.'))
