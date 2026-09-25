@@ -79,6 +79,28 @@ público é `/media`. O Nginx reescreve `/media/*` para `/api/media/*` no própr
 `proxy_pass` (com grupo capturado na `location`), pois o `rewrite ... break` não
 altera a URI enviada ao upstream.
 
+### Re-resolução de DNS dos upstreams
+
+O Nginx resolve os nomes dos serviços (`frontend`, `backend`, `media-service`) na
+inicialização e, por padrão, **congela** o IP resultante. Quando o
+`docker compose up` recria um desses containers, ele recebe um IP novo e o proxy
+passa a bater em um endereço morto — o site cai com `502` até alguém reiniciar o
+Nginx na mão.
+
+Para evitar isso, o config declara o DNS embutido do Docker e entrega os alvos por
+variável:
+
+```nginx
+resolver 127.0.0.11 valid=10s ipv6=off;
+set $backend_upstream "backend:9000";
+# ...
+fastcgi_pass $backend_upstream;
+```
+
+Com uma variável em `proxy_pass`/`fastcgi_pass`, o Nginx consulta o resolver a
+cada requisição (respeitando o `valid`), então recriar os containers deixa de
+derrubar o site — sem nenhum passo manual.
+
 ## Estrutura de pastas
 
 ```
