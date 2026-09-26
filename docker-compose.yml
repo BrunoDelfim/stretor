@@ -53,6 +53,9 @@ services:
       # Reserva de torrents (YTS) usada quando o indexador não responde.
       - TORRENTS_BASE_URL=${TORRENTS_BASE_URL:-https://yts.gg}
       - TORRENTS_CACHE_TTL=${TORRENTS_CACHE_TTL:-1800}
+      # Idiomas pedidos ao Torrentio. Sem isso ele responde só com o catálogo
+      # padrão (quase todo em inglês) e as séries não trazem fonte dublada.
+      - TORRENTS_TORRENTIO_IDIOMAS=${TORRENTS_TORRENTIO_IDIOMAS:-portuguese}
     depends_on:
       init:
         condition: service_completed_successfully

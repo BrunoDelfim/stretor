@@ -41,8 +41,13 @@ class ProvedorTorrentio implements ProvedorTorrents
         return true;
     }
 
-    public function buscar(string $titulo, ?int $ano = null, ?string $imdbId = null): array
-    {
+    public function buscar(
+        string $titulo,
+        ?int $ano = null,
+        ?string $imdbId = null,
+        ?int $temporada = null,
+        ?int $episodio = null,
+    ): array {
         // Sem o identificador do IMDb não há como consultar: o Torrentio não
         // aceita busca por nome.
         if (empty($imdbId) || ! str_starts_with($imdbId, 'tt')) {
@@ -52,11 +57,43 @@ class ProvedorTorrentio implements ProvedorTorrents
         $base = rtrim((string) config('services.torrents.torrentio_url', 'https://torrentio.strem.fun'), '/');
         $timeout = (int) config('services.torrents.tempo_limite', 15);
 
+        /*
+         * O Torrentio aceita uma configuração embutida na própria URL, no
+         * segmento que antecede `/stream`. Sem ela, ele responde com o catálogo
+         * padrão — quase todo em inglês —, e era por isso que uma série só
+         * trazia fontes "Idioma original" mesmo com o resto da cascata saudável.
+         *
+         * Com `language=portuguese`, o Torrentio passa a incluir os provedores
+         * que publicam releases nacionais (Comando, BluDV, ThePirateBay com
+         * faixa PT) e devolve os lançamentos "Dublado"/"Dual Áudio"/"PORTUGUÊS
+         * BR" que faltavam. A lista de idiomas fica na config para poder ser
+         * ampliada sem mexer no código.
+         */
+        $idiomas = trim((string) config('services.torrents.torrentio_idiomas', 'portuguese'));
+        $configuracao = $idiomas !== '' ? 'language='.rawurlencode($idiomas).'/' : '';
+
+        // O Torrentio tem dois caminhos distintos, e usar o errado devolve o
+        // conteúdo errado: `/stream/movie/{id}` responde pelo catálogo de filmes
+        // do identificador, e `/stream/series/{id}:{temporada}:{episodio}`
+        // responde pelo episódio. Como o TMDB reaproveita o mesmo `imdb_id` para
+        // a série e para um filme homônimo, consultar uma série pelo caminho de
+        // filme devolvia o filme — foi exatamente o que aconteceu com "American
+        // Horror Story", que trouxe "M. Butterfly (1993)".
+        $caminho = ($temporada !== null && $episodio !== null)
+            ? "{$configuracao}stream/series/{$imdbId}:{$temporada}:{$episodio}.json"
+            : "{$configuracao}stream/movie/{$imdbId}.json";
+
         try {
-            $resposta = Http::baseUrl($base)
-                ->acceptJson()
+            /*
+             * A URL é montada inteira em vez de usar `baseUrl()` + caminho: o
+             * `baseUrl()` do Laravel descarta o caminho do host quando o caminho
+             * passado começa com "/", e o segmento de configuração
+             * (`language=portuguese/`) é justamente parte do caminho. Montando a
+             * URL completa garantimos que o filtro de idioma chegue ao Torrentio.
+             */
+            $resposta = Http::acceptJson()
                 ->timeout($timeout)
-                ->get("/stream/movie/{$imdbId}.json");
+                ->get($base.'/'.$caminho);
         } catch (\Throwable) {
             // Um provedor indisponível não pode derrubar a cascata; quem decide
             // se a busca falhou é o catálogo, com o conjunto de todos.
@@ -141,19 +178,23 @@ class ProvedorTorrentio implements ProvedorTorrents
     /**
      * Lê a contagem de seeds do rótulo (ex.: "👤 123 💾 1.4 GB").
      *
-     * Quando o Torrentio não informa a contagem, devolvemos 1 e não 0: o valor 0
-     * faz o catálogo descartar a fonte como morta, e o Torrentio costuma omitir
-     * o dado justamente quando não conseguiu medir — não quando não há peers. O
-     * media-service valida os peers na prática antes de abrir a reprodução.
+     * O piso é 1, nunca 0. O Torrentio usa `👤 0` tanto para "não há peers" quanto
+     * para "não consegui medir" — e o segundo caso é o mais comum em releases
+     * nacionais, que ele indexa sem passar pelo rastreador de peers. Como o
+     * catálogo descarta toda fonte com 0 seeds, tratar esse 0 como definitivo
+     * apagava dubladas legítimas: foi o que aconteceu com o release
+     * "Dual Áudio 720p By-LuanHarper" de "Grey's Anatomy", que vinha com `👤 0` e
+     * era removido antes de chegar à interface. Quem confirma se a fonte vive é o
+     * media-service, que mede os peers na prática antes de abrir a reprodução.
      */
     private function seedsDoRotulo(string $rotulo): int
     {
         if (preg_match('/👤\s*(\d+)/u', $rotulo, $achados)) {
-            return (int) $achados[1];
+            return max(1, (int) $achados[1]);
         }
 
         if (preg_match('/(\d+)\s*(?:seeds|seeders)/i', $rotulo, $achados)) {
-            return (int) $achados[1];
+            return max(1, (int) $achados[1]);
         }
 
         return 1;

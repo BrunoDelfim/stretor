@@ -39,8 +39,21 @@ class ProvedorYts implements ProvedorTorrents
         return $this->baseUrl() !== '';
     }
 
-    public function buscar(string $titulo, ?int $ano = null, ?string $imdbId = null): array
-    {
+    public function buscar(
+        string $titulo,
+        ?int $ano = null,
+        ?string $imdbId = null,
+        ?int $temporada = null,
+        ?int $episodio = null,
+    ): array {
+        // O YTS é um catálogo exclusivo de filmes: não existe episódio lá. Se
+        // consultássemos mesmo assim, o `query_term` com o `imdb_id` da série
+        // devolveria o filme homônimo (o TMDB reaproveita o identificador), e a
+        // cascata terminaria com uma fonte errada em vez de vazia.
+        if ($temporada !== null && $episodio !== null) {
+            return [];
+        }
+
         $resposta = $this->consultar($titulo, $ano, $imdbId);
 
         $filmes = $resposta['data']['movies'] ?? [];

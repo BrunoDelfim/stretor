@@ -6,7 +6,8 @@ Endpoints expostos pelo backend (Laravel) e pelo media-service (Node).
 
 - `GET /api/health` — health check da API
 - `GET /up` — health check do framework
-- `GET /api/v1/movies/popular?page=N` — filmes mais assistidos no Brasil (Home)
+- `GET /api/v1/movies/popular?page=N` — filmes mais assistidos no Brasil
+- `GET /api/v1/movies/trending?page=N` — tendências do dia (filmes, animação e séries) — alimenta a Home unificada
 - `GET /api/v1/movies/search?query=...` — busca por título (navbar)
 - `GET /api/v1/movies/{id}` — detalhes do filme (modal)
 - `GET /api/v1/movies/{id}/fontes` — fontes de torrent para reprodução
@@ -14,10 +15,24 @@ Endpoints expostos pelo backend (Laravel) e pelo media-service (Node).
 > As respostas do TMDB são cacheadas no Redis (`TMDB_CACHE_TTL`, padrão 3600s)
 > para respeitar o rate limit da API e acelerar a Home.
 
+### Home unificada (tendências do dia)
+
+A Home consome `GET /api/v1/movies/trending`, que usa o endpoint
+`/trending/all/day` do TMDB para misturar **filmes, animação e séries** em um
+único fluxo. O backend descarta os itens cujo lançamento (`release_date` para
+filmes, `first_air_date` para séries) seja posterior à data de hoje — só entra
+na Home o que já está disponível para assistir.
+
+Cada item normalizado carrega o campo `tipo` (`movie` ou `tv`), que o frontend
+usa para distinguir o conteúdo. A classificação indicativa é buscada no endpoint
+correto conforme o tipo: `/movie/{id}/release_dates` para filmes e
+`/tv/{id}/content_ratings` para séries, com cache por `{tipo}:{id}` para evitar
+colisão entre ids de filmes e séries.
+
 ### Paginação da Home (rolagem infinita)
 
-O endpoint `popular` aceita o parâmetro `page` (padrão `1`) e devolve, além da
-lista, os metadados de paginação usados pela rolagem infinita:
+Os endpoints `popular` e `trending` aceitam o parâmetro `page` (padrão `1`) e
+devolvem, além da lista, os metadados de paginação usados pela rolagem infinita:
 
 ```json
 {
@@ -36,9 +51,9 @@ do cliente está detalhado em [Frontend](frontend.md).
 
 ### Limite de páginas
 
-O TMDB reporta cerca de 1000 páginas em `popular`, o que representaria milhares
-de filmes e um DOM pesado sem ganho real de descoberta. Por isso a rolagem
-infinita para no teto definido por `TMDB_MAX_PAGES` (padrão `25`, ~500 filmes).
+O TMDB reporta cerca de 1000 páginas em `popular`/`trending`, o que representaria
+milhares de títulos e um DOM pesado sem ganho real de descoberta. Por isso a
+rolagem infinita para no teto definido por `TMDB_MAX_PAGES` (padrão `25`).
 Ao atingir o limite, o backend responde com `has_more: false` — sem chamadas
 extras ao TMDB. Quem procura um título específico usa a busca, que consulta o
 catálogo inteiro.
@@ -54,6 +69,44 @@ O endpoint de detalhes enriquece o payload com `duracao` (ex.: `2h 19min`),
 `elenco` (5 principais atores), `trailer` (chave do YouTube) e `imdb_id`, usados
 pelo modal para exibir o botão "Assistir", o trailer sob demanda e os créditos.
 O `imdb_id` é o identificador mais preciso para a busca de fontes de torrent.
+
+### Detalhes da série
+
+`GET /api/v1/movies/{id}/serie` devolve a mesma ficha do filme (título, sinopse,
+capa, nota, ano, gêneros, elenco e trailer), acrescida de:
+
+- `numero_temporadas` e `numero_episodios` — totais da série;
+- `temporadas` — lista com `numero`, `nome`, `qtd_episodios`, `ano` e `capa`.
+
+A classificação indicativa vem de `/tv/{id}/content_ratings` (séries não têm
+`release_dates`) e a duração usa o `episode_run_time` como referência. A
+temporada 0 (Especiais) é descartada para não confundir a numeração regular.
+
+### Episódios da temporada
+
+`GET /api/v1/movies/{id}/temporada/{numero}` devolve os episódios normalizados:
+
+```json
+{
+  "data": {
+    "temporada": 1,
+    "nome": "Temporada 1",
+    "ano": 2019,
+    "episodios": [
+      {
+        "numero": 1,
+        "temporada": 1,
+        "titulo": "Piloto",
+        "sinopse": "...",
+        "capa": "https://image.tmdb.org/t/p/w500/...",
+        "nota": 8.1,
+        "duracao": "58min",
+        "data_exibicao": "2019-07-25"
+      }
+    ]
+  }
+}
+```
 
 ### Fontes de torrent
 
@@ -92,6 +145,13 @@ reserva em inglês) e `provedor_rotulo` é o texto pronto para exibição. O ove
 do player mostra esse rótulo junto do idioma, o que explica de relance por que um
 filme veio com áudio original. Detalhes em
 [Integrações](integracoes.md#de-onde-veio-a-fonte).
+
+#### Busca por episódio
+
+Para séries, o frontend envia também `temporada` e `episodio` na query. Com eles,
+o backend monta o termo de busca no padrão `Titulo S01E02` em vez do título solto
+— cada episódio é um release próprio, então a numeração é o que identifica o
+arquivo. Sem esses parâmetros, a busca de filme segue exatamente como antes.
 
 A busca é cacheada no Redis (`TORRENTS_CACHE_TTL`, padrão 1800s) e o provedor
 fica isolado no `TorrentService` — trocar de API significa reescrever apenas a

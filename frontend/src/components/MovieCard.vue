@@ -1,5 +1,7 @@
 <script setup>
-defineProps({
+import { computed } from 'vue'
+
+const props = defineProps({
   filme: {
     type: Object,
     required: true,
@@ -7,6 +9,11 @@ defineProps({
 })
 
 defineEmits(['selecionar'])
+
+// O backend marca cada item com `tipo` (movie/tv). O selo sobre a capa deixa
+// claro o que é filme e o que é série, já que os dois dividem o mesmo grid.
+const ehSerie = computed(() => props.filme?.tipo === 'tv')
+const rotuloTipo = computed(() => (ehSerie.value ? 'Série' : 'Filme'))
 </script>
 
 <template>
@@ -26,6 +33,16 @@ defineEmits(['selecionar'])
       <div v-else class="flex h-full w-full items-center justify-center px-3 text-center text-xs text-slate-300">
         {{ filme.titulo }}
       </div>
+
+      <!-- Selo de tipo sobre a capa: verde para filme, roxo para série. Os tons
+           foram escolhidos bem distantes entre si para continuarem legíveis em
+           telas com pouca fidelidade de cor. -->
+      <span
+        class="absolute left-2 top-2 rounded px-1.5 py-0.5 text-xs font-semibold text-navy-950"
+        :class="ehSerie ? 'bg-violet-400' : 'bg-lime-300'"
+      >
+        {{ rotuloTipo }}
+      </span>
 
       <span
         v-if="filme.nota"

@@ -45,12 +45,18 @@ export const useMoviesStore = defineStore('movies', () => {
     temMais.value = false
   }
 
+  /**
+   * Carga inicial da Home: tendências do dia com filmes, animação e séries.
+   *
+   * Mantive o nome `carregarPopulares` para não mexer em quem já o chama; o que
+   * mudou foi a fonte, que agora é o fluxo unificado de tendências.
+   */
   async function carregarPopulares() {
     carregando.value = true
     erro.value = null
 
     try {
-      const { filmes: lista, meta } = await moviesService.populares(1)
+      const { filmes: lista, meta } = await moviesService.trending(1)
 
       filmes.value = lista
       termoBusca.value = ''
@@ -80,7 +86,7 @@ export const useMoviesStore = defineStore('movies', () => {
     erro.value = null
 
     try {
-      const { filmes: lista, meta } = await moviesService.populares(paginaAtual.value + 1)
+      const { filmes: lista, meta } = await moviesService.trending(paginaAtual.value + 1)
 
       filmes.value = [...filmes.value, ...lista]
       aplicarMeta(meta)

@@ -31,6 +31,22 @@ export const moviesService = {
     }
   },
 
+  /**
+   * Tendências do dia misturando filmes, animação e séries — alimenta a Home
+   * unificada.
+   *
+   * O backend já descarta lançamentos futuros, então o que chega aqui está
+   * disponível para assistir hoje. O envelope é o mesmo de `populares()`.
+   */
+  async trending(page = 1) {
+    const { data } = await cliente().get('/trending', { params: { page } })
+
+    return {
+      filmes: data.data ?? [],
+      meta: data.meta ?? { page, total_pages: page, has_more: false },
+    }
+  },
+
   /** Busca por título. */
   async buscar(query, page = 1) {
     const { data } = await cliente().get('/search', { params: { query, page } })
@@ -41,6 +57,30 @@ export const moviesService = {
   /** Detalhes completos de um filme (modal). */
   async detalhes(id) {
     const { data } = await cliente().get(`/${id}`)
+
+    return data.data ?? null
+  },
+
+  /**
+   * Detalhes completos de uma série (modal de série).
+   *
+   * O backend devolve a mesma ficha do filme acrescida da lista de temporadas,
+   * que é o que alimenta o seletor do modal.
+   */
+  async detalhesSerie(id) {
+    const { data } = await cliente().get(`/${id}/serie`)
+
+    return data.data ?? null
+  },
+
+  /**
+   * Episódios de uma temporada específica.
+   *
+   * Cada episódio já vem normalizado (capa, sinopse, título, nota e duração),
+   * então a lista do modal não precisa de nenhum tratamento extra.
+   */
+  async temporada(id, numero) {
+    const { data } = await cliente().get(`/${id}/temporada/${numero}`)
 
     return data.data ?? null
   },

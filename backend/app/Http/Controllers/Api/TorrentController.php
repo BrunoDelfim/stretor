@@ -44,11 +44,25 @@ class TorrentController extends Controller
         $tituloOriginal = $this->texto($requisicao->query('titulo_original'));
         $imdbId = $this->texto($requisicao->query('imdb_id'));
         $ano = $requisicao->query('ano');
+        // Quando presentes, indicam que a busca é de um episódio de série. O
+        // fluxo de filme simplesmente não envia esses parâmetros.
+        $temporada = $requisicao->query('temporada');
+        $episodio = $requisicao->query('episodio');
 
         $aviso = null;
 
         try {
-            $filme = $this->tmdb->detalhes($id);
+            /*
+             * A ficha precisa vir do catálogo certo. O TMDB reaproveita o mesmo
+             * `imdb_id` para uma série e para um filme homônimo, então pedir
+             * `/movie/{id}` com o id de uma série devolve o filme errado — foi
+             * assim que "American Horror Story" (1413) chegou aqui como
+             * "M. Butterfly". Quando a busca é de episódio, os metadados vêm de
+             * `/tv/{id}`; só o fluxo de filme usa `/movie/{id}`.
+             */
+            $filme = ($temporada !== null && $episodio !== null)
+                ? $this->tmdb->detalhesSerie($id)
+                : $this->tmdb->detalhes($id);
 
             $titulo ??= $this->texto($filme['titulo'] ?? null);
             $tituloOriginal ??= $this->texto($filme['titulo_original'] ?? null);
@@ -73,12 +87,16 @@ class TorrentController extends Controller
         }
 
         $ano = is_numeric($ano) ? (int) $ano : null;
+        $temporada = is_numeric($temporada) ? (int) $temporada : null;
+        $episodio = is_numeric($episodio) ? (int) $episodio : null;
 
         $fontes = $this->torrents->fontes(
             titulo: (string) ($titulo ?? ''),
             ano: $ano,
             imdbId: $imdbId,
             tituloOriginal: $tituloOriginal,
+            temporada: $temporada,
+            episodio: $episodio,
         );
 
         return response()->json([
@@ -87,6 +105,8 @@ class TorrentController extends Controller
                 'titulo' => $titulo,
                 'titulo_original' => $tituloOriginal,
                 'ano' => $ano,
+                'temporada' => $temporada,
+                'episodio' => $episodio,
                 'fontes' => $fontes,
                 'mensagem' => $aviso ?? $this->mensagemDeListaVazia($fontes),
             ],

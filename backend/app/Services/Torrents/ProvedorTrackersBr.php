@@ -65,12 +65,33 @@ class ProvedorTrackersBr implements ProvedorTorrents
         return ! empty($this->sites());
     }
 
-    public function buscar(string $titulo, ?int $ano = null, ?string $imdbId = null): array
-    {
-        $termos = [
-            TermosBusca::base($titulo, $ano),
-            TermosBusca::base($titulo, $ano).' dublado',
-        ];
+    public function buscar(
+        string $titulo,
+        ?int $ano = null,
+        ?string $imdbId = null,
+        ?int $temporada = null,
+        ?int $episodio = null,
+    ): array {
+        // Este provedor busca por nome, então o termo já chega pronto do
+        // TorrentService — com a numeração "S01E01" quando for episódio. Em
+        // episódio o ano sai do termo: o release traz o ano de exibição dele, não
+        // o da série, e reanexar o ano da série (como o `base()` faria) derruba o
+        // recall justamente nos trackers que publicam o episódio.
+        $episodioDeSerie = $temporada !== null && $episodio !== null;
+
+        $base = $episodioDeSerie ? $titulo : TermosBusca::base($titulo, $ano);
+
+        /*
+         * Em episódio o TorrentService já entrega as variações dubladas prontas
+         * ("... S01E01 dublado"). Reanexar a tag aqui geraria "dublado dublado",
+         * que não casa com release nenhum — por isso só completamos o termo
+         * quando ele ainda não traz a tag.
+         */
+        $termos = [$base];
+
+        if (! TermosBusca::jaEDublado($base)) {
+            $termos[] = $base.' dublado';
+        }
 
         $candidatos = [];
 

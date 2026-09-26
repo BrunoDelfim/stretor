@@ -61,6 +61,7 @@ sync_env_var "TORRENTS_TORZNAB_KEY" "${TORRENTS_TORZNAB_KEY:-}"
 sync_env_var "TORRENTS_TORZNAB_CATEGORIA" "${TORRENTS_TORZNAB_CATEGORIA:-}"
 sync_env_var "TORRENTS_BASE_URL" "${TORRENTS_BASE_URL:-}"
 sync_env_var "TORRENTS_CACHE_TTL" "${TORRENTS_CACHE_TTL:-}"
+sync_env_var "TORRENTS_TORRENTIO_IDIOMAS" "${TORRENTS_TORRENTIO_IDIOMAS:-}"
 
 # ---------------------------------------------------------------------------
 # 2. Dependências PHP

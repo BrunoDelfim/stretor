@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Services\Torrents\CatalogoProvedores;
+use App\Services\Torrents\TermosBusca;
 use App\Support\MensagensTorrent;
 use App\Enums\IdiomaFonte;
 use Illuminate\Support\Facades\Log;
@@ -46,15 +47,22 @@ class TorrentService
         ?int $ano = null,
         ?string $imdbId = null,
         ?string $tituloOriginal = null,
+        ?int $temporada = null,
+        ?int $episodio = null,
     ): array {
-        $titulos = $this->titulosDeBusca($titulo, $tituloOriginal);
+        // Quando temporada e episódio vêm preenchidos, a busca é de um episódio
+        // de série: o termo passa a ser "Titulo S01E02" em vez do título solto.
+        // Sem eles, o fluxo de filme segue exatamente como antes.
+        $titulos = ($temporada !== null && $episodio !== null)
+            ? $this->titulosDeEpisodio($titulo, $tituloOriginal, $temporada, $episodio)
+            : $this->titulosDeBusca($titulo, $tituloOriginal);
 
         if (empty($titulos)) {
             return [];
         }
 
         $fontes = $this->ordenar(
-            $this->catalogo->buscar($titulos, $ano, $imdbId)
+            $this->catalogo->buscar($titulos, $ano, $imdbId, $temporada, $episodio)
         );
 
         $this->registrar($fontes, $titulos, $ano, $imdbId);
@@ -100,10 +108,71 @@ class TorrentService
     }
 
     /**
+     * Monta os termos de busca de um episódio, sem repetir.
+     *
+     * Cada episódio é um release próprio, então o termo precisa da numeração
+     * "SxxExx". Tentamos o título traduzido e o original, como na busca de filme,
+     * porque o tracker nacional publica pelo nome em PT-BR e os indexadores
+     * internacionais pelo original.
+     *
+     * Além do termo puro, cada título rende as variações dubladas
+     * ("... S01E01 dublado", "... S01E01 dual áudio"). Sem elas a cascata nunca
+     * pergunta pelo release nacional: o termo puro devolve dezenas de lançamentos
+     * em inglês e o dublado fica fora da primeira página dos provedores por nome.
+     * Era por isso que uma série só trazia fontes "Idioma original" mesmo com o
+     * indexador PT-BR configurado.
+     *
+     * A ordem importa: o termo puro vem primeiro porque é o que o Torrentio (busca
+     * por identificador) ignora e os provedores por nome usam como base; as
+     * variações dubladas entram logo depois para puxar o release nacional.
+     *
+     * @return array<int, string>
+     */
+    private function titulosDeEpisodio(
+        string $titulo,
+        ?string $tituloOriginal,
+        int $temporada,
+        int $episodio,
+    ): array {
+        $titulos = [];
+
+        foreach ([$titulo, $tituloOriginal] as $candidato) {
+            $candidato = trim((string) $candidato);
+
+            if ($candidato === '') {
+                continue;
+            }
+
+            $termo = TermosBusca::episodio($candidato, $temporada, $episodio);
+
+            if (! in_array($termo, $titulos, true)) {
+                $titulos[] = $termo;
+            }
+
+            foreach (TermosBusca::episodioDublado($candidato, $temporada, $episodio) as $dublado) {
+                if (! in_array($dublado, $titulos, true)) {
+                    $titulos[] = $dublado;
+                }
+            }
+        }
+
+        return $titulos;
+    }
+
+    /**
      * Filtra e ordena as fontes.
      *
      * O filtro de seeds é a primeira barreira contra fontes mortas, e a ordenação
      * é o que faz o dublado aparecer antes do legendado na interface.
+     *
+     * O corte no limite não é cego: as fontes dubladas e em dual áudio são o que
+     * o usuário brasileiro procura, e costumam ter pouquíssimos seeds (um release
+     * nacional raramente compete com um WEB-DL gringo de 70 seeds). Cortar a lista
+     * ordenada em 20 descartaria justamente essas fontes quando o provedor devolve
+     * muitas opções em inglês — foi o que aconteceu com "Grey's Anatomy", em que a
+     * única dublada ficou de fora enquanto 19 originais entraram. Por isso o corte
+     * reserva espaço para todas as dubladas/dual e só então completa o restante
+     * com as demais, respeitando o limite total.
      *
      * @param  array<int, array<string, mixed>>  $fontes
      * @return array<int, array<string, mixed>>
@@ -122,7 +191,40 @@ class TorrentService
             return $prioridadeA <=> $prioridadeB ?: $b['seeds'] <=> $a['seeds'];
         });
 
-        return array_slice($fontes, 0, MensagensTorrent::LIMITE_FONTES);
+        $limite = MensagensTorrent::LIMITE_FONTES;
+
+        if (count($fontes) <= $limite) {
+            return $fontes;
+        }
+
+        $nacionais = array_filter(
+            $fontes,
+            fn (array $fonte) => in_array(
+                $fonte['idioma'] ?? '',
+                [IdiomaFonte::DUBLADO->value, IdiomaFonte::DUAL_AUDIO->value],
+                true
+            )
+        );
+
+        // Se as dubladas já preenchem o limite, elas são a resposta: devolvemos
+        // só elas, sem gastar espaço com originais.
+        if (count($nacionais) >= $limite) {
+            return array_slice(array_values($nacionais), 0, $limite);
+        }
+
+        $restantes = array_filter(
+            $fontes,
+            fn (array $fonte) => ! in_array(
+                $fonte['idioma'] ?? '',
+                [IdiomaFonte::DUBLADO->value, IdiomaFonte::DUAL_AUDIO->value],
+                true
+            )
+        );
+
+        return array_merge(
+            array_values($nacionais),
+            array_slice(array_values($restantes), 0, $limite - count($nacionais))
+        );
     }
 
     /**

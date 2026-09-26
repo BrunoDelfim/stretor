@@ -47,6 +47,10 @@ export const streamingService = {
         titulo_original: filme.titulo_original,
         ano: filme.ano,
         imdb_id: filme.imdb_id,
+        // Só vão quando a reprodução é de um episódio de série. No filme ficam
+        // indefinidos e o axios simplesmente omite da query string.
+        temporada: filme.temporada,
+        episodio: filme.episodio,
       },
     })
 

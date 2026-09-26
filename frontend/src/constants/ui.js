@@ -40,6 +40,18 @@ export const INTERVALO_STATUS_SESSAO_MS = 1500
 export const TIMEOUT_FONTE_MS = 90 * 1000
 
 /**
+ * Tempo de estagnação tolerado numa fonte antes de abandoná-la, em ms (20 s).
+ *
+ * O `TIMEOUT_FONTE_MS` sozinho não resolve o caso mais comum: uma fonte com
+ * poucos peers que *conecta* mas não entrega bytes. Ela não gera erro — o
+ * torrent fica vivo, só que a 0 MB/s — e prendia o usuário pelos 90 s inteiros
+ * antes de trocar. Aqui olhamos a telemetria de download: se nada foi baixado e
+ * a velocidade segue zerada por este tempo, a fonte está morta na prática e
+ * passamos para a próxima.
+ */
+export const ESTAGNACAO_FONTE_MS = 20 * 1000
+
+/**
  * Tempo máximo aguardando o Plyr emitir o evento `ready`, em ms.
  *
  * O Plyr pode montar sem disparar o evento (elemento já controlado, erro

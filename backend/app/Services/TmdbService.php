@@ -91,6 +91,97 @@ class TmdbService
     }
 
     /**
+     * Tendências do dia misturando filmes e séries (Home unificada).
+     *
+     * O `/trending/all/day` devolve filmes, séries e animação no mesmo fluxo,
+     * cada item marcado com `media_type`. É o que permite a Home exibir tudo
+     * junto em vez de só filmes. O envelope de paginação é idêntico ao de
+     * `populares()`, então a rolagem infinita do frontend funciona sem mudança.
+     *
+     * @return array{resultados: array<int, array<string, mixed>>, pagina: int, total_paginas: int}
+     */
+    public function tendenciasDoDia(int $pagina = 1): array
+    {
+        $teto = max(1, (int) config('services.tmdb.max_pages', 25));
+
+        if ($pagina > $teto) {
+            return [
+                'resultados' => [],
+                'pagina' => $pagina,
+                'total_paginas' => $pagina,
+            ];
+        }
+
+        try {
+            $payload = $this->requisitar('/trending/all/day', [
+                'page' => $pagina,
+            ]);
+        } catch (RuntimeException $excecao) {
+            if ($this->paginaForaDoLimite($excecao)) {
+                return [
+                    'resultados' => [],
+                    'pagina' => $pagina,
+                    'total_paginas' => $pagina,
+                ];
+            }
+
+            throw $excecao;
+        }
+
+        $resultados = $payload['results'] ?? [];
+
+        if (empty($resultados)) {
+            return [
+                'resultados' => [],
+                'pagina' => $pagina,
+                'total_paginas' => $pagina,
+            ];
+        }
+
+        // O trending pode trazer lançamentos futuros (estreias anunciadas). A
+        // Home só deve mostrar o que já está disponível, então descartamos o
+        // que tem data de lançamento/estreia posterior a hoje.
+        $resultados = array_values(array_filter(
+            $resultados,
+            fn (array $item) => ! $this->ehLancamentoFuturo($item)
+        ));
+
+        if (empty($resultados)) {
+            return [
+                'resultados' => [],
+                'pagina' => $pagina,
+                'total_paginas' => $pagina,
+            ];
+        }
+
+        return [
+            'resultados' => $this->normalizarLista($resultados),
+            'pagina' => (int) ($payload['page'] ?? $pagina),
+            'total_paginas' => min((int) ($payload['total_pages'] ?? 1), $teto),
+        ];
+    }
+
+    /**
+     * Diz se o item do trending ainda não foi lançado.
+     *
+     * Filmes usam `release_date` e séries usam `first_air_date`. Quando a data
+     * está ausente não há como afirmar que é futuro, então o item é mantido —
+     * descartar por falta de dado esconderia conteúdo válido.
+     *
+     * @param  array<string, mixed>  $item
+     */
+    private function ehLancamentoFuturo(array $item): bool
+    {
+        $data = $item['release_date'] ?? $item['first_air_date'] ?? null;
+
+        if (empty($data)) {
+            return false;
+        }
+
+        return $data > now()->toDateString();
+    }
+
+    /**
      * Identifica o erro de "página além do limite" do TMDB (HTTP 400), que na
      * prática sinaliza o fim do catálogo e não uma falha real.
      */
@@ -135,6 +226,155 @@ class TmdbService
         ]);
 
         return $this->normalizarFilme($payload, $payload['release_dates'] ?? null);
+    }
+
+    /**
+     * Detalhes completos de uma série, usados pelo modal de série.
+     *
+     * A base é a mesma do filme (reaproveitamos `normalizarFilme()`), mas o
+     * endpoint é `/tv/{id}` e a classificação vem de `content_ratings` em vez de
+     * `release_dates`. Acrescentamos ainda a lista de temporadas para o seletor
+     * do modal — sem ela o frontend não teria como montar os balões.
+     *
+     * @return array<string, mixed>
+     */
+    public function detalhesSerie(int $id): array
+    {
+        // O `external_ids` é obrigatório aqui: diferente de `/movie/{id}`, o
+        // endpoint `/tv/{id}` não devolve `imdb_id` no corpo principal — ele só
+        // aparece dentro de `external_ids`. Sem pedi-lo, toda série saía com
+        // `imdb_id` nulo e o Torrentio (que só busca por identificador) abstinha-se
+        // em silêncio, deixando apenas os provedores de busca por nome (APIBay)
+        // responderem. Era por isso que "American Horror Story" só achava fonte
+        // no APIBay.
+        $payload = $this->requisitar("/tv/{$id}", [
+            'append_to_response' => 'content_ratings,videos,credits,external_ids',
+        ]);
+
+        // O `imdb_id` da série vive em `external_ids`; copiamos para a raiz do
+        // payload para que `normalizarFilme()` o encontre no mesmo lugar em que
+        // ele aparece no payload de filme.
+        if (empty($payload['imdb_id']) && ! empty($payload['external_ids']['imdb_id'])) {
+            $payload['imdb_id'] = $payload['external_ids']['imdb_id'];
+        }
+
+        $serie = $this->normalizarFilme($payload, null, $this->classificacaoDeSerie($payload));
+
+        // A duração de uma série não é um número único: cada episódio tem a sua.
+        // O `episode_run_time` costuma trazer a duração típica, então usamos a
+        // primeira como referência para o cabeçalho do modal.
+        $serie['duracao'] = $this->formatarDuracao($payload['episode_run_time'][0] ?? null);
+
+        $serie['numero_temporadas'] = (int) ($payload['number_of_seasons'] ?? 0);
+        $serie['numero_episodios'] = (int) ($payload['number_of_episodes'] ?? 0);
+        $serie['temporadas'] = $this->normalizarTemporadas($payload['seasons'] ?? []);
+
+        return $serie;
+    }
+
+    /**
+     * Episódios de uma temporada específica.
+     *
+     * O TMDB devolve os episódios já ordenados; normalizamos cada um para o
+     * contrato do frontend (capa, sinopse, título, nota e duração por episódio).
+     *
+     * @return array<string, mixed>
+     */
+    public function temporada(int $id, int $numero): array
+    {
+        $payload = $this->requisitar("/tv/{$id}/season/{$numero}");
+
+        $episodios = array_map(
+            fn (array $episodio) => $this->normalizarEpisodio($episodio),
+            $payload['episodes'] ?? []
+        );
+
+        return [
+            'temporada' => (int) ($payload['season_number'] ?? $numero),
+            'nome' => $payload['name'] ?? null,
+            'sinopse' => $payload['overview'] ?: null,
+            'capa' => $this->montarImagem($payload['poster_path'] ?? null, TamanhoImagem::POSTER),
+            'ano' => $this->extrairAno($payload['air_date'] ?? null),
+            'episodios' => $episodios,
+        ];
+    }
+
+    /**
+     * Extrai a classificação indicativa brasileira de uma série.
+     *
+     * Séries não têm `release_dates`; a classificação vive em `content_ratings`,
+     * com a mesma estrutura de país + certificação. Mantemos a lógica separada
+     * para não misturar os dois formatos dentro de `extrairClassificacao()`.
+     *
+     * @param  array<string, mixed>  $serie
+     */
+    private function classificacaoDeSerie(array $serie): string
+    {
+        if (isset($serie['adult']) && $serie['adult'] === true) {
+            return ClassificacaoIndicativa::DEZOITO->rotulo();
+        }
+
+        foreach ($serie['content_ratings']['results'] ?? [] as $pais) {
+            if (($pais['iso_3166_1'] ?? null) !== 'BR') {
+                continue;
+            }
+
+            $certificacao = trim((string) ($pais['rating'] ?? ''));
+
+            if ($certificacao !== '') {
+                return ClassificacaoIndicativa::normalizar($certificacao);
+            }
+        }
+
+        return MensagensFilme::NAO_CLASSIFICADA;
+    }
+
+    /**
+     * Normaliza a lista de temporadas para o seletor do modal.
+     *
+     * A temporada 0 é o "Especiais" do TMDB e não faz parte da numeração
+     * regular, então fica de fora para não confundir o usuário.
+     *
+     * @param  array<int, array<string, mixed>>  $temporadas
+     * @return array<int, array<string, mixed>>
+     */
+    private function normalizarTemporadas(array $temporadas): array
+    {
+        $normalizadas = array_map(
+            fn (array $temporada) => [
+                'numero' => (int) ($temporada['season_number'] ?? 0),
+                'nome' => $temporada['name'] ?? null,
+                'qtd_episodios' => (int) ($temporada['episode_count'] ?? 0),
+                'ano' => $this->extrairAno($temporada['air_date'] ?? null),
+                'capa' => $this->montarImagem($temporada['poster_path'] ?? null, TamanhoImagem::POSTER),
+            ],
+            $temporadas
+        );
+
+        return array_values(array_filter(
+            $normalizadas,
+            fn (array $temporada) => $temporada['numero'] > 0
+        ));
+    }
+
+    /**
+     * Converte um episódio cru do TMDB no contrato do frontend.
+     *
+     * @param  array<string, mixed>  $episodio
+     * @return array<string, mixed>
+     */
+    private function normalizarEpisodio(array $episodio): array
+    {
+        return [
+            'numero' => (int) ($episodio['episode_number'] ?? 0),
+            'temporada' => (int) ($episodio['season_number'] ?? 0),
+            'titulo' => $episodio['name'] ?: MensagensFilme::TITULO_INDISPONIVEL,
+            'sinopse' => $episodio['overview'] ?: MensagensFilme::SINOPSE_INDISPONIVEL,
+            'capa' => $this->montarImagem($episodio['still_path'] ?? null, TamanhoImagem::POSTER),
+            'nota' => isset($episodio['vote_average']) ? round((float) $episodio['vote_average'], 1) : null,
+            'duracao' => $this->formatarDuracao($episodio['runtime'] ?? null),
+            'data_exibicao' => $episodio['air_date'] ?? null,
+        ];
     }
 
     /**
@@ -188,7 +428,7 @@ class TmdbService
     }
 
     /**
-     * Normaliza uma listagem de filmes (popular / search).
+     * Normaliza uma listagem de filmes ou séries (popular / search / trending).
      *
      * @param  array<int, array<string, mixed>>  $resultados
      * @return array<int, array<string, mixed>>
@@ -196,53 +436,77 @@ class TmdbService
     private function normalizarLista(array $resultados): array
     {
         // O TMDB ignora `append_to_response` em endpoints de listagem, então a
-        // classificação indicativa só existe em /movie/{id}/release_dates.
-        // Buscamos em paralelo (com cache por filme) para não serializar N
-        // requisições e travar a Home.
-        $classificacoes = $this->classificacoesEmLote(
-            array_column($resultados, 'id')
-        );
+        // classificação indicativa só existe em endpoints próprios: release_dates
+        // para filmes e content_ratings para séries. Buscamos em paralelo (com
+        // cache por item) para não serializar N requisições e travar a Home.
+        $classificacoes = $this->classificacoesEmLote($resultados);
 
         return array_map(
-            fn (array $filme) => $this->normalizarFilme(
-                $filme,
+            fn (array $item) => $this->normalizarFilme(
+                $item,
                 null,
-                $classificacoes[$filme['id'] ?? 0] ?? null
+                $classificacoes[$this->chaveClassificacao($item)] ?? null
             ),
             $resultados
         );
     }
 
     /**
-     * Resolve a classificação indicativa brasileira de vários filmes de uma vez.
-     * Cada filme tem seu próprio cache, então visitas repetidas não geram
-     * requisições novas.
+     * Chave de cache da classificação, distinguindo filme de série.
      *
-     * @param  array<int, int>  $ids
-     * @return array<int, string>
+     * Um filme e uma série podem compartilhar o mesmo id numérico no TMDB, então
+     * a chave precisa do tipo para não devolver a classificação errada.
+     *
+     * @param  array<string, mixed>  $item
      */
-    private function classificacoesEmLote(array $ids): array
+    private function chaveClassificacao(array $item): string
     {
-        $ids = array_values(array_filter($ids));
+        return $this->tipoDe($item).':'.($item['id'] ?? 0);
+    }
 
-        if (empty($ids)) {
-            return [];
-        }
+    /**
+     * Descobre o tipo do item do TMDB.
+     *
+     * O `/trending/all/day` marca cada item com `media_type`. Nos endpoints de
+     * filme (`/movie/...`) o campo não existe, então o padrão é `movie`.
+     *
+     * @param  array<string, mixed>  $item
+     */
+    private function tipoDe(array $item): string
+    {
+        return ($item['media_type'] ?? 'movie') === 'tv' ? 'tv' : 'movie';
+    }
 
+    /**
+     * Resolve a classificação indicativa brasileira de vários itens de uma vez,
+     * sejam filmes ou séries. Cada item tem seu próprio cache, então visitas
+     * repetidas não geram requisições novas.
+     *
+     * @param  array<int, array<string, mixed>>  $itens
+     * @return array<string, string>  Mapa "tipo:id" => classificação
+     */
+    private function classificacoesEmLote(array $itens): array
+    {
         $ttl = (int) config('services.tmdb.cache_ttl', 3600);
 
-        // Só consulta o TMDB para os ids que ainda não estão em cache.
+        // Só consulta o TMDB para os itens que ainda não estão em cache.
         $classificacoes = [];
         $pendentes = [];
 
-        foreach ($ids as $id) {
-            $cacheKey = "tmdb:classificacao:{$id}";
-            $valor = Cache::get($cacheKey);
+        foreach ($itens as $item) {
+            $id = $item['id'] ?? null;
+
+            if (empty($id)) {
+                continue;
+            }
+
+            $chave = $this->chaveClassificacao($item);
+            $valor = Cache::get("tmdb:classificacao:{$chave}");
 
             if ($valor !== null) {
-                $classificacoes[$id] = $valor;
+                $classificacoes[$chave] = $valor;
             } else {
-                $pendentes[] = $id;
+                $pendentes[$chave] = $item;
             }
         }
 
@@ -252,29 +516,40 @@ class TmdbService
 
         $respostas = Http::pool(function ($pool) use ($pendentes) {
             return array_map(
-                fn ($id) => $pool->as((string) $id)
-                    ->baseUrl(config('services.tmdb.base_url'))
-                    ->acceptJson()
-                    ->timeout(15)
-                    ->get("/movie/{$id}/release_dates", [
-                        'api_key' => config('services.tmdb.key'),
-                        'language' => config('services.tmdb.language'),
-                    ]),
+                function ($item) use ($pool) {
+                    $tipo = $this->tipoDe($item);
+                    $id = $item['id'];
+
+                    // Filmes expõem a classificação em release_dates; séries, em
+                    // content_ratings. São endpoints distintos com o mesmo papel.
+                    $endpoint = $tipo === 'tv'
+                        ? "/tv/{$id}/content_ratings"
+                        : "/movie/{$id}/release_dates";
+
+                    return $pool->as($this->chaveClassificacao($item))
+                        ->baseUrl(config('services.tmdb.base_url'))
+                        ->acceptJson()
+                        ->timeout(15)
+                        ->get($endpoint, [
+                            'api_key' => config('services.tmdb.key'),
+                            'language' => config('services.tmdb.language'),
+                        ]);
+                },
                 $pendentes
             );
         });
 
-        foreach ($pendentes as $id) {
-            $resposta = $respostas[(string) $id] ?? null;
+        foreach ($pendentes as $chave => $item) {
+            $resposta = $respostas[$chave] ?? null;
 
             if (! $resposta || $resposta->failed()) {
                 continue;
             }
 
             $classificacao = $this->extrairClassificacao([], $resposta->json());
-            $classificacoes[$id] = $classificacao;
+            $classificacoes[$chave] = $classificacao;
 
-            Cache::put("tmdb:classificacao:{$id}", $classificacao, $ttl);
+            Cache::put("tmdb:classificacao:{$chave}", $classificacao, $ttl);
         }
 
         return $classificacoes;
@@ -297,6 +572,10 @@ class TmdbService
 
         return [
             'id' => $filme['id'] ?? null,
+            // O tipo distingue filme de série na Home unificada. O frontend usa
+            // isso para decidir o que fazer no clique (o modal de série ainda não
+            // existe) e para rotular o card.
+            'tipo' => $this->tipoDe($filme),
             // O imdb_id é o identificador mais preciso para a busca de fontes de
             // torrent: o título sozinho gera falsos positivos (remakes, títulos
             // traduzidos). Só existe no endpoint de detalhes.
@@ -315,7 +594,9 @@ class TmdbService
             'genero' => $generos[0] ?? MensagensFilme::GENERO_NAO_INFORMADO,
             'classificacao' => $classificacao ?? $this->extrairClassificacao($filme, $releaseDates),
             'nota' => isset($filme['vote_average']) ? round((float) $filme['vote_average'], 1) : null,
-            'ano' => $this->extrairAno($filme['release_date'] ?? null),
+            // Filmes usam `release_date`; séries usam `first_air_date`. Sem o
+            // fallback, toda série apareceria sem ano na Home.
+            'ano' => $this->extrairAno($filme['release_date'] ?? $filme['first_air_date'] ?? null),
             'duracao' => $this->formatarDuracao($filme['runtime'] ?? null),
             'elenco' => $this->extrairElenco($filme['credits'] ?? null),
             'trailer' => $this->extrairTrailer($filme['videos'] ?? null),

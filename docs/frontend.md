@@ -42,6 +42,59 @@ explicitamente por quem as usa.
 | [`useDebounce.js`](../frontend/src/composables/useDebounce.js:1) | Atrasa a emissão de um evento até o usuário parar de digitar. |
 | [`useScrollSolidificacao.js`](../frontend/src/composables/useScrollSolidificacao.js:1) | Calcula a opacidade de fundo da navbar conforme a página rola. |
 
+## Home unificada
+
+A Home exibe filmes, animação e séries no mesmo grid, alimentada pelo endpoint
+de tendências do dia (veja [API](api.md)). A store
+[`movies.js`](../frontend/src/stores/movies.js:1) carrega as tendências por
+padrão e a busca continua reaproveitando a mesma lista.
+
+Cada item traz o campo `tipo` (`movie`/`tv`), que decide qual modal abre. O card
+[`MovieCard.vue`](../frontend/src/components/MovieCard.vue:1) exibe título, ano,
+classificação e um selo de tipo sobre a capa (verde-lima para filme, violeta para
+série), sem alteração de layout.
+
+## Modal de série
+
+O clique em um item `tv` abre o
+[`SerieModal.vue`](../frontend/src/components/SerieModal.vue:1), um irmão do
+[`MovieModal.vue`](../frontend/src/components/MovieModal.vue:1) — não uma
+variação dele. A decisão é deliberada: o fluxo de filme já funciona e não podia
+ser arriscado. O layout visual é o mesmo (banner, informações, sinopse, elenco,
+trailer e botões), mas abaixo dos botões entra o que só a série tem.
+
+Ao abrir, a [`HomeView.vue`](../frontend/src/views/HomeView.vue:1) busca a ficha
+completa (`detalhesSerie`) e o modal seleciona e carrega a **primeira temporada**
+automaticamente. A troca de temporada recarrega a lista de episódios.
+
+A temporada ativa é preservada ao fechar o player. O modal recebe
+`:serie="filmeEmReproducao ? null : serieSelecionada"` — ou seja, o `serie` fica
+`null` enquanto o player está aberto e volta ao objeto quando ele fecha.
+
+O estado da temporada **não** mora no modal: ele é elevado à
+[`HomeView.vue`](../frontend/src/views/HomeView.vue:1) (`temporadaAtivaSerie`) e
+chega ao modal pela prop `temporada-ativa`, com as trocas voltando pelo evento
+`atualizar-temporada`. A razão é o ciclo de vida: durante a reprodução o modal
+sai de cena (`serie` vira `null`) e qualquer recriação do componente apagaria uma
+seleção guardada internamente — foi o que fazia o usuário voltar à S01 ao fechar
+o player. Com a fonte da verdade no pai, que nunca é remontado, o modal reabre
+exatamente na temporada em que estava. O `watch` de `props.serie?.id` continua
+guardando o último `id` **válido** para não confundir a ida e volta `null → id`
+com uma troca de série.
+
+- [`SeletorTemporada.vue`](../frontend/src/components/SeletorTemporada.vue:1) —
+  balões clicáveis, um por temporada, com a ativa destacada. É o padrão dos
+  streamings: todas as temporadas visíveis, troca com um clique.
+- [`ListaEpisodios.vue`](../frontend/src/components/ListaEpisodios.vue:1) — cada
+  episódio com capa, número, título, sinopse, nota e duração, além do skeleton de
+  carregamento.
+
+O botão de play do episódio emite a série com `temporada` e `episodio` anexados.
+O [`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:1) repassa
+esses campos na busca de fontes, e o backend monta o termo `Titulo S01E02`. O
+título exibido durante o carregamento passa a incluir a numeração e o nome do
+episódio.
+
 ## Rolagem infinita
 
 O frontend observa o fim do grid com um `IntersectionObserver` (componente
@@ -403,6 +456,20 @@ não devolve mais booleano e não decide mais o destino da fonte.
 O media-service também falha rápido quando a fonte não envia dados: se nenhum
 byte chegar em 30 s, a sessão vai para `erro` e o overlay passa para a próxima
 fonte sem esperar o timeout de 90 s.
+
+Há ainda um caso que nem o timeout nem o `erro` cobriam: a fonte com **poucos
+peers que conecta mas não entrega bytes**. Ela não gera erro — o torrent fica
+vivo, só que a 0 MB/s — e prendia o usuário pelos 90 s inteiros. Para isso o
+overlay acompanha a telemetria de `download` em
+[`aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:1375): se nada
+foi baixado **e** a velocidade segue zerada por `ESTAGNACAO_FONTE_MS` (20 s), a
+fonte é abandonada e o laço segue para a próxima.
+
+As duas condições são exigidas juntas de propósito. Só a velocidade não serve:
+durante a análise do cabeçalho o WebTorrent pode passar alguns segundos sem
+tráfego enquanto negocia com o peer, e uma fonte saudável seria descartada no
+meio da leitura. Já ter baixado algo prova que a fonte está viva — a partir daí
+ela segue sob o `TIMEOUT_FONTE_MS`, que é o limite para a lentidão.
 
 Essa separação corrigiu um problema sério: antes, condicionar o sucesso ao
 retorno de `iniciarPlayer` fazia uma falha de montagem do Plyr (evento `ready`

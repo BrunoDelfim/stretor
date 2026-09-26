@@ -46,6 +46,41 @@ final class TermosBusca
     }
 
     /**
+     * Termo de busca de um episódio específico, no padrão SxxExx.
+     *
+     * Séries não são publicadas como um arquivo único: cada episódio é um release
+     * separado, identificado pela numeração "S01E02". O ano não entra aqui porque
+     * a numeração já é única dentro da série — e o ano da série atrapalharia a
+     * busca, já que o release do episódio costuma trazer o ano de exibição dele.
+     */
+    public static function episodio(string $titulo, int $temporada, int $episodio): string
+    {
+        $titulo = trim($titulo);
+
+        return sprintf('%s S%02dE%02d', $titulo, $temporada, $episodio);
+    }
+
+    /**
+     * Variações de busca de um episódio, incluindo a tag de dublado.
+     *
+     * Mesma lógica de `paraDublado()`, mas aplicada ao termo do episódio: os
+     * trackers nacionais marcam o áudio no nome do release, então o termo precisa
+     * carregar a tag junto da numeração para o dublado aparecer primeiro.
+     *
+     * @return array<int, string>
+     */
+    public static function episodioDublado(string $titulo, int $temporada, int $episodio): array
+    {
+        $base = self::episodio($titulo, $temporada, $episodio);
+
+        return [
+            "{$base} dublado",
+            "{$base} dublada",
+            "{$base} dual áudio",
+        ];
+    }
+
+    /**
      * Termos de busca voltados ao dublado, do mais provável ao menos.
      *
      * Devolve uma lista curta de propósito: cada termo é uma requisição a mais, e
@@ -85,6 +120,28 @@ final class TermosBusca
         }
 
         return array_values(array_unique($termos));
+    }
+
+    /**
+     * Diz se o termo já carrega uma tag de dublagem.
+     *
+     * O `TorrentService` já entrega os termos de episódio com as variações
+     * dubladas montadas ("... S01E01 dublado"). Os provedores por nome, que antes
+     * reanexavam a tag por conta própria, precisam saber disso para não gerar
+     * "dublado dublado" — termo que não casa com release nenhum e ainda gasta uma
+     * requisição por provedor.
+     */
+    public static function jaEDublado(string $termo): bool
+    {
+        $texto = mb_strtolower($termo);
+
+        foreach (self::TAGS_PT_BR as $tag) {
+            if (str_contains($texto, $tag)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

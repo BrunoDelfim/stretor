@@ -6,6 +6,7 @@ import 'plyr/dist/plyr.css'
 
 import { streamingService } from '@/services/streaming'
 import {
+  ESTAGNACAO_FONTE_MS,
   INTERVALO_STATUS_SESSAO_MS,
   TIMEOUT_FONTE_MS,
   TIMEOUT_PLYR_READY_MS,
@@ -21,6 +22,24 @@ const props = defineProps({
 const emit = defineEmits(['fechar'])
 
 const aberto = computed(() => props.filme !== null)
+
+/*
+ * Título exibido durante o carregamento. Para filme é só o nome; para episódio
+ * de série acrescentamos a numeração e o nome do episódio, senão o usuário não
+ * teria como saber qual episódio está sendo preparado.
+ */
+const tituloExibicao = computed(() => {
+  const titulo = props.filme?.titulo ?? ''
+
+  if (!props.filme?.temporada || !props.filme?.episodio) {
+    return titulo
+  }
+
+  const numeracao = `S${String(props.filme.temporada).padStart(2, '0')}E${String(props.filme.episodio).padStart(2, '0')}`
+  const nomeEpisodio = props.filme.episodio_titulo ? ` · ${props.filme.episodio_titulo}` : ''
+
+  return `${titulo} — ${numeracao}${nomeEpisodio}`
+})
 
 /*
  * O fluxo tem quatro estados visíveis para o usuário:
@@ -1358,6 +1377,15 @@ function aguardarFonte(minhaGeracao) {
   const inicio = Date.now()
   const sessaoDaFonte = sessaoId
 
+  /*
+   * Instante em que a fonte começou a parecer estagnada, ou `null` enquanto ela
+   * dá sinal de vida. Uma fonte com poucos peers costuma conectar e ficar a
+   * 0 MB/s sem nunca gerar erro: sem esta marca, ela só seria abandonada no
+   * `TIMEOUT_FONTE_MS` (90 s). Guardamos quando a estagnação começou para
+   * desistir assim que ela passar de `ESTAGNACAO_FONTE_MS`.
+   */
+  let estagnadaDesde = null
+
   return new Promise((resolve) => {
     const consultar = async () => {
       if (cancelado || minhaGeracao !== geracao) return resolve('cancelado')
@@ -1420,6 +1448,33 @@ function aguardarFonte(minhaGeracao) {
         download.value = status.download ?? null
         duracaoTotal.value = status.duracao ?? duracaoTotal.value
         mensagem.value = mensagemDeProgresso(status)
+
+        /*
+         * Desistência por estagnação: a fonte conectou (a sessão existe e está
+         * em `preparando`), mas nunca entregou um byte. É o caso da fonte com
+         * poucos peers — ela não gera erro, só fica parada a 0 MB/s, e prendia
+         * o usuário até o `TIMEOUT_FONTE_MS` (90 s).
+         *
+         * Exigimos as duas condições juntas: nada baixado **e** velocidade
+         * zerada. Só a velocidade não serve — durante a análise do cabeçalho o
+         * WebTorrent pode passar alguns segundos sem tráfego enquanto negocia
+         * com o peer, e uma fonte saudável seria descartada no meio da leitura.
+         * Já ter baixado algo prova que a fonte está viva; a partir daí ela
+         * segue sob o `TIMEOUT_FONTE_MS`, que é o limite para a lentidão.
+         */
+        const baixado = status.download?.baixado ?? 0
+        const velocidade = status.download?.velocidade ?? 0
+
+        if (baixado === 0 && velocidade === 0) {
+          estagnadaDesde ??= Date.now()
+
+          if (Date.now() - estagnadaDesde > ESTAGNACAO_FONTE_MS) {
+            await limparSessaoAtual()
+            return resolve('falhou')
+          }
+        } else {
+          estagnadaDesde = null
+        }
       } catch {
         // Falha pontual: tentamos de novo no próximo ciclo.
       }
@@ -1592,7 +1647,7 @@ onUnmounted(() => {
 
           <div class="space-y-2">
             <p class="text-lg font-semibold text-white">
-              {{ filme?.titulo }}
+              {{ tituloExibicao }}
             </p>
             <p v-if="estado === 'erro'" class="max-w-md text-sm text-red-300">{{ erro }}</p>
             <p v-else class="text-sm text-slate-300">{{ mensagem }}</p>

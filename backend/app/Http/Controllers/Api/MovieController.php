@@ -43,6 +43,31 @@ class MovieController extends Controller
     }
 
     /**
+     * Tendências do dia misturando filmes, animação e séries — alimenta a Home
+     * unificada.
+     *
+     * O envelope é idêntico ao de `populares()` (data + meta), então a rolagem
+     * infinita do frontend funciona sem nenhuma mudança.
+     */
+    public function tendencias(Request $request): JsonResponse
+    {
+        $pagina = max(1, (int) $request->query('page', 1));
+
+        return $this->responder(function () use ($pagina) {
+            $resultado = $this->tmdb->tendenciasDoDia($pagina);
+
+            return [
+                'data' => $resultado['resultados'],
+                'meta' => [
+                    'page' => $resultado['pagina'],
+                    'total_pages' => $resultado['total_paginas'],
+                    'has_more' => $resultado['pagina'] < $resultado['total_paginas'],
+                ],
+            ];
+        });
+    }
+
+    /**
      * Busca por título, usada pela caixa de pesquisa da navbar.
      */
     public function buscar(Request $request): JsonResponse
@@ -64,6 +89,25 @@ class MovieController extends Controller
     public function detalhes(int $id): JsonResponse
     {
         return $this->responder(fn () => $this->tmdb->detalhes($id), singular: true);
+    }
+
+    /**
+     * Detalhes de uma série para o modal de série.
+     *
+     * O envelope é o mesmo de `detalhes()` (tudo dentro de `data`), então o
+     * frontend reaproveita a mesma leitura de resposta.
+     */
+    public function detalhesSerie(int $id): JsonResponse
+    {
+        return $this->responder(fn () => $this->tmdb->detalhesSerie($id), singular: true);
+    }
+
+    /**
+     * Episódios de uma temporada específica da série.
+     */
+    public function temporada(int $id, int $numero): JsonResponse
+    {
+        return $this->responder(fn () => $this->tmdb->temporada($id, $numero), singular: true);
     }
 
     /**

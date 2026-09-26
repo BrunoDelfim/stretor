@@ -42,14 +42,27 @@ interface ProvedorTorrents
     public function disponivel(): bool;
 
     /**
-     * Busca fontes para o filme informado.
+     * Busca fontes para o filme ou episódio informado.
      *
-     * Os provedores que trabalham por identificador (Torrentio, BT4G) usam o
+     * Os provedores que trabalham por identificador (Torrentio, YTS) usam o
      * `imdbId` quando ele existe; os que trabalham por nome usam o título e o
      * ano. Devolver lista vazia é uma resposta legítima — significa "não achei
      * nada", e o catálogo segue para o próximo da cascata.
      *
+     * O contexto de episódio existe porque o `imdbId` sozinho não distingue
+     * filme de série: o TMDB reaproveita o mesmo identificador de catálogo para
+     * os dois, e um provedor que consulte por ele devolveria o filme homônimo
+     * no lugar do episódio. Quando `temporada` e `episodio` vêm preenchidos, o
+     * provedor precisa buscar o episódio — ou se abster, se o acervo dele não
+     * tem séries.
+     *
      * @return array<int, array<string, mixed>>
      */
-    public function buscar(string $titulo, ?int $ano = null, ?string $imdbId = null): array;
+    public function buscar(
+        string $titulo,
+        ?int $ano = null,
+        ?string $imdbId = null,
+        ?int $temporada = null,
+        ?int $episodio = null,
+    ): array;
 }

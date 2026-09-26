@@ -35,15 +35,32 @@ use Illuminate\Support\Facades\Log;
 class CatalogoProvedores
 {
     /**
-     * Provedores do primeiro degrau (busca nativa).
+     * Provedores do primeiro degrau que buscam **por nome**.
      *
      * A ordem dentro do degrau é a ordem de consulta: o tracker PT-BR vem
-     * primeiro porque é o único que existe *por causa* do dublado; o APIBay e o
-     * Torrentio ampliam o alcance; o BT4G fecha com o acervo de DHT.
+     * primeiro porque é o único que existe *por causa* do dublado; o APIBay
+     * amplia o alcance; o BT4G fecha com o acervo de DHT.
+     *
+     * O Torrentio fica de fora desta lista de propósito: ele busca por
+     * identificador (imdb_id) e ignora o termo de busca. Se entrasse aqui, seria
+     * consultado uma vez por variação de termo — e como o termo de episódio agora
+     * rende quatro variações (puro + três dubladas), seriam quatro requisições
+     * idênticas ao provedor mais lento da cascata, todas devolvendo o mesmo
+     * resultado.
      *
      * @var array<int, ProvedorTorrents>
      */
     private array $primarios;
+
+    /**
+     * Provedores que buscam por identificador (imdb_id).
+     *
+     * São consultados uma única vez, com o termo puro, porque o termo não
+     * influencia a resposta — só o identificador importa.
+     *
+     * @var array<int, ProvedorTorrents>
+     */
+    private array $porIdentificador;
 
     public function __construct(
         ProvedorTrackersBr $trackersBr,
@@ -53,7 +70,8 @@ class CatalogoProvedores
         private readonly ProvedorTorznab $torznab,
         private readonly ProvedorYts $yts,
     ) {
-        $this->primarios = [$trackersBr, $apibay, $torrentio, $bt4g];
+        $this->primarios = [$trackersBr, $apibay, $bt4g];
+        $this->porIdentificador = [$torrentio];
     }
 
     /**
@@ -61,20 +79,45 @@ class CatalogoProvedores
      *
      * @param  array<int, string>  $titulos  Títulos candidatos, em ordem de
      *                                       preferência (traduzido e original)
+     * @param  int|null  $temporada  Temporada do episódio, quando a busca é de série
+     * @param  int|null  $episodio   Episódio procurado, quando a busca é de série
      * @return array<int, array<string, mixed>>
      */
-    public function buscar(array $titulos, ?int $ano, ?string $imdbId): array
-    {
+    public function buscar(
+        array $titulos,
+        ?int $ano,
+        ?string $imdbId,
+        ?int $temporada = null,
+        ?int $episodio = null,
+    ): array {
         $fontes = [];
+
+        /*
+         * Os provedores por identificador (Torrentio) são consultados uma única
+         * vez, com o termo puro. O termo não muda a resposta deles — só o
+         * `imdb_id` importa —, então repetir a chamada para cada variação dublada
+         * seria gastar o provedor mais lento da cascata à toa.
+         */
+        $fontes = $this->mesclar(
+            $fontes,
+            $this->buscarGrupo($this->porIdentificador, $titulos[0] ?? '', $ano, $imdbId, $temporada, $episodio)
+        );
 
         /*
          * O título traduzido é o que os trackers brasileiros usam, mas o título
          * original ajuda quando a tradução abreviou demais ("Homem-Aranha" versus
          * "Spider-Man"). Tentamos os dois no degrau nativo antes de descer para o
          * indexador — é mais barato insistir no caminho principal do que delegar.
+         *
+         * Cada título já chega com as variações dubladas montadas pelo
+         * TorrentService, então o `temDublado()` encerra a cascata assim que o
+         * release nacional aparece.
          */
         foreach ($titulos as $titulo) {
-            $fontes = $this->mesclar($fontes, $this->buscarGrupo($this->primarios, $titulo, $ano, $imdbId));
+            $fontes = $this->mesclar(
+                $fontes,
+                $this->buscarGrupo($this->primarios, $titulo, $ano, $imdbId, $temporada, $episodio)
+            );
 
             if ($this->temDublado($fontes)) {
                 return $fontes;
@@ -83,7 +126,10 @@ class CatalogoProvedores
 
         // Degrau 2: indexador. Só é consultado se a busca nativa não achou dublado.
         foreach ($titulos as $titulo) {
-            $fontes = $this->mesclar($fontes, $this->buscarGrupo([$this->torznab], $titulo, $ano, $imdbId));
+            $fontes = $this->mesclar(
+                $fontes,
+                $this->buscarGrupo([$this->torznab], $titulo, $ano, $imdbId, $temporada, $episodio)
+            );
 
             if ($this->temDublado($fontes)) {
                 return $fontes;
@@ -91,7 +137,12 @@ class CatalogoProvedores
         }
 
         // Degrau 3: reserva em inglês. Entra sempre que nada dublado apareceu.
-        $fontes = $this->mesclar($fontes, $this->buscarGrupo([$this->yts], $titulos[0] ?? '', $ano, $imdbId));
+        // Em episódio o YTS se abstém sozinho (é catálogo só de filmes), então a
+        // chamada é inofensiva e mantém a cascata com um formato único.
+        $fontes = $this->mesclar(
+            $fontes,
+            $this->buscarGrupo([$this->yts], $titulos[0] ?? '', $ano, $imdbId, $temporada, $episodio)
+        );
 
         return $fontes;
     }
@@ -142,8 +193,14 @@ class CatalogoProvedores
      * @param  array<int, ProvedorTorrents>  $provedores
      * @return array<int, array<string, mixed>>
      */
-    private function buscarGrupo(array $provedores, string $titulo, ?int $ano, ?string $imdbId): array
-    {
+    private function buscarGrupo(
+        array $provedores,
+        string $titulo,
+        ?int $ano,
+        ?string $imdbId,
+        ?int $temporada = null,
+        ?int $episodio = null,
+    ): array {
         if (trim($titulo) === '') {
             return [];
         }
@@ -164,7 +221,10 @@ class CatalogoProvedores
                 continue;
             }
 
-            $fontes = $this->mesclar($fontes, $this->buscarComCache($provedor, $titulo, $ano, $imdbId));
+            $fontes = $this->mesclar(
+                $fontes,
+                $this->buscarComCache($provedor, $titulo, $ano, $imdbId, $temporada, $episodio)
+            );
         }
 
         return $fontes;
@@ -177,22 +237,34 @@ class CatalogoProvedores
      * está fora do ar) seria martelado a cada abertura do player sem que houvesse
      * chance de mudar de resposta dentro do TTL.
      *
+     * A numeração do episódio entra na chave porque o mesmo provedor responde
+     * coisas diferentes para cada episódio da série: sem ela, o resultado do
+     * S01E01 seria servido para o S01E02 durante todo o TTL.
+     *
      * @return array<int, array<string, mixed>>
      */
-    private function buscarComCache(ProvedorTorrents $provedor, string $titulo, ?int $ano, ?string $imdbId): array
-    {
+    private function buscarComCache(
+        ProvedorTorrents $provedor,
+        string $titulo,
+        ?int $ano,
+        ?string $imdbId,
+        ?int $temporada = null,
+        ?int $episodio = null,
+    ): array {
         $chave = 'torrent:provedor:'.$provedor->identificador().':'
-            .md5(mb_strtolower($titulo).'|'.$ano.'|'.$imdbId);
+            .md5(mb_strtolower($titulo).'|'.$ano.'|'.$imdbId.'|'.$temporada.'|'.$episodio);
 
         $ttl = (int) config('services.torrents.cache_ttl', 1800);
 
-        return Cache::remember($chave, $ttl, function () use ($provedor, $titulo, $ano, $imdbId) {
+        return Cache::remember($chave, $ttl, function () use ($provedor, $titulo, $ano, $imdbId, $temporada, $episodio) {
             try {
-                $fontes = $provedor->buscar($titulo, $ano, $imdbId);
+                $fontes = $provedor->buscar($titulo, $ano, $imdbId, $temporada, $episodio);
 
                 Log::debug('Provedor de torrents respondeu.', [
                     'provedor' => $provedor->identificador(),
                     'titulo' => $titulo,
+                    'temporada' => $temporada,
+                    'episodio' => $episodio,
                     'fontes' => count($fontes),
                 ]);
 

@@ -51,17 +51,41 @@ class ProvedorTorznab implements ProvedorTorrents
         return $this->torznab->configurado();
     }
 
-    public function buscar(string $titulo, ?int $ano = null, ?string $imdbId = null): array
-    {
+    public function buscar(
+        string $titulo,
+        ?int $ano = null,
+        ?string $imdbId = null,
+        ?int $temporada = null,
+        ?int $episodio = null,
+    ): array {
         /*
          * Duas consultas, como antes: a busca pelo título puro mistura dezenas de
          * lançamentos em inglês, e o nome com a tag "dublado" é o que faz o
          * indexador devolver o release nacional. Cada consulta falha isolada.
+         *
+         * O indexador busca por nome, então o termo já chega com a numeração do
+         * episódio quando for o caso. O ano sai do termo em episódio: o release
+         * traz o ano de exibição dele, não o da série.
+         *
+         * Em episódio o TorrentService já entrega as variações dubladas prontas
+         * ("... S01E01 dublado"). Nesse caso não pedimos `buscarDublado()`, que
+         * reanexaria a tag e geraria "dublado dublado" — termo que não casa com
+         * release nenhum e ainda gasta uma consulta extra por episódio.
          */
-        $itens = array_merge(
-            $this->consultar(fn () => $this->torznab->buscarDublado($titulo, $ano)),
-            $this->consultar(fn () => $this->torznab->buscar($titulo, $ano)),
-        );
+        $anoDoTermo = ($temporada !== null && $episodio !== null) ? null : $ano;
+
+        $consultas = [];
+
+        if (! TermosBusca::jaEDublado($titulo)) {
+            $consultas[] = fn () => $this->torznab->buscarDublado($titulo, $anoDoTermo);
+        }
+
+        $consultas[] = fn () => $this->torznab->buscar($titulo, $anoDoTermo);
+
+        $itens = array_merge(...array_map(
+            fn (callable $consulta) => $this->consultar($consulta),
+            $consultas,
+        ));
 
         $fontes = [];
         $vistos = [];

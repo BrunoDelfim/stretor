@@ -1,4 +1,4 @@
-.PHONY: up up-fast down restart logs ps build fresh reset-init cache-clear prowlarr
+.PHONY: up up-fast down restart logs ps build fresh reset-init cache-clear prowlarr aplicar
 
 up:
 	docker compose up -d --build
@@ -23,6 +23,15 @@ reset-init:
 
 restart:
 	docker compose restart
+
+# O `restart` não basta quando o `docker-compose.yml` ganhou uma variável nova:
+# variáveis de ambiente só entram no container na criação dele. Este alvo recria
+# o backend e limpa os caches de config e de aplicação, que é o que faz uma
+# alteração de `.env`/`config/services.php` valer de fato.
+aplicar:
+	docker compose up -d --force-recreate backend
+	docker compose exec -T backend php artisan config:clear
+	docker compose exec -T backend php artisan cache:clear
 
 # As listas de fontes ficam em cache por 30 min. Depois de mexer na busca do
 # Torznab, limpe o cache para não testar com a resposta antiga guardada.

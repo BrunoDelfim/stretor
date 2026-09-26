@@ -16,6 +16,16 @@ A integração com o catálogo mundial de filmes usa a API do
   rate limit e acelerar a Home.
 - Endpoints expostos em [API](api.md).
 
+A Home usa `/trending/all/day` para unificar filmes, animação e séries em um só
+fluxo, descartando lançamentos futuros. A classificação indicativa é buscada no
+endpoint certo por tipo (`/movie/{id}/release_dates` ou
+`/tv/{id}/content_ratings`), com cache separado por `{tipo}:{id}`.
+
+Para séries, o catálogo também alimenta o modal: `/tv/{id}` traz a ficha completa
+com a lista de temporadas e `/tv/{id}/season/{numero}` traz os episódios de cada
+temporada (capa, sinopse, título, nota e duração por episódio). Ambos passam pelo
+mesmo cache do TMDB.
+
 ## Cache (Redis) — implementado
 
 O Redis guarda o cache das respostas do TMDB. É o que evita bater na API externa
@@ -39,6 +49,138 @@ prioridade — dublado em PT-BR primeiro.
 - A cascata só avança de degrau quando o anterior não devolve fonte PT-BR válida,
   e é o [`TorrentService`](../backend/app/Services/TorrentService.php:1) quem
   recolhe o resultado do catálogo e o ordena.
+
+### Filme ou episódio: o mesmo `imdb_id` não basta
+
+O TMDB reaproveita o **mesmo `imdb_id`** para uma série e para um filme homônimo.
+Isso já causou um bug real: ao abrir o S01E01 de *American Horror Story*, a lista
+trazia o filme *M. Butterfly (1993)* — o provedor consultou o catálogo de filmes
+usando o identificador da série e devolveu o que estava lá.
+
+Por isso o contrato
+[`ProvedorTorrents::buscar()`](../backend/app/Contracts/ProvedorTorrents.php:61)
+recebe também `temporada` e `episodio`. Cada provedor decide o que fazer com esse
+contexto, e o resultado se divide em dois grupos:
+
+- **Provedores por identificador** — Torrentio e YTS. O Torrentio troca o caminho
+  conforme o contexto: `/stream/movie/{imdbId}.json` para filme e
+  `/stream/series/{imdbId}:{temporada}:{episodio}.json` para episódio. O YTS é um
+  catálogo **exclusivo de filmes**, então devolve vazio quando a busca é de
+  episódio — melhor não trazer nada do que trazer o filme errado.
+
+  Esses provedores dependem do `imdb_id`, e aí mora uma pegadinha do TMDB: o
+  endpoint `/movie/{id}` devolve `imdb_id` no corpo principal, mas o `/tv/{id}`
+  **não** — o identificador da série só aparece dentro de `external_ids`. Como o
+  [`TmdbService::detalhesSerie()`](../backend/app/Services/TmdbService.php:241) não
+  pedia esse bloco, toda série saía com `imdb_id` nulo; o Torrentio então abstinha-se
+  em silêncio (ele exige um id começando com `tt`) e sobrava só o APIBay, que busca
+  por nome. Era exatamente o sintoma de "só o APIBay acha *American Horror Story*".
+  A correção foi incluir `external_ids` no `append_to_response` e copiar
+  `external_ids.imdb_id` para a raiz do payload antes de normalizar.
+- **Provedores por nome** — TrackersBr, BT4G, APIBay e Torznab. Aqui o termo já
+  chega pronto do [`TorrentService`](../backend/app/Services/TorrentService.php:120)
+  no formato `Título S01E01` (via
+  [`TermosBusca::episodio()`](../backend/app/Services/Torrents/TermosBusca.php:56)).
+  Duas particularidades: o **ano sai do termo** (o release do episódio carrega o
+  ano de exibição, não o da série) e o APIBay passa a **aceitar a categoria 205
+  (TV)**, que normalmente é ignorada por ser conteúdo de série.
+
+  O ano fora do termo vale para **todos** os provedores por nome, inclusive os que
+  montam o termo internamente com `TermosBusca::base()`. O `TrackersBr` reanexava
+  o ano da série ao termo já numerado (`American Horror Story S01E01 2011`), o que
+  derrubava o recall justamente nos trackers que publicam o episódio — por isso
+  ele agora usa o termo cru quando o contexto é de episódio.
+
+  No APIBay a checagem de categoria de episódio tinha a lógica invertida: a
+  condição `$categoria < 200 || $categoria > 299 || $categoria !== 205` é
+  verdadeira para toda categoria diferente de 205, então só itens com categoria
+  `0` passavam — os episódios legítimos (205) eram descartados. A regra correta é
+  aceitar `0` (categoria não informada) ou `205`.
+
+#### O termo de episódio precisa carregar as variações dubladas
+
+A busca de **filme** sempre montou as variações dubladas
+(`Título 2011 dublado`, `... dual áudio`) via
+[`TermosBusca::paraDublado()`](../backend/app/Services/Torrents/TermosBusca.php:93).
+A busca de **episódio**, porém, montava só o termo puro `Título S01E01` — as
+variações existiam em
+[`TermosBusca::episodioDublado()`](../backend/app/Services/Torrents/TermosBusca.php:72),
+mas **nunca eram chamadas**. O efeito era o sintoma de "só vem fonte em idioma
+original": os provedores por nome recebiam apenas o termo puro, devolviam dezenas
+de lançamentos em inglês e o release nacional ficava fora da primeira página. O
+Torrentio, que responde por identificador, também só devolve releases
+internacionais — então a lista inteira saía como `Idioma original`.
+
+A correção foi fazer o
+[`TorrentService::titulosDeEpisodio()`](../backend/app/Services/TorrentService.php:120)
+acrescentar as variações dubladas de cada título, na ordem: termo puro primeiro
+(base para os provedores por nome e para o Torrentio) e as variações dubladas em
+seguida. Com isso o `temDublado()` da cascata volta a funcionar e o dublado
+aparece antes do legendado.
+
+Como o termo agora **já chega com a tag**, os provedores por nome não podem
+reanexá-la — senão gerariam `... S01E01 dublado dublado`, que não casa com
+release nenhum. Por isso
+[`TermosBusca::jaEDublado()`](../backend/app/Services/Torrents/TermosBusca.php:132)
+detecta a tag e cada provedor (APIBay, BT4G, TrackersBr, Torznab) só completa o
+termo quando ele ainda não a traz.
+
+#### Provedores por identificador são consultados uma única vez
+
+Com as variações dubladas, o termo de episódio passou a render quatro entradas
+(puro + três dubladas). O Torrentio ignora o termo — só o `imdb_id` importa —,
+então consultá-lo por variação seriam quatro requisições idênticas ao provedor
+mais lento da cascata. Por isso o
+[`CatalogoProvedores`](../backend/app/Services/Torrents/CatalogoProvedores.php:35)
+separa os provedores em duas listas: `primarios` (por nome) e `porIdentificador`
+(Torrentio), e este último é consultado **uma vez só**, com o termo puro.
+
+A numeração também entra na **chave de cache** de cada provedor
+(`...|temporada|episodio`). Sem ela, o resultado do S01E01 seria servido para o
+S01E02 durante todo o TTL.
+
+#### O Torrentio precisa da configuração de idioma na URL
+
+O Torrentio aceita uma configuração embutida na própria URL, no segmento que
+antecede `/stream`. Sem ela, ele responde com o **catálogo padrão** — quase todo
+em inglês —, e era essa a razão de uma série trazer só fontes `Idioma original`
+mesmo com o resto da cascata saudável. O
+[`ProvedorTorrentio`](../backend/app/Services/Torrents/ProvedorTorrentio.php:44)
+passou a montar a URL como
+`{base}/{configuração}stream/series/{imdbId}:{temporada}:{episodio}.json`, com
+`language=portuguese` vindo de `TORRENTS_TORRENTIO_IDIOMAS`.
+
+Com `language=portuguese`, o Torrentio passa a incluir os provedores que publicam
+releases nacionais (Comando, BluDV, ThePirateBay com faixa PT) e devolve os
+lançamentos `Dublado` / `Dual Áudio` / `PORTUGUÊS BR` que faltavam. A lista de
+idiomas fica na config para poder ser ampliada sem mexer no código; vazia,
+desliga o filtro e volta ao padrão.
+
+Duas armadilhas custaram tempo aqui e valem o registro:
+
+1. **A URL precisa ser montada inteira.** O `Http::baseUrl($base)->get($caminho)`
+   do Laravel descarta o caminho do host quando o caminho passado começa com
+   `/`, e o segmento de configuração (`language=portuguese/`) é justamente parte
+   do caminho. Montar `$base.'/'.$caminho` numa única URL garante que o filtro
+   chegue ao Torrentio.
+2. **A variável precisa chegar ao container.** O `docker-compose.yml` não
+   repassava `TORRENTS_TORRENTIO_IDIOMAS` para o serviço `backend`, e o
+   `entrypoint.sh` também não a sincronizava no `.env`. Sem isso, o valor
+   definido no `.env` da raiz nunca era visto pelo Laravel. As duas pontas foram
+   corrigidas.
+
+#### Os trackers PT-BR nativos saem do ar com frequência
+
+Vale registrar o diagnóstico que motivou a mudança acima: os dois trackers
+públicos configurados por padrão estavam **inutilizáveis** —
+`torrentdosfilmes.tv` passou a servir uma página de erro do Laravel (o domínio
+mudou de dono) e `torrentsfilmeshd.net` não resolvia mais. O BT4G respondia
+`403` com o desafio do Cloudflare, e o APIBay simplesmente não tem episódios de
+série (é catálogo mundial em inglês). Ou seja: **nenhum provedor por nome estava
+entregando release dublado**, e o Torrentio — único que respondia — trazia só
+inglês. A lição é que a lista de trackers nativos precisa ser tratada como
+volátil e revisada de tempos em tempos; o Torrentio, por ser um agregador
+mantido por terceiros, é o caminho mais estável para o dublado.
 
 ### Indexador Torznab (Prowlarr) — degrau 2 da busca
 
@@ -164,6 +306,25 @@ nenhuma fonte PT-BR passou pelo filtro de peers. Não é escolha do sistema, é
 escassez de fonte dublada — daí valer a pena conferir a origem da fonte (abaixo)
 antes de suspeitar do código.
 
+#### O corte no limite não pode descartar as dubladas
+
+A lista é cortada em `LIMITE_FONTES` (20) antes de ir para o frontend. O corte,
+porém, não pode ser cego: um release nacional costuma ter pouquíssimos seeds —
+um WEB-DL gringo de 70 seeds esmaga um dublado de 1 seed na ordenação por seeds.
+Quando o provedor devolve muitas opções em inglês, cortar a lista ordenada em 20
+descartaria justamente a dublada que o usuário procura.
+
+Foi o que aconteceu com "Grey's Anatomy": o Torrentio devolveu 26 streams, dos
+quais 2 dubladas, e a única que sobreviveu ao corte foi a de maior seed. A outra
+(`Dual Áudio 720p By-LuanHarper`, 1 seed) ficou de fora enquanto 19 originais
+entraram.
+
+A regra em [`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:171)
+agora reserva espaço para **todas** as fontes dubladas e em dual áudio antes de
+completar o restante com as demais. Se as dubladas já preencherem o limite, elas
+são a resposta e nenhuma original entra. Só quando não há dublada alguma é que a
+lista é preenchida apenas com originais/legendadas.
+
 ### De onde veio a fonte?
 
 Cada item devolvido por `GET /api/filmes/{id}/fontes` carrega dois campos que
@@ -191,6 +352,20 @@ a transição:
   É o log que separa "não existe fonte em PT-BR" de "a ordenação falhou".
 - `Torznab não configurado; a busca usará apenas o YTS (inglês).` — falta a
   `TORRENTS_TORZNAB_KEY` no `.env`.
+
+#### O `👤 0` do Torrentio não significa "fonte morta"
+
+O Torrentio usa o mesmo `👤 0` para dois casos distintos: "não há peers" e "não
+consegui medir". O segundo é o mais comum em releases nacionais, que ele indexa
+sem passar pelo rastreador de peers — e o rótulo do release dublado de "Grey's
+Anatomy" trazia exatamente `👤 0 💾 456.78 MB ⚙️ BluDV`.
+
+Como o catálogo descarta toda fonte com 0 seeds, tratar esse 0 como definitivo
+apagava dubladas legítimas antes de elas chegarem à interface. Por isso
+[`ProvedorTorrentio::seedsDoRotulo()`](../backend/app/Services/Torrents/ProvedorTorrentio.php:186)
+aplica um piso de 1: o valor medido nunca é devolvido como 0. Quem confirma se a
+fonte vive é o media-service, que mede os peers na prática antes de abrir a
+reprodução — o mesmo raciocínio que já valia para o rótulo sem contagem alguma.
 
 ### Fontes sem peers são descartadas
 

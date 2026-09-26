@@ -50,15 +50,40 @@ class ProvedorApibay implements ProvedorTorrents
         return true;
     }
 
-    public function buscar(string $titulo, ?int $ano = null, ?string $imdbId = null): array
-    {
-        $termos = array_merge(
-            [TermosBusca::base($titulo, $ano)],
-            // Duas variações de dublagem bastam aqui: o acervo é mundial e o
-            // termo extra só existe para puxar as releases brasileiras que já
-            // estão indexadas com a tag no nome.
-            array_slice(TermosBusca::paraDublado($titulo, $ano), 0, 2),
-        );
+    public function buscar(
+        string $titulo,
+        ?int $ano = null,
+        ?string $imdbId = null,
+        ?int $temporada = null,
+        ?int $episodio = null,
+    ): array {
+        // Em episódio o ano sai do termo: o release traz o ano de exibição do
+        // episódio, não o da série, e o filtro derrubaria o resultado. O título
+        // já chega com a numeração "S01E01" montada pelo TorrentService.
+        $episodioDeSerie = $temporada !== null && $episodio !== null;
+
+        /*
+         * Em episódio o TorrentService já entrega as variações dubladas prontas
+         * ("... S01E01 dublado"). Reanexar a tag aqui geraria "dublado dublado",
+         * que não casa com release nenhum — por isso só completamos o termo
+         * quando ele ainda não traz a tag.
+         */
+        if ($episodioDeSerie) {
+            $termos = [$titulo];
+
+            if (! TermosBusca::jaEDublado($titulo)) {
+                $termos[] = "{$titulo} dublado";
+                $termos[] = "{$titulo} dual áudio";
+            }
+        } else {
+            $termos = array_merge(
+                [TermosBusca::base($titulo, $ano)],
+                // Duas variações de dublagem bastam aqui: o acervo é mundial e o
+                // termo extra só existe para puxar as releases brasileiras que já
+                // estão indexadas com a tag no nome.
+                array_slice(TermosBusca::paraDublado($titulo, $ano), 0, 2),
+            );
+        }
 
         $respostas = $this->consultar($termos);
 
@@ -66,7 +91,7 @@ class ProvedorApibay implements ProvedorTorrents
 
         foreach ($respostas as $corpo) {
             foreach ($corpo as $item) {
-                if ($this->aproveitavel($item, $imdbId)) {
+                if ($this->aproveitavel($item, $imdbId, $episodioDeSerie)) {
                     $itens[$item['info_hash']] = $item;
                 }
             }
@@ -138,14 +163,19 @@ class ProvedorApibay implements ProvedorTorrents
     }
 
     /**
-     * Decide se o item cru serve como fonte de filme.
+     * Decide se o item cru serve como fonte.
      *
      * O APIBay sinaliza "nada encontrado" com um item de nome "No results
      * returned" em vez de um array vazio, e mistura categorias no resultado.
      *
+     * A categoria TV (205) é descartada na busca de filme — senão uma série
+     * homônima entraria como se fosse o filme. Na busca de episódio é o
+     * contrário: a 205 é justamente onde os episódios ficam, então ela passa a
+     * ser a única categoria aceita.
+     *
      * @param  array<string, mixed>  $item
      */
-    private function aproveitavel(array $item, ?string $imdbId): bool
+    private function aproveitavel(array $item, ?string $imdbId, bool $episodioDeSerie = false): bool
     {
         $hash = (string) ($item['info_hash'] ?? '');
 
@@ -162,7 +192,17 @@ class ProvedorApibay implements ProvedorTorrents
 
         $categoria = (int) ($item['category'] ?? 0);
 
-        if ($categoria !== 0 && ($categoria < 200 || $categoria > 299 || in_array($categoria, self::CATEGORIAS_IGNORADAS, true))) {
+        if ($episodioDeSerie) {
+            // Na busca de episódio só a categoria de TV (205) serve. A checagem
+            // anterior usava `|| $categoria !== 205`, que é verdadeiro para toda
+            // categoria diferente de 205 — inclusive as de vídeo válidas — e
+            // acabava aceitando apenas itens com categoria 0. O efeito era o
+            // oposto do pretendido: os episódios legítimos (205) eram descartados
+            // e sobrava só o que a API devolvia sem categoria preenchida.
+            if ($categoria !== 0 && $categoria !== 205) {
+                return false;
+            }
+        } elseif ($categoria !== 0 && ($categoria < 200 || $categoria > 299 || in_array($categoria, self::CATEGORIAS_IGNORADAS, true))) {
             return false;
         }
 

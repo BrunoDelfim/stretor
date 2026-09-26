@@ -41,12 +41,38 @@ class ProvedorBt4g implements ProvedorTorrents
         return ! empty($this->espelhos());
     }
 
-    public function buscar(string $titulo, ?int $ano = null, ?string $imdbId = null): array
-    {
-        $termos = array_merge(
-            [TermosBusca::base($titulo, $ano)],
-            array_slice(TermosBusca::paraDublado($titulo, $ano), 0, 2),
-        );
+    public function buscar(
+        string $titulo,
+        ?int $ano = null,
+        ?string $imdbId = null,
+        ?int $temporada = null,
+        ?int $episodio = null,
+    ): array {
+        // O BT4G busca por nome, então o título já chega com a numeração do
+        // episódio quando for o caso. A diferença é que o ano não entra no termo
+        // de episódio: o release de um episódio traz o ano de exibição dele, não
+        // o da série, e filtrar pelo ano da série derrubaria o resultado.
+        $episodioDeSerie = $temporada !== null && $episodio !== null;
+
+        /*
+         * Em episódio o TorrentService já entrega as variações dubladas prontas
+         * ("... S01E01 dublado"). Reanexar a tag aqui geraria "dublado dublado",
+         * que não casa com release nenhum — por isso só completamos o termo
+         * quando ele ainda não traz a tag.
+         */
+        if ($episodioDeSerie) {
+            $termos = [$titulo];
+
+            if (! TermosBusca::jaEDublado($titulo)) {
+                $termos[] = "{$titulo} dublado";
+                $termos[] = "{$titulo} dual áudio";
+            }
+        } else {
+            $termos = array_merge(
+                [TermosBusca::base($titulo, $ano)],
+                array_slice(TermosBusca::paraDublado($titulo, $ano), 0, 2),
+            );
+        }
 
         foreach ($this->espelhos() as $espelho) {
             $fontes = [];

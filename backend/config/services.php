@@ -69,6 +69,16 @@ return [
         // provedor nativo que consegue buscar por identificador e não por nome.
         'torrentio_url' => env('TORRENTS_TORRENTIO_URL', 'https://torrentio.strem.fun'),
 
+        /*
+         * Idiomas pedidos ao Torrentio, separados por vírgula. O Torrentio
+         * aceita essa configuração embutida na URL e, sem ela, responde com o
+         * catálogo padrão — quase todo em inglês. Com "portuguese" ele passa a
+         * incluir os provedores que publicam releases nacionais (Comando, BluDV,
+         * ThePirateBay com faixa PT), que é de onde saem os lançamentos
+         * "Dublado"/"Dual Áudio". Vazio desliga o filtro e volta ao padrão.
+         */
+        'torrentio_idiomas' => env('TORRENTS_TORRENTIO_IDIOMAS', 'portuguese'),
+
         // BT4G varre a rede DHT inteira: costuma achar o release PT-BR que os
         // trackers indexados não têm. A lista de espelhos é separada por
         // vírgula; o domínio principal sai do ar com frequência.
