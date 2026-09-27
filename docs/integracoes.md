@@ -617,6 +617,23 @@ própria:
 > `Unable to connect`, atualize a lista `links` do `.yml` com o endereço atual.
 > O restante da definição continua válido.
 
+### Indexador de canais do Telegram (revogado)
+
+O projeto chegou a operar, **fora do versionamento**, um serviço próprio de
+indexação: o `telegram-indexer`, em Python com Telethon, lia canais públicos de
+séries em PT-BR e publicava o acervo como um feed Torznab, que o Prowlarr
+cadastrava como mais um indexador. A abordagem foi **revogada em definitivo** —
+não há mais canais de séries confiáveis e não há perspectiva de voltarem.
+
+- O serviço, seu `Dockerfile` e o volume `telegram_data` saíram do disco; as
+  variáveis `TELEGRAM_*` saíram dos `.env` locais. Não há commit desse código: a
+  árvore versionada não tem nenhuma referência a Telegram.
+- As credenciais do Telegram (`api_id`, `api_hash` e a sessão) foram revogadas.
+- No Prowlarr pode restar a entrada órfã do indexador criado à época; ela é
+  removível no painel e nenhum código do projeto depende dela.
+- O provisionamento do Prowlarr segue restrito aos trackers públicos (seção
+  acima) e não conhece mais nenhum indexador Torznab próprio.
+
 ### Prioridade de idioma
 
 O usuário quer o filme **dublado em PT-BR**. A ordenação coloca as fontes
