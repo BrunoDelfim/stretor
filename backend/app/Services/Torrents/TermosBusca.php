@@ -124,6 +124,60 @@ final class TermosBusca
     }
 
     /**
+     * Termos de série em PT-BR: a temporada pelo nome, sem numeração e sem "completa".
+     *
+     * É o terceiro socorro da série antiga, depois dos termos de episódio e dos de
+     * pack. Os buscadores por nome que casam todas as palavras do termo (o Knaben
+     * é o caso) devolvem zero quando o termo leva "S01E01" ou "completa": cada
+     * palavra a mais corta o recall. Tirando os dois ruídos, o termo pergunta pela
+     * série pelo nome — que é como os packs multi-temporada são publicados
+     * ("1ª 2ª 3ª Temporadas Dublado e Legendado") — e deixa o gate de temporada do
+     * [`CatalogoProvedores`] descartar o que não cobrir a temporada pedida.
+     *
+     * @return array<int, string>
+     */
+    public static function serieDublado(string $titulo, int $temporada): array
+    {
+        $titulo = trim($titulo);
+        $numerada = sprintf('S%02d', $temporada);
+
+        return [
+            "{$titulo} dublado",
+            "{$titulo} dual áudio",
+            "{$titulo} temporada {$temporada}",
+            "{$titulo} {$numerada}",
+        ];
+    }
+
+    /**
+     * Diz se o termo é um dos termos de série (sem numeração de episódio).
+     *
+     * Espelha [`eTermoDePack()`]: separa os termos de série dos de episódio e dos
+     * de pack para o [`CatalogoProvedores`] saber onde aplicar o gate de temporada.
+     * Um termo de série não tem numeração de episódio, não é termo de pack e
+     * carrega uma tag de idioma ou uma temporada explícita.
+     */
+    public static function eTermoDeSerie(string $termo): bool
+    {
+        if (self::numeracaoDoTitulo($termo) !== null) {
+            return false;
+        }
+
+        if (self::eTermoDePack($termo)) {
+            return false;
+        }
+
+        if (self::jaEDublado($termo)) {
+            return true;
+        }
+
+        return (bool) preg_match(
+            '/(?<![a-z0-9])s\d{1,2}(?![a-z0-9])|(?:temporada|season)\s*\d{1,2}/u',
+            mb_strtolower($termo)
+        );
+    }
+
+    /**
      * Diz se o termo é um dos termos de pack de temporada.
      *
      * É este reconhecimento que sustenta a exceção de idioma do pack: só o pack
@@ -342,6 +396,30 @@ final class TermosBusca
         // "1ª Temporada".
         if (preg_match_all('/(?<![a-z0-9])(\d{1,2})\s*[ªº]\s*temporada/u', $texto, $achados)) {
             $numeros = array_merge($numeros, $achados[1]);
+        }
+
+        /*
+         * "1ª 2ª 3ª Temporada(s)" — séries antigas publicam a lista de temporadas
+         * com um ordinal atrás do outro. A leitura anterior ("3ª Temporada") só
+         * enxergava o ordinal colado na palavra, então o pack multi-temporada
+         * parecia ser só da 3ª e o gate estrito o descartava para a 1ª.
+         */
+        if (preg_match('/((?:\d{1,2}\s*[ªº]\s*)+)temporadas?/u', $texto, $achados)
+            && preg_match_all('/\d{1,2}/u', $achados[1], $ordinais)) {
+            $numeros = array_merge($numeros, $ordinais[0]);
+        }
+
+        /*
+         * "Temporadas 1, 2 e 3" — a palavra-chave vem uma vez e os números em
+         * lista. Sem ler a lista inteira, só o primeiro número entrava e o pack
+         * parecia ser só da temporada 1.
+         */
+        if (preg_match_all('/(?:temporada|season)s?\s*(\d{1,2}(?:\s*(?:,|e|and|&|\/)\s*\d{1,2})*)/u', $texto, $achados)) {
+            foreach ($achados[1] as $lista) {
+                if (preg_match_all('/\d{1,2}/', $lista, $itens)) {
+                    $numeros = array_merge($numeros, $itens[0]);
+                }
+            }
         }
 
         if ($numeros === []) {

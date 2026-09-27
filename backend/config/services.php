@@ -231,6 +231,20 @@ return [
          * dublado, quando ele existe.
          */
         'packs_qualquer_idioma' => (bool) env('TORRENTS_PACKS_QUALQUER_IDIOMA', true),
+
+        /*
+         * Termos de série no fim da cascata de episódio.
+         *
+         * Os buscadores por nome casam todas as palavras do termo, e os termos
+         * que já existem carregam ruído que zera o recall justamente nos packs
+         * nacionais das séries antigas: "S01E01" e "completa" não aparecem no
+         * nome de "1ª 2ª 3ª Temporadas Dublado e Legendado". Com isto ligado, a
+         * busca acrescenta termos sem numeração e sem "completa" ("... dublado",
+         * "... temporada 1") depois de tudo o mais; as fontes que vêm deles são
+         * julgadas pelo gate de temporada do CatalogoProvedores, que descarta o
+         * que não declarar a temporada pedida.
+         */
+        'termos_serie_habilitados' => (bool) env('TORRENTS_TERMOS_SERIE_HABILITADO', true),
     ],
 
     // --- Provisionamento do Prowlarr (degrau 2) ---

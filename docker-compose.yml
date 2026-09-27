@@ -90,6 +90,10 @@ services:
       - TORRENTS_APENAS_PT_BR=${TORRENTS_APENAS_PT_BR:-true}
       - TORRENTS_PACKS_HABILITADOS=${TORRENTS_PACKS_HABILITADOS:-true}
       - TORRENTS_PACKS_QUALQUER_IDIOMA=${TORRENTS_PACKS_QUALQUER_IDIOMA:-true}
+      # Termos de série no fim da cascata: sem numeração e sem "completa", é o
+      # que alcança o pack multi-temporada das séries antigas. As fontes vindas
+      # deles passam pelo gate de temporada antes de entrar na lista.
+      - TORRENTS_TERMOS_SERIE_HABILITADO=${TORRENTS_TERMOS_SERIE_HABILITADO:-true}
       # Fase 2B: o Knaben enxerga os packs que o Torrentio e os trackers nativos
       # não acham, e os addons Stremio hospedados entram por imdb_id, no mesmo
       # protocolo do Torrentio. Sem estas no environment, o container cai nos

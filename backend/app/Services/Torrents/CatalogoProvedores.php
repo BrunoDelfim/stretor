@@ -46,7 +46,7 @@ class CatalogoProvedores
      * mudança de comportamento de um provedor para a reconsulta valer já na
      * próxima busca, sem depender de limpar o Redis à mão.
      */
-    private const VERSAO_CACHE = 10;
+    private const VERSAO_CACHE = 11;
 
     /**
      * Provedores do primeiro degrau que buscam **por nome**.
@@ -79,6 +79,16 @@ class CatalogoProvedores
      * @var array<int, ProvedorTorrents>
      */
     private array $porIdentificador;
+
+    /**
+     * Quantas fontes o gate de temporada barrou na última consulta a um grupo.
+     *
+     * O gate é o único ponto que descarta uma fonte sem que ela apareça em
+     * lugar nenhum. Sem este contador, "0 fontes" fica indistinguível entre "o
+     * provedor não tinha nada" e "o termo de série trouxe, mas nada provou a
+     * temporada". Zerado a cada `buscarGrupo()` e lido pelo `registrarEtapa()`.
+     */
+    private int $barradasPeloGate = 0;
 
     public function __construct(
         ProvedorTrackersBr $trackersBr,
@@ -146,11 +156,12 @@ class CatalogoProvedores
          */
         foreach ($titulos as $titulo) {
             $termoDePack = $this->eTermoDePack($titulo, $temporada, $episodio);
+            $termoDeSerie = $this->eTermoDeSerie($titulo, $temporada, $episodio);
 
-            $desteTermo = $this->buscarGrupo($this->primarios, $titulo, $ano, $imdbId, $temporada, $episodio, $termoDePack);
+            $desteTermo = $this->buscarGrupo($this->primarios, $titulo, $ano, $imdbId, $temporada, $episodio, $termoDePack, $termoDeSerie);
             $fontes = $this->mesclar($fontes, $desteTermo);
 
-            $this->registrarEtapa('nativos', $titulo, $desteTermo);
+            $this->registrarEtapa('nativos', $titulo, $desteTermo, $termoDeSerie, $this->barradasPeloGate);
 
             if ($this->temDublado($desteTermo)) {
                 return $fontes;
@@ -160,11 +171,12 @@ class CatalogoProvedores
         // Degrau 2: indexador. Só é consultado se a busca nativa não achou dublado.
         foreach ($titulos as $titulo) {
             $termoDePack = $this->eTermoDePack($titulo, $temporada, $episodio);
+            $termoDeSerie = $this->eTermoDeSerie($titulo, $temporada, $episodio);
 
-            $desteTermo = $this->buscarGrupo([$this->torznab], $titulo, $ano, $imdbId, $temporada, $episodio, $termoDePack);
+            $desteTermo = $this->buscarGrupo([$this->torznab], $titulo, $ano, $imdbId, $temporada, $episodio, $termoDePack, $termoDeSerie);
             $fontes = $this->mesclar($fontes, $desteTermo);
 
-            $this->registrarEtapa('indexador', $titulo, $desteTermo);
+            $this->registrarEtapa('indexador', $titulo, $desteTermo, $termoDeSerie, $this->barradasPeloGate);
 
             if ($this->temDublado($desteTermo)) {
                 return $fontes;
@@ -240,8 +252,13 @@ class CatalogoProvedores
      *
      * @param  array<int, array<string, mixed>>  $fontes
      */
-    private function registrarEtapa(string $degrau, string $titulo, array $fontes): void
-    {
+    private function registrarEtapa(
+        string $degrau,
+        string $titulo,
+        array $fontes,
+        bool $termoDeSerie = false,
+        int $barradasPeloGate = 0,
+    ): void {
         Log::info('Etapa da cascata de torrents concluída.', [
             'degrau' => $degrau,
             'titulo' => $titulo,
@@ -261,6 +278,12 @@ class CatalogoProvedores
                 $fontes,
                 fn (array $fonte) => ($fonte['pack'] ?? false) === true
             )),
+            // O termo de série é o último recurso e o único cujas fontes passam
+            // pelo gate. Os dois campos respondem "a frente nova rodou e por que
+            // veio vazia": `termo_serie` diz que o termo entrou, e
+            // `barradas_gate` diz quanto o gate descartou por falta de temporada.
+            'termo_serie' => $termoDeSerie,
+            'barradas_gate' => $barradasPeloGate,
             'encerra' => $this->temDublado($fontes),
         ]);
     }
@@ -279,7 +302,15 @@ class CatalogoProvedores
         ?int $temporada = null,
         ?int $episodio = null,
         bool $termoDePack = false,
+        bool $termoDeSerie = false,
     ): array {
+        /*
+         * O contador do gate começa zerado a cada grupo: ele é lido logo depois,
+         * pelo `registrarEtapa()`, e precisa refletir só esta consulta — não o
+         * acumulado dos termos anteriores.
+         */
+        $this->barradasPeloGate = 0;
+
         if (trim($titulo) === '') {
             return [];
         }
@@ -322,7 +353,7 @@ class CatalogoProvedores
          */
         $fontes = $this->marcarPacks($fontes, $temporada, $episodio, $termoDePack);
 
-        return $this->aproveitaveis($fontes, $temporada, $episodio);
+        return $this->aproveitaveis($fontes, $temporada, $episodio, $termoDeSerie);
     }
 
     /**
@@ -336,6 +367,26 @@ class CatalogoProvedores
         return $temporada !== null
             && $episodio !== null
             && TermosBusca::eTermoDePack($titulo);
+    }
+
+    /**
+     * Diz se o termo corrente é um termo de série (sem numeração de episódio).
+     *
+     * Só faz sentido no contexto de episódio: é a busca de série, com temporada e
+     * episódio definidos, que monta esses termos. Fora dele, `false` — filme não
+     * tem o que gatear.
+     *
+     * O reconhecimento é delegado ao [`TermosBusca::eTermoDeSerie()`], que é
+     * quem também sabe que um termo de pack **não** é termo de série, apesar de
+     * os dois carregarem a temporada: o pack tem "completa" e não pode ser
+     * tratado como a frente larga, senão o gate o julgaria pelo mesmo critério
+     * — que é justamente o critério que ele foi feito para satisfazer.
+     */
+    private function eTermoDeSerie(string $titulo, ?int $temporada, ?int $episodio): bool
+    {
+        return $temporada !== null
+            && $episodio !== null
+            && TermosBusca::eTermoDeSerie($titulo);
     }
 
     /**
@@ -394,12 +445,16 @@ class CatalogoProvedores
      * encerrava a busca no degrau 1 e, descartado depois na ordenação, deixava a
      * lista vazia sem que os degraus seguintes fossem tentados.
      *
-     * São dois cortes, na ordem em que importam:
+     * São três cortes, na ordem em que importam:
      *
      * 1. **Numeração** — releases que declaram uma temporada/episódio diferente
      *    da pedida. Releases sem numeração passam, para não apagar packs e nomes
      *    nacionais legítimos.
-     * 2. **Idioma** — quando `apenas_pt_br` está ligado, só dublado e dual áudio
+     * 2. **Temporada (só no termo de série)** — quando a fonte veio de um termo
+     *    de série, o silêncio deixa de ser inocente: sem numeração que a
+     *    localize, ela precisa declarar a temporada pedida ou é descartada. É o
+     *    gate que a largueza do termo de série torna obrigatório.
+     * 3. **Idioma** — quando `apenas_pt_br` está ligado, só dublado e dual áudio
      *    seguem. É o mesmo corte que a ordenação faz, mas aplicado cedo o
      *    bastante para a cascata reagir a ele.
      *
@@ -411,17 +466,46 @@ class CatalogoProvedores
      * @param  array<int, array<string, mixed>>  $fontes
      * @return array<int, array<string, mixed>>
      */
-    private function aproveitaveis(array $fontes, ?int $temporada, ?int $episodio): array
+    private function aproveitaveis(array $fontes, ?int $temporada, ?int $episodio, bool $termoDeSerie = false): array
     {
         $apenasPtBr = (bool) config('services.torrents.apenas_pt_br', true);
         $packQualquerIdioma = (bool) config('services.torrents.packs_qualquer_idioma', true);
 
         return array_values(array_filter(
             $fontes,
-            function (array $fonte) use ($temporada, $episodio, $apenasPtBr, $packQualquerIdioma): bool {
+            function (array $fonte) use ($temporada, $episodio, $apenasPtBr, $packQualquerIdioma, $termoDeSerie): bool {
                 if ($temporada !== null && $episodio !== null
                     && ! TermosBusca::correspondeAoEpisodio((string) ($fonte['titulo'] ?? ''), $temporada, $episodio)) {
                     return false;
+                }
+
+                /*
+                 * Gate de temporada para fontes vindas de um termo de série.
+                 *
+                 * O termo de série existe para ser largo: sem "S01E01" e sem
+                 * "completa", ele pergunta pela série pelo nome, e é assim que os
+                 * packs nacionais aparecem. O preço da largueza é o provedor
+                 * devolver o que não é da temporada pedida — "Freak Show", que é
+                 * a 4ª, não declara número nenhum e passaria por qualquer corte
+                 * baseado em numeração. Então a prova aqui é invertida: não vale
+                 * "não declarou nada, deixa passar"; vale declarar a temporada, e
+                 * cobrindo a pedida — "1ª 2ª 3ª Temporadas" ou só a 1ª. O que
+                 * nada declara morre neste ponto, e é isso que separa o pack
+                 * multi-temporada da temporada avulsa homônima.
+                 *
+                 * Releases com numeração seguem julgados pelo
+                 * `correspondeAoEpisodio()` acima: o gate só olha o que não tem
+                 * número para provar a temporada.
+                 */
+                if ($termoDeSerie && $temporada !== null && $episodio !== null) {
+                    $nome = (string) ($fonte['release'] ?? $fonte['titulo'] ?? '');
+
+                    if (TermosBusca::numeracaoDoTitulo($nome) === null
+                        && ! TermosBusca::temporadaNoRelease($nome, $temporada)) {
+                        $this->barradasPeloGate++;
+
+                        return false;
+                    }
                 }
 
                 $ePack = ($fonte['pack'] ?? false) === true;

@@ -185,6 +185,35 @@ class TorrentService
             }
         }
 
+        /*
+         * Os termos de série entram por último — depois até dos packs —, e a
+         * posição é o que protege o que hoje funciona: a cascata para no primeiro
+         * termo que devolve dublado, então uma série recente é resolvida muito
+         * antes de chegar aqui. Esta frente existe para o caso extremo, a série
+         * antiga em que nem o episódio nem o "S01 completa" acham nada: os
+         * buscadores por nome casam todas as palavras do termo, e "S01E01" e
+         * "completa" são ruído suficiente para zerar o recall justamente onde os
+         * packs nacionais vivem. Sem numeração e sem "completa", o termo pergunta
+         * pela série pelo nome, que é como os packs multi-temporada aparecem
+         * ("1ª 2ª 3ª Temporadas Dublado e Legendado"). Quem descarta o que não
+         * cobrir a temporada pedida é o gate do [`CatalogoProvedores`].
+         */
+        if (config('services.torrents.termos_serie_habilitados', true)) {
+            foreach ([$titulo, $tituloOriginal] as $candidato) {
+                $candidato = trim((string) $candidato);
+
+                if ($candidato === '') {
+                    continue;
+                }
+
+                foreach (TermosBusca::serieDublado($candidato, $temporada) as $serie) {
+                    if (! in_array($serie, $titulos, true)) {
+                        $titulos[] = $serie;
+                    }
+                }
+            }
+        }
+
         return $titulos;
     }
 

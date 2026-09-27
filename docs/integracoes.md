@@ -1085,11 +1085,57 @@ este último alimentando tanto a marcação de pack quanto a dedução de idioma
 | `TORRENTS_KNABEN_LIMITE` | `20` | Quantos resultados pedir por termo. Cada termo é uma requisição; o corte de idioma descarta o resto. |
 | `TORRENTS_STREMIO_ADDONS` | `https://thepiratebay-plus.strem.fun` | Addons Stremio hospedados, por vírgula. O Torrentio tem provedor próprio e não precisa estar aqui. |
 
-A `VERSAO_CACHE` subiu de `6` para `10`. Cada provedor novo e cada correção de leitura
+A `VERSAO_CACHE` subiu de `6` para `11`. Cada provedor novo e cada correção de leitura
 mudam o conjunto — ou o próprio texto — das fontes já cacheadas no Redis (as entradas
 antigas guardam o `titulo`, o `idioma` e até a marca de pack do código anterior), então
 a chave precisa mudar para a reconsulta valer já na próxima busca, sem depender de
 limpar o Redis à mão.
+
+### Termos de série e o gate de temporada
+
+A exceção de pack resolveu o **descarte**, mas não o **alcance**. Nos provedores que
+buscam por nome, todos os termos que a cascata já montava carregam palavras que o
+release do pacote nacional não tem: `S01E01` (numeração de episódio) e `completa`. Como
+o [`ProvedorKnaben`](#provedorknaben--meta-buscador-com-api-json) exige que **todas** as
+palavras casem (`search_type: "100%"`), e os demais casam por relevância com o mesmo
+efeito prático, o termo com essas palavras praticamente não encontra o nome real do
+pacote — *"American Horror Story 1ª 2ª 3ª Temporadas Dublado e Legendado"*.
+
+[`TermosBusca::serieDublado()`](../backend/app/Services/Torrents/TermosBusca.php:139)
+acrescenta termos que **não** têm numeração nem "completa" — `"... dublado"`,
+`"... dual áudio"`, `"... temporada N"` e `"... SN"` — para perguntar pela série **pelo
+nome**, que é como o pack aparece. Eles entram **por último**, depois até dos termos de
+pack, dentro de
+[`TorrentService::titulosDeEpisodio()`](../backend/app/Services/TorrentService.php:131).
+A posição é a proteção: a cascata para no primeiro termo que devolve dublado, então uma
+série recente se resolve muito antes de chegar aqui — a frente existe para o caso
+extremo, quando nem o episódio nem o `S01 completa` acham nada.
+
+O preço da largueza é o falso positivo. Um termo sem `S01E01` também casa *"Freak
+Show"* — que é a 4ª temporada de American Horror Story e não declara número nenhum. Por
+isso as fontes vindas de um termo de série passam por um **gate de temporada** em
+[`CatalogoProvedores::aproveitaveis()`](../backend/app/Services/Torrents/CatalogoProvedores.php:414),
+reconhecidas por
+[`TermosBusca::eTermoDeSerie()`](../backend/app/Services/Torrents/TermosBusca.php:160):
+se o release **não** declara episódio e **não** prova a temporada pedida, é descartado.
+É a inversão da regra dos outros cortes — aqui o silêncio não é inocente. O
+reconhecimento sobe pela mesma tubulação do termo de pack: de
+[`CatalogoProvedores::buscar()`](../backend/app/Services/Torrents/CatalogoProvedores.php:106)
+para `buscarGrupo()` e daí para `aproveitaveis()`.
+
+Para o gate reconhecer o pacote multi-temporada,
+[`TermosBusca::temporadaNoRelease()`](../backend/app/Services/Torrents/TermosBusca.php:381)
+passou a ler a **lista** de temporadas: `1ª 2ª 3ª Temporada(s)`, `Temporadas 1, 2 e 3` e
+faixas (`S01-S03`, já cobertas antes). Ficou de fora, de propósito, a faixa crua `1-3`:
+sem palavra-chave, o risco de casar ano, resolução ou tamanho é maior que o ganho.
+
+O contador do gate aparece no log de cada etapa (`termo_serie` e `barradas_gate`): sem
+ele, "0 fontes" no termo de série ficaria indistinguível entre "o provedor não tinha
+nada" e "veio, mas nada provou a temporada".
+
+| Variável | Padrão | O que faz |
+|----------|--------|-----------|
+| `TORRENTS_TERMOS_SERIE_HABILITADO` | `true` | Liga/desliga os termos de série no fim da cascata de episódio. Ligado, acrescenta `"... dublado"`, `"... temporada N"` e `"... SN"` (sem numeração de episódio e sem "completa") depois dos termos de pack; as fontes que vêm deles passam pelo gate de temporada. Desligar restaura a busca anterior sem reverter código. |
 
 ### Ajustes obrigatórios no media-service
 
