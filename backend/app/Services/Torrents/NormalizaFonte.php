@@ -43,9 +43,16 @@ trait NormalizaFonte
          * O campo de idioma do provedor, quando existe, é informação melhor que
          * a tag do título — só recorremos à dedução pelo nome quando ele não vem
          * ou não é reconhecido.
+         *
+         * Nem sempre o `titulo` basta: quando ele é o nome de um episódio dentro
+         * de um pacote ("S01E01.mkv"), a tag de idioma do release ("DUAL ÁUDIO",
+         * "Dublado") ficou no nome do torrent. Quem tem os dois nomes informa o
+         * do torrent em `idioma_titulo`, e é ele que a dedução consulta.
          */
+        $textoIdioma = (string) ($dados['idioma_titulo'] ?? $titulo);
+
         $idioma = IdiomaFonte::deduzirDoIdioma((string) ($dados['idioma'] ?? ''))
-            ?? IdiomaFonte::deduzirDoTitulo($titulo);
+            ?? IdiomaFonte::deduzirDoTitulo($textoIdioma);
 
         $id = trim((string) ($dados['id'] ?? ''));
 

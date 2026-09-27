@@ -76,8 +76,34 @@ function fechar() {
   emit('fechar')
 }
 
+/**
+ * Ação principal do modal ("Assistir").
+ *
+ * Emitir a ficha pura da série (sem `temporada`/`episodio`) fazia a busca cair no
+ * nível da série. O Torrentio responde pela série inteira e mistura temporadas —
+ * foi assim que "American Horror Story" aberto na 1ª temporada voltou com um
+ * "S13E03" — e, sem numeração, o corte que descarta outra temporada nem entra em
+ * ação. Pior: sem `temporada`/`episodio` o media-service escolhe o maior arquivo
+ * do pack, ou seja, um episódio qualquer. Por isso o botão passa a disparar o
+ * primeiro episódio da temporada ativa.
+ */
 function assistir() {
-  emit('assistir', props.serie)
+  // Caminho comum: a temporada ativa já está carregada.
+  if (episodios.value.length) {
+    assistirEpisodio(episodios.value[0])
+
+    return
+  }
+
+  // Episódios ainda não chegaram (detalhes pendentes ou temporada carregando).
+  // Ainda assim mandamos a numeração — a temporada ativa é a referência e o
+  // primeiro episódio do TMDB tem número 1 — para a busca nunca acontecer no
+  // nível da série.
+  emit('assistir', {
+    ...props.serie,
+    temporada: props.temporadaAtiva ?? temporadas.value[0]?.numero ?? 1,
+    episodio: 1,
+  })
 }
 
 function adicionarLista() {
@@ -127,10 +153,13 @@ function selecionarTemporada(numero) {
 
 function assistirEpisodio(episodio) {
   // O player recebe a série com a temporada e o episódio anexados: é daqui que
-  // a busca de fontes monta o termo "Titulo S01E02".
+  // a busca de fontes monta o termo "Titulo S01E02". A temporada recua para a
+  // ativa quando o episódio não a declara: sem ela a busca vira consulta de
+  // série inteira — o Torrentio devolve qualquer temporada e o media-service
+  // escolhe um arquivo aleatório do pack.
   emit('assistir', {
     ...props.serie,
-    temporada: episodio.temporada,
+    temporada: episodio.temporada ?? props.temporadaAtiva,
     episodio: episodio.numero,
     episodio_titulo: episodio.titulo,
   })

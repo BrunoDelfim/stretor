@@ -158,6 +158,12 @@ valores reais. As variáveis que exigem atenção:
 | `TORRENTS_TORZNAB_CATEGORIA` | Não | Categoria Torznab de filmes (padrão `2000`). |
 | `TORRENTS_TORZNAB_CATEGORIA_SERIE` | Não | Categoria Torznab de séries (padrão `5000`). Separada da de filmes porque o Prowlarr filtra por categoria. |
 | `TORRENTS_APENAS_PT_BR` | Não | Descarta da lista tudo que não seja dublado ou dual áudio (padrão `true`). |
+| `TORRENTS_PACKS_HABILITADOS` | Não | Busca packs de temporada (`S01 completa`, `Temporada 1 completa`) como **último** termo do episódio. É o que destrava séries antigas, cujo episódio isolado não tem mais seed; o media-service baixa só o arquivo do episódio pedido de dentro do pacote (padrão `true`). |
+| `TORRENTS_PACKS_QUALQUER_IDIOMA` | Não | Isenta **apenas** a fonte marcada como pack do corte de `TORRENTS_APENAS_PT_BR`. O pack de série antiga quase nunca vem marcado como dublado; sem a exceção ele é achado e descartado, e a lista volta vazia. Episódios e filmes seguem o corte normal, e o pack entra atrás do dublado (padrão `true`). |
+| `TORRENTS_KNABEN_HABILITADO` | Não | Liga/desliga o Knaben, meta-buscador de indexadores públicos que devolve os packs nacionais das séries antigas (padrão `true`). |
+| `TORRENTS_KNABEN_URL` | Não | Endpoint da API do Knaben (padrão `https://api.knaben.org/v1`). Use o domínio `.org`: o `.eu` responde `503`. Vazio desliga o provedor. |
+| `TORRENTS_KNABEN_LIMITE` | Não | Quantos resultados pedir por termo ao Knaben (padrão `20`). |
+| `TORRENTS_STREMIO_ADDONS` | Não | Addons Stremio hospedados, consultados por `imdb_id`, separados por vírgula (padrão `https://thepiratebay-plus.strem.fun`). O Torrentio tem provedor próprio e não precisa entrar aqui. |
 | `TORRENTS_BASE_URL` | Não | Provedor de reserva (YTS), usado quando o indexador não está configurado. |
 | `TORRENTS_CACHE_TTL` | Não | Tempo de cache da busca de fontes (padrão `1800`s). |
 | `DNS_PRIMARIO` / `DNS_SECUNDARIO` | Não | Resolvers dos containers `backend`, `prowlarr` e `flaresolverr` (padrão `1.1.1.1` / `8.8.8.8`). Evitam o bloqueio de DNS da operadora sobre domínios de tracker. |

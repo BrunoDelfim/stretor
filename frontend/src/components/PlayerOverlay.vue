@@ -1503,7 +1503,14 @@ async function tentarFontes(fontes, minhaGeracao) {
       [fonte.provedor_rotulo, fonte.idioma_rotulo].filter(Boolean).join(' · ') || null
 
     try {
-      const sessao = await streamingService.criarSessao(fonte.magnet, props.filme.id)
+      // No filme, `temporada`/`episodio` são indefinidos e a sessão escolhe o
+      // maior vídeo do torrent; na série, apontam o arquivo dentro de um pack.
+      const sessao = await streamingService.criarSessao(
+        fonte.magnet,
+        props.filme.id,
+        props.filme.temporada,
+        props.filme.episodio
+      )
 
       if (cancelado || minhaGeracao !== geracao) return
 

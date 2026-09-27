@@ -60,13 +60,15 @@ router.post('/extract-audio', upload.single('file'), async (req, res, next) => {
  */
 router.post('/sessao', (req, res, next) => {
   try {
-    const { magnet, filme_id: filmeId } = req.body ?? {}
+    const { magnet, filme_id: filmeId, temporada, episodio } = req.body ?? {}
 
     if (!magnet) {
       return res.status(400).json({ error: 'O campo "magnet" é obrigatório.' })
     }
 
-    const sessao = criarSessao({ magnet, filmeId })
+    // `temporada`/`episodio` só vêm no fluxo de série; no filme ficam undefined
+    // e a sessão segue sem eles, escolhendo o maior vídeo do torrent.
+    const sessao = criarSessao({ magnet, filmeId, temporada, episodio })
 
     res.status(202).json(sessao)
   } catch (err) {

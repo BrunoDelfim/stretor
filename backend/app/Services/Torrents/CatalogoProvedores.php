@@ -11,11 +11,12 @@ use Illuminate\Support\Facades\Log;
 /**
  * Registro e cascata dos provedores de torrent.
  *
- * O sistema tem seis caminhos para achar um filme, em três degraus:
+ * O sistema tem vários caminhos para achar um filme, em três degraus:
  *
  * 1. **Busca nativa no backend** (principal) — [`ProvedorTrackersBr`],
- *    [`ProvedorApibay`], [`ProvedorTorrentio`] e [`ProvedorBt4g`]. É aqui que o
- *    sistema faz por conta própria o que antes era delegado ao Prowlarr.
+ *    [`ProvedorApibay`], [`ProvedorKnaben`] e [`ProvedorBt4g`] por nome, mais
+ *    [`ProvedorTorrentio`] e [`ProvedorAddonStremio`] por identificador. É aqui
+ *    que o sistema faz por conta própria o que antes era delegado ao Prowlarr.
  * 2. **Indexador Torznab/Prowlarr** ([`ProvedorTorznab`]) — o socorro quando a
  *    busca nativa não devolveu fonte dublada. Ele agrega os mesmos trackers, com
  *    um raspador mantido por terceiros, o que cobre o caso de o nosso HTML
@@ -45,21 +46,23 @@ class CatalogoProvedores
      * mudança de comportamento de um provedor para a reconsulta valer já na
      * próxima busca, sem depender de limpar o Redis à mão.
      */
-    private const VERSAO_CACHE = 4;
+    private const VERSAO_CACHE = 10;
 
     /**
      * Provedores do primeiro degrau que buscam **por nome**.
      *
      * A ordem dentro do degrau é a ordem de consulta: o tracker PT-BR vem
      * primeiro porque é o único que existe *por causa* do dublado; o APIBay
-     * amplia o alcance; o BT4G fecha com o acervo de DHT.
+     * amplia o alcance; o Knaben varre os indexadores que o APIBay não cobre (é
+     * onde costumam aparecer os packs nacionais das séries antigas); o BT4G fecha
+     * com o acervo de DHT.
      *
-     * O Torrentio fica de fora desta lista de propósito: ele busca por
-     * identificador (imdb_id) e ignora o termo de busca. Se entrasse aqui, seria
-     * consultado uma vez por variação de termo — e como o termo de episódio agora
-     * rende quatro variações (puro + três dubladas), seriam quatro requisições
-     * idênticas ao provedor mais lento da cascata, todas devolvendo o mesmo
-     * resultado.
+     * Ficam de fora desta lista, de propósito, os provedores por identificador
+     * (imdb_id) — [`ProvedorTorrentio`] e [`ProvedorAddonStremio`]: eles ignoram
+     * o termo de busca, então consultá-los por variação de termo seriam quatro
+     * requisições idênticas (o termo de episódio rende o puro + três dubladas),
+     * todas devolvendo o mesmo resultado. Eles vivem em `$porIdentificador` e são
+     * chamados uma única vez.
      *
      * @var array<int, ProvedorTorrents>
      */
@@ -69,7 +72,9 @@ class CatalogoProvedores
      * Provedores que buscam por identificador (imdb_id).
      *
      * São consultados uma única vez, com o termo puro, porque o termo não
-     * influencia a resposta — só o identificador importa.
+     * influencia a resposta — só o identificador importa. Reúne o
+     * [`ProvedorTorrentio`] e o [`ProvedorAddonStremio`] (os demais addons
+     * Stremio hospedados).
      *
      * @var array<int, ProvedorTorrents>
      */
@@ -78,13 +83,15 @@ class CatalogoProvedores
     public function __construct(
         ProvedorTrackersBr $trackersBr,
         ProvedorApibay $apibay,
+        ProvedorKnaben $knaben,
         ProvedorTorrentio $torrentio,
+        ProvedorAddonStremio $addonStremio,
         ProvedorBt4g $bt4g,
         private readonly ProvedorTorznab $torznab,
         private readonly ProvedorYts $yts,
     ) {
-        $this->primarios = [$trackersBr, $apibay, $bt4g];
-        $this->porIdentificador = [$torrentio];
+        $this->primarios = [$trackersBr, $apibay, $knaben, $bt4g];
+        $this->porIdentificador = [$torrentio, $addonStremio];
     }
 
     /**
@@ -138,7 +145,9 @@ class CatalogoProvedores
          * existe justamente para achar o dublado.
          */
         foreach ($titulos as $titulo) {
-            $desteTermo = $this->buscarGrupo($this->primarios, $titulo, $ano, $imdbId, $temporada, $episodio);
+            $termoDePack = $this->eTermoDePack($titulo, $temporada, $episodio);
+
+            $desteTermo = $this->buscarGrupo($this->primarios, $titulo, $ano, $imdbId, $temporada, $episodio, $termoDePack);
             $fontes = $this->mesclar($fontes, $desteTermo);
 
             $this->registrarEtapa('nativos', $titulo, $desteTermo);
@@ -150,7 +159,9 @@ class CatalogoProvedores
 
         // Degrau 2: indexador. Só é consultado se a busca nativa não achou dublado.
         foreach ($titulos as $titulo) {
-            $desteTermo = $this->buscarGrupo([$this->torznab], $titulo, $ano, $imdbId, $temporada, $episodio);
+            $termoDePack = $this->eTermoDePack($titulo, $temporada, $episodio);
+
+            $desteTermo = $this->buscarGrupo([$this->torznab], $titulo, $ano, $imdbId, $temporada, $episodio, $termoDePack);
             $fontes = $this->mesclar($fontes, $desteTermo);
 
             $this->registrarEtapa('indexador', $titulo, $desteTermo);
@@ -243,6 +254,13 @@ class CatalogoProvedores
                     true
                 )
             )),
+            // Quantos packs passaram pela exceção de idioma. Sem este número, um
+            // pack que entra legendado some no total de "fontes" e não dá para
+            // saber se a exceção funcionou.
+            'packs' => count(array_filter(
+                $fontes,
+                fn (array $fonte) => ($fonte['pack'] ?? false) === true
+            )),
             'encerra' => $this->temDublado($fontes),
         ]);
     }
@@ -260,6 +278,7 @@ class CatalogoProvedores
         ?string $imdbId,
         ?int $temporada = null,
         ?int $episodio = null,
+        bool $termoDePack = false,
     ): array {
         if (trim($titulo) === '') {
             return [];
@@ -287,7 +306,83 @@ class CatalogoProvedores
             );
         }
 
+        /*
+         * A marcação de pack precisa nascer aqui, e não no chamador: é este
+         * método que entrega a lista já filtrada, e a exceção de idioma do pack
+         * depende de a fonte carregar a marca. Como o filtro roda logo abaixo e a
+         * ordenação acontece depois, a marca é o que sobrevive aos dois cortes.
+         *
+         * A marca nasce do **título da própria fonte**, não do termo buscado.
+         * Marcar tudo o que um termo de pack devolvia foi o que criou o falso
+         * pacote: a busca por "S01 completa" só achava o arquivo S01E01 e o
+         * rotulava como pacote. E o inverso era pior — um pacote de verdade
+         * devolvido por um termo de episódio (ou pelo grupo por identificador)
+         * nunca era marcado e o corte de idioma o descartava, que é justamente o
+         * "não acha pack" das séries antigas.
+         */
+        $fontes = $this->marcarPacks($fontes, $temporada, $episodio, $termoDePack);
+
         return $this->aproveitaveis($fontes, $temporada, $episodio);
+    }
+
+    /**
+     * Diz se o termo corrente é um termo de pack de temporada.
+     *
+     * A exceção de idioma do pack só vale quando a busca é de episódio: um filme
+     * jamais é marcado como pack, mesmo que o título contenha "complete".
+     */
+    private function eTermoDePack(string $titulo, ?int $temporada, ?int $episodio): bool
+    {
+        return $temporada !== null
+            && $episodio !== null
+            && TermosBusca::eTermoDePack($titulo);
+    }
+
+    /**
+     * Marca como pack as fontes que são, de fato, um pacote de temporada.
+     *
+     * A leitura é feita sobre o nome do **torrent** (`release`), nunca sobre o
+     * termo buscado. Os provedores por identificador (Torrentio e afins) devolvem
+     * em `titulo` o nome do arquivo do episódio, o que esconde que o torrent
+     * inteiro é a temporada; só a primeira linha do rótulo revela o pacote
+     * ("American Horror Story S01 1080p AMZN"). Quando não há `release`, o próprio
+     * `titulo` é o nome do release — é o caso dos provedores por nome.
+     *
+     * - se o nome declara um episódio ("S01E01", "1x01"), é episódio e nunca
+     *   pack, mesmo tendo vindo de um termo de pack;
+     * - se o nome declara a temporada pedida (ou uma faixa que a inclui, como
+     *   "S01-S05") e não declara episódio, é pack;
+     * - quando o termo era de pack e o nome não traz temporada reconhecível,
+     *   confiamos no termo: o provedor nem sempre repete a temporada no nome.
+     *
+     * @param  array<int, array<string, mixed>>  $fontes
+     * @return array<int, array<string, mixed>>
+     */
+    private function marcarPacks(array $fontes, ?int $temporada, ?int $episodio, bool $termoDePack): array
+    {
+        if ($temporada === null || $episodio === null) {
+            return $fontes;
+        }
+
+        return array_map(function (array $fonte) use ($temporada, $termoDePack): array {
+            $nome = (string) ($fonte['release'] ?? $fonte['titulo'] ?? '');
+
+            if ($nome === '' || TermosBusca::numeracaoDoTitulo($nome) !== null) {
+                return $fonte;
+            }
+
+            if (TermosBusca::temporadaNoRelease($nome, $temporada)) {
+                $fonte['pack'] = true;
+
+                return $fonte;
+            }
+
+            if ($termoDePack && TermosBusca::temporadaDoTitulo($nome) === null) {
+                $fonte['pack'] = true;
+            }
+
+            return $fonte;
+        }, $fontes);
     }
 
     /**
@@ -308,26 +403,36 @@ class CatalogoProvedores
      *    seguem. É o mesmo corte que a ordenação faz, mas aplicado cedo o
      *    bastante para a cascata reagir a ele.
      *
+     * A exceção é o pack de temporada: ele é o último recurso de uma série
+     * antiga e quase nunca vem marcado como dublado — sem a exceção, o corte o
+     * joga fora e a lista volta vazia, que é o oposto do socorro pretendido.
+     * Marcado como pack, ele passa; episódios e filmes seguem o corte normal.
+     *
      * @param  array<int, array<string, mixed>>  $fontes
      * @return array<int, array<string, mixed>>
      */
     private function aproveitaveis(array $fontes, ?int $temporada, ?int $episodio): array
     {
         $apenasPtBr = (bool) config('services.torrents.apenas_pt_br', true);
+        $packQualquerIdioma = (bool) config('services.torrents.packs_qualquer_idioma', true);
 
         return array_values(array_filter(
             $fontes,
-            function (array $fonte) use ($temporada, $episodio, $apenasPtBr): bool {
+            function (array $fonte) use ($temporada, $episodio, $apenasPtBr, $packQualquerIdioma): bool {
                 if ($temporada !== null && $episodio !== null
                     && ! TermosBusca::correspondeAoEpisodio((string) ($fonte['titulo'] ?? ''), $temporada, $episodio)) {
                     return false;
                 }
 
-                if ($apenasPtBr && ! in_array(
-                    $fonte['idioma'] ?? '',
-                    [IdiomaFonte::DUBLADO->value, IdiomaFonte::DUAL_AUDIO->value],
-                    true
-                )) {
+                $ePack = ($fonte['pack'] ?? false) === true;
+
+                if ($apenasPtBr
+                    && ! ($ePack && $packQualquerIdioma)
+                    && ! in_array(
+                        $fonte['idioma'] ?? '',
+                        [IdiomaFonte::DUBLADO->value, IdiomaFonte::DUAL_AUDIO->value],
+                        true
+                    )) {
                     return false;
                 }
 

@@ -65,12 +65,24 @@ export const streamingService = {
    *
    * O media-service responde na hora com o id; a conexão e a conversão seguem
    * em segundo plano e são acompanhadas por `statusSessao`.
+   *
+   * `temporada` e `episodio` só são enviados quando a reprodução é de um
+   * episódio. Eles deixam o media-service apto a escolher o arquivo certo dentro
+   * de um pack de temporada (torrent com todos os episódios). No fluxo de filme
+   * ficam de fora e a escolha continua sendo o maior vídeo do torrent.
    */
-  async criarSessao(magnet, filmeId) {
-    const { data } = await clienteMedia().post(`${BASE_SESSAO}`, {
+  async criarSessao(magnet, filmeId, temporada = null, episodio = null) {
+    const corpo = {
       magnet,
       filme_id: filmeId,
-    })
+    }
+
+    if (temporada && episodio) {
+      corpo.temporada = temporada
+      corpo.episodio = episodio
+    }
+
+    const { data } = await clienteMedia().post(`${BASE_SESSAO}`, corpo)
 
     return data
   },

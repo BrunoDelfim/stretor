@@ -163,19 +163,39 @@ function erroDaFonte(motivo, mensagem) {
  * A função devolve o id imediatamente: a conexão do torrent e a conversão
  * acontecem em segundo plano, e o frontend acompanha o andamento pelo status.
  *
+ * `temporada` e `episodio` são opcionais e só chegam no fluxo de série. Eles
+ * existem por causa dos packs: quando a fonte é a temporada inteira num torrent
+ * só, o media-service precisa saber qual episódio procurar entre os arquivos.
+ * No fluxo de filme eles vêm vazios e a escolha segue sendo "o maior vídeo".
+ *
  * @param {object} opcoes
  * @param {string} opcoes.magnet link magnet da fonte escolhida
  * @param {number|string} opcoes.filmeId identificador do filme (para log)
+ * @param {number|string} [opcoes.temporada] temporada do episódio, no fluxo de série
+ * @param {number|string} [opcoes.episodio] episódio procurado, no fluxo de série
  * @returns {{sessao_id: string, status: string}}
  */
-export function criarSessao({ magnet, filmeId }) {
+export function criarSessao({ magnet, filmeId, temporada = null, episodio = null }) {
   const id = uuid()
   const diretorio = path.join(os.tmpdir(), `stretor-${id}`)
+
+  /*
+   * Normalizamos aqui, e não na rota, para que o contrato aceite tanto número
+   * quanto string vinda de JSON. Qualquer valor que não vire inteiro positivo é
+   * tratado como "sem episódio" — o preparo cai no comportamento de sempre, sem
+   * risco de comparar com `NaN`.
+   */
+  const numeroTemporada = Number.parseInt(temporada, 10)
+  const numeroEpisodio = Number.parseInt(episodio, 10)
+  const temEpisodio = Number.isInteger(numeroTemporada) && numeroTemporada > 0
+    && Number.isInteger(numeroEpisodio) && numeroEpisodio > 0
 
   const sessao = {
     id,
     filmeId,
     magnet,
+    temporada: temEpisodio ? numeroTemporada : null,
+    episodio: temEpisodio ? numeroEpisodio : null,
     status: 'conectando',
     mensagem: 'Conectando à fonte...',
     diretorio,
@@ -489,10 +509,20 @@ async function prepararSessao(sessao) {
   sessao.status = 'aguardando'
   sessao.mensagem = 'Aguardando dados da fonte...'
 
-  const arquivo = escolherArquivoDeVideo(torrent)
+  const arquivo = escolherArquivoDeVideo(torrent, sessao.temporada, sessao.episodio)
 
   if (!arquivo) {
     throw erroDaFonte('sem_video', 'A fonte não contém um arquivo de vídeo reconhecido.')
+  }
+
+  /*
+   * Num pack de temporada o torrent traz todos os episódios. Este log diz qual
+   * arquivo a seleção escolheu para o episódio pedido — é o que permite conferir
+   * depois por que o player abriu (ou não) o capítulo certo.
+   */
+  if (sessao.episodio !== null) {
+    const rotulo = `S${String(sessao.temporada).padStart(2, '0')}E${String(sessao.episodio).padStart(2, '0')}`
+    logger.info(`[sessao ${sessao.id}] episódio ${rotulo} -> arquivo "${arquivo.path}"`)
   }
 
   // `arquivo.path` é relativo à pasta do torrent (ex.: "Filme (1999)/filme.mp4"),
@@ -1193,14 +1223,23 @@ function esperarMetadados(torrent) {
 }
 
 /**
- * Escolhe o maior arquivo de vídeo do torrent.
+ * Escolhe o arquivo de vídeo do torrent.
  *
- * Torrents de filme costumam trazer amostras e arquivos extras; o maior arquivo
- * com extensão de vídeo é quase sempre o filme em si.
+ * Sem `temporada`/`episodio` (fluxo de filme), vale a heurística de sempre: o
+ * maior arquivo com extensão de vídeo é quase sempre o filme, já que amostras e
+ * extras são menores.
+ *
+ * Com um episódio pedido (fluxo de série, inclusive pack de temporada), o maior
+ * arquivo não serve: o pack tem todos os episódios e o maior deles é só o de
+ * melhor qualidade. Procuramos primeiro o arquivo cujo caminho declara a
+ * numeração pedida; se nenhum declarar, caímos no maior vídeo — que é o melhor
+ * palpite quando o pacote não segue o padrão SxxExx.
  *
  * @param {import('webtorrent').Torrent} torrent
+ * @param {number|null} temporada
+ * @param {number|null} episodio
  */
-function escolherArquivoDeVideo(torrent) {
+function escolherArquivoDeVideo(torrent, temporada = null, episodio = null) {
   const videos = torrent.files.filter((arquivo) =>
     EXTENSOES_VIDEO.includes(path.extname(arquivo.name).toLowerCase())
   )
@@ -1209,7 +1248,57 @@ function escolherArquivoDeVideo(torrent) {
     return null
   }
 
+  if (temporada && episodio) {
+    const doEpisodio = videos.find((arquivo) =>
+      caminhoCorrespondeAoEpisodio(arquivo.path, temporada, episodio)
+    )
+
+    if (doEpisodio) {
+      return doEpisodio
+    }
+
+    logger.warn(
+      `[torrent] nenhum arquivo casa S${temporada}E${episodio}; usando o maior vídeo do pacote`
+    )
+  }
+
   return videos.sort((a, b) => b.length - a.length)[0]
+}
+
+/**
+ * Diz se o caminho de um arquivo declara a temporada/episódio pedidos.
+ *
+ * O teste é feito sobre o caminho inteiro, não só o nome, porque muitos packs
+ * organizam os episódios em pasta ("Temporada 1/Episódio 02.mkv") e deixam o
+ * nome do arquivo sem a numeração.
+ *
+ * Cobre os padrões que aparecem na prática: "S01E02", "T01E02", "1x02",
+ * "Temporada 1 Episódio 2", "Episódio 02" e "Capítulo 02". Os zeros à esquerda
+ * são opcionais para casar tanto "E2" quanto "E02".
+ *
+ * @param {string} caminho caminho relativo do arquivo dentro do torrent
+ * @param {number} temporada
+ * @param {number} episodio
+ */
+function caminhoCorrespondeAoEpisodio(caminho, temporada, episodio) {
+  const texto = caminho.toLowerCase()
+
+  const padroes = [
+    // S01E02 / S1 E2 / S01.E02
+    new RegExp(`s0*${temporada}[\\s._-]*e0*${episodio}(?!\\d)`, 'i'),
+    // T01E02
+    new RegExp(`t0*${temporada}[\\s._-]*e0*${episodio}(?!\\d)`, 'i'),
+    // 1x02
+    new RegExp(`(?<!\\d)0*${temporada}x0*${episodio}(?!\\d)`, 'i'),
+    // Temporada 1 ... Episódio 2
+    new RegExp(`temporada\\s*0*${temporada}.{0,30}?epis[oó]dio\\s*0*${episodio}`, 'iu'),
+    // Episódio 02 (quando a pasta já diz a temporada)
+    new RegExp(`epis[oó]dio\\s*0*${episodio}(?!\\d)`, 'iu'),
+    // Capítulo 02
+    new RegExp(`cap[ií]tulo\\s*0*${episodio}(?!\\d)`, 'iu'),
+  ]
+
+  return padroes.some((padrao) => padrao.test(texto))
 }
 
 /**

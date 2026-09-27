@@ -81,6 +81,81 @@ final class TermosBusca
     }
 
     /**
+     * Termos de pack de temporada: a temporada inteira num release só.
+     *
+     * É o socorro das séries antigas. Um episódio isolado de 2011 raramente
+     * sobrevive com seeds — ninguém mais está baixando aquele arquivo —, mas o
+     * pack da temporada continua na malha, porque é o que a comunidade ainda
+     * procura. O termo muda de "S01E02" para "S01 completa"/"Temporada 1
+     * completa", que é como os trackers publicam o pacote.
+     *
+     * @return array<int, string>
+     */
+    public static function packTemporada(string $titulo, int $temporada): array
+    {
+        $titulo = trim($titulo);
+        $numerada = sprintf('S%02d', $temporada);
+
+        return [
+            "{$titulo} {$numerada} completa",
+            "{$titulo} Temporada {$temporada} completa",
+            "{$titulo} Season {$temporada} complete",
+        ];
+    }
+
+    /**
+     * Variações dubladas dos termos de pack.
+     *
+     * O tracker nacional marca o áudio no nome do pacote igual faz no episódio
+     * ("Temporada 1 Completa Dublada"), então o termo precisa carregar a tag
+     * junto para o release nacional aparecer na primeira página.
+     *
+     * @return array<int, string>
+     */
+    public static function packTemporadaDublado(string $titulo, int $temporada): array
+    {
+        $titulo = trim($titulo);
+        $numerada = sprintf('S%02d', $temporada);
+
+        return [
+            "{$titulo} {$numerada} completa dublada",
+            "{$titulo} Temporada {$temporada} completa dublada",
+        ];
+    }
+
+    /**
+     * Diz se o termo é um dos termos de pack de temporada.
+     *
+     * É este reconhecimento que sustenta a exceção de idioma do pack: só o pack
+     * pode atravessar o corte de `apenas_pt_br` sem ser dublado. A checagem exige,
+     * ao mesmo tempo, um marcador de pacote ("completa"/"complete") e uma
+     * numeração de temporada, para que um filme de título "The Complete ..." não
+     * seja confundido caso alguém o busque por aqui.
+     */
+    public static function eTermoDePack(string $termo): bool
+    {
+        $texto = mb_strtolower($termo);
+
+        $temMarcador = false;
+
+        foreach (['completa', 'completo', 'complete', 'superpack'] as $marcador) {
+            if (str_contains($texto, $marcador)) {
+                $temMarcador = true;
+                break;
+            }
+        }
+
+        if (! $temMarcador) {
+            return false;
+        }
+
+        return (bool) preg_match(
+            '/(?<![a-z0-9])s\d{1,2}(?![a-z0-9])|(?:temporada|season)\s*\d{1,2}/u',
+            $texto
+        );
+    }
+
+    /**
      * Termos de busca voltados ao dublado, do mais provável ao menos.
      *
      * Devolve uma lista curta de propósito: cada termo é uma requisição a mais, e
@@ -166,12 +241,131 @@ final class TermosBusca
     {
         $numeracao = self::numeracaoDoTitulo($titulo);
 
-        // Sem numeração declarada não há o que reprovar: a fonte fica.
-        if ($numeracao === null) {
-            return true;
+        if ($numeracao !== null) {
+            return $numeracao['temporada'] === $temporada && $numeracao['episodio'] === $episodio;
         }
 
-        return $numeracao['temporada'] === $temporada && $numeracao['episodio'] === $episodio;
+        /*
+         * Sem numeração de episódio, o título pode ser um pack de temporada
+         * ("S01 completa", "Temporada 1 completa"). Aí a temporada ainda dá para
+         * conferir — e precisa ser conferida: o pack tem muitos seeds e, se for
+         * da temporada errada, subiria ao topo da lista e o player abriria o
+         * episódio de outra temporada.
+         *
+         * A checagem é conservadora de propósito: só reprova quando o título
+         * declara a temporada de forma explícita E ela difere da pedida. Títulos
+         * sem número nenhum seguem passando, para não apagar nomes nacionais
+         * legítimos.
+         */
+        $declarada = self::temporadaDoTitulo($titulo);
+
+        if ($declarada !== null && $declarada !== $temporada) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Extrai a temporada declarada num título de pack, se houver.
+     *
+     * Só é chamada quando o título **não** declara numeração de episódio. Para
+     * evitar falso positivo em nomes que contêm "S" seguido de número por outros
+     * motivos, a leitura exige um marcador de pack ("completa", "temporada",
+     * "season", "superpack"): sem ele, devolvemos `null` e a fonte passa.
+     *
+     * Aceita "S01", "Temporada 1", "Season 1" e "1ª Temporada".
+     */
+    public static function temporadaDoTitulo(string $titulo): ?int
+    {
+        $texto = mb_strtolower($titulo);
+
+        $temMarcador = false;
+
+        foreach (['completa', 'completo', 'complete', 'temporada', 'season', 'superpack'] as $marcador) {
+            if (str_contains($texto, $marcador)) {
+                $temMarcador = true;
+                break;
+            }
+        }
+
+        if (! $temMarcador) {
+            return null;
+        }
+
+        // "S02" — o formato dos releases; o lookbehind evita casar dentro de palavra.
+        if (preg_match('/(?<![a-z0-9])s(\d{1,2})(?![a-z0-9])/i', $texto, $achados)) {
+            return (int) $achados[1];
+        }
+
+        // "Temporada 2", "Season 2".
+        if (preg_match('/(?:temporada|season)\s*(\d{1,2})/u', $texto, $achados)) {
+            return (int) $achados[1];
+        }
+
+        // "2ª Temporada" — só com o ordinal explícito para não ler o ano do release.
+        if (preg_match('/(?<![a-z0-9])(\d{1,2})\s*[ªº]\s*temporada/u', $texto, $achados)) {
+            return (int) $achados[1];
+        }
+
+        return null;
+    }
+
+    /**
+     * Diz se um nome de release declara a temporada pedida — inclusive packs de
+     * várias temporadas.
+     *
+     * Diferente de [`temporadaDoTitulo()`], não exige um marcador de pacote: o
+     * nome de um torrent de temporada costuma ser só "Série S01 1080p", sem
+     * "completa"/"season", e era justamente esse o pack que o corte de idioma
+     * descartava. A leitura é feita sobre o nome do **torrent**, nunca sobre o
+     * nome do arquivo — o arquivo aponta para um episódio e esconderia o pacote.
+     * A ausência de numeração de episódio é condição imposta pelo chamador.
+     *
+     * Cobre "S01", "S1-S5", "Temporada 1", "Seasons 1 to 8" e "1ª Temporada".
+     */
+    public static function temporadaNoRelease(string $nome, int $temporada): bool
+    {
+        $texto = mb_strtolower($nome);
+        $numeros = [];
+
+        // "S01", "S1" — a fronteira evita casar dentro de palavra ("seasons").
+        if (preg_match_all('/(?<![a-z0-9])s(\d{1,2})(?![a-z0-9])/i', $texto, $achados)) {
+            $numeros = array_merge($numeros, $achados[1]);
+        }
+
+        // "Temporada 1", "Season 1", "Seasons 1".
+        if (preg_match_all('/(?:temporada|season)s?\s*(\d{1,2})/u', $texto, $achados)) {
+            $numeros = array_merge($numeros, $achados[1]);
+        }
+
+        // "1ª Temporada".
+        if (preg_match_all('/(?<![a-z0-9])(\d{1,2})\s*[ªº]\s*temporada/u', $texto, $achados)) {
+            $numeros = array_merge($numeros, $achados[1]);
+        }
+
+        if ($numeros === []) {
+            return false;
+        }
+
+        /*
+         * "Seasons 1 to 8" e "Temporada 1 a 4": o segundo número não repete a
+         * palavra-chave, então a faixa precisa ser lida explicitamente. Sem isso,
+         * o pack de várias temporadas só casaria a temporada do primeiro número.
+         */
+        foreach ([
+            '/(?:temporada|season)s?\s*(\d{1,2})\s*(?:a|to|até|-|–|—)\s*(\d{1,2})/u',
+            '/(?<![a-z0-9])s(\d{1,2})\s*(?:a|to|até|-|–|—)\s*s?(\d{1,2})/i',
+        ] as $faixa) {
+            if (preg_match($faixa, $texto, $achados)) {
+                $numeros[] = $achados[1];
+                $numeros[] = $achados[2];
+            }
+        }
+
+        $numeros = array_map('intval', $numeros);
+
+        return $temporada >= min($numeros) && $temporada <= max($numeros);
     }
 
     /**

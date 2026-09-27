@@ -84,6 +84,20 @@ services:
       # Idiomas pedidos ao Torrentio. Sem isso ele responde só com o catálogo
       # padrão (quase todo em inglês) e as séries não trazem fonte dublada.
       - TORRENTS_TORRENTIO_IDIOMAS=${TORRENTS_TORRENTIO_IDIOMAS:-portuguese}
+      # Corte de idioma e a exceção do pack de temporada. Sem estas três no
+      # environment, o container cai no padrão do config/services.php e o valor
+      # do .env da raiz não chega a valer — foi o que deixou a Fase 1 inerte.
+      - TORRENTS_APENAS_PT_BR=${TORRENTS_APENAS_PT_BR:-true}
+      - TORRENTS_PACKS_HABILITADOS=${TORRENTS_PACKS_HABILITADOS:-true}
+      - TORRENTS_PACKS_QUALQUER_IDIOMA=${TORRENTS_PACKS_QUALQUER_IDIOMA:-true}
+      # Fase 2B: o Knaben enxerga os packs que o Torrentio e os trackers nativos
+      # não acham, e os addons Stremio hospedados entram por imdb_id, no mesmo
+      # protocolo do Torrentio. Sem estas no environment, o container cai nos
+      # padrões do config/services.php e o valor do .env da raiz não vale.
+      - TORRENTS_KNABEN_HABILITADO=${TORRENTS_KNABEN_HABILITADO:-true}
+      - TORRENTS_KNABEN_URL=${TORRENTS_KNABEN_URL:-https://api.knaben.org/v1}
+      - TORRENTS_KNABEN_LIMITE=${TORRENTS_KNABEN_LIMITE:-20}
+      - TORRENTS_STREMIO_ADDONS=${TORRENTS_STREMIO_ADDONS:-https://thepiratebay-plus.strem.fun}
     depends_on:
       init:
         condition: service_completed_successfully

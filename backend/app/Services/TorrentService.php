@@ -156,6 +156,35 @@ class TorrentService
             }
         }
 
+        /*
+         * Os packs entram por último, e a posição é a decisão que protege os
+         * episódios que hoje funcionam: a cascata para no primeiro termo que
+         * devolve dublado, então uma série recente continua sendo resolvida só
+         * com os termos de episódio. O pack só é consultado quando nenhum deles
+         * achou nada — que é exatamente o caso das séries antigas, cujos
+         * episódios isolados já não têm seeds.
+         */
+        if (config('services.torrents.packs_habilitados', true)) {
+            foreach ([$titulo, $tituloOriginal] as $candidato) {
+                $candidato = trim((string) $candidato);
+
+                if ($candidato === '') {
+                    continue;
+                }
+
+                $packs = array_merge(
+                    TermosBusca::packTemporada($candidato, $temporada),
+                    TermosBusca::packTemporadaDublado($candidato, $temporada),
+                );
+
+                foreach ($packs as $pack) {
+                    if (! in_array($pack, $titulos, true)) {
+                        $titulos[] = $pack;
+                    }
+                }
+            }
+        }
+
         return $titulos;
     }
 
@@ -188,14 +217,22 @@ class TorrentService
         // outros idiomas na lista é trabalho perdido: o frontend tenta a fonte,
         // falha e passa para a próxima. O corte é reversível por configuração
         // para o dia em que legendado e original forem suportados.
+        //
+        // O pack de temporada é a exceção: quase nunca vem marcado como dublado,
+        // e é justamente o último recurso de uma série antiga. Barrá-lo aqui
+        // repetiria, na ordenação, o descarte que a cascata já isentou — e a
+        // busca voltaria vazia. Ele passa, mas entra atrás do dublado porque a
+        // ordenação por prioridade de idioma o coloca depois.
         if (config('services.torrents.apenas_pt_br', true)) {
+            $packQualquerIdioma = (bool) config('services.torrents.packs_qualquer_idioma', true);
+
             $fontes = array_values(array_filter(
                 $fontes,
                 fn (array $fonte) => in_array(
                     $fonte['idioma'] ?? '',
                     [IdiomaFonte::DUBLADO->value, IdiomaFonte::DUAL_AUDIO->value],
                     true
-                )
+                ) || ($packQualquerIdioma && ($fonte['pack'] ?? false) === true)
             ));
         }
 

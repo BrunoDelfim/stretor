@@ -859,6 +859,238 @@ agora é a própria sessão, que já precisa esperar os dados de qualquer forma.
 - O motor de torrent roda no media-service (biblioteca `webtorrent`), que
   conecta a fonte e serve o vídeo convertido em HLS.
 
+### Packs de temporada — o socorro das séries antigas
+
+Série antiga não falha por falta de provedor: falha por falta de seed. O episódio
+isolado de *American Horror Story* já não tem quem o sirva, mas o **pack da
+temporada** segue vivo porque interessa a muita gente de uma vez. Por isso a busca
+passou a procurar o pacote quando os termos de episódio não acham fonte dublada.
+
+- Os termos são montados por
+  [`TermosBusca::packTemporada()`](../backend/app/Services/Torrents/TermosBusca.php:94)
+  e [`TermosBusca::packTemporadaDublado()`](../backend/app/Services/Torrents/TermosBusca.php:115):
+  `<título> S01 completa`, `<título> Temporada 1 completa`,
+  `<título> Season 1 complete` e as versões `... completa dublada`.
+- Eles entram **no fim** da lista de termos de episódio em
+  [`TorrentService::titulosDeEpisodio()`](../backend/app/Services/TorrentService.php:131),
+  depois dos termos de episódio e dos dublados. A cascata para no primeiro termo
+  que rende dublado, então uma série que já funciona continua resolvendo nos
+  termos de episódio: o pack só é consultado quando os anteriores se esgotam.
+- A frente é só de episódio. O fluxo de filme não passa por `titulosDeEpisodio()`,
+  então não vê termo de pack nenhum.
+- Um pack da temporada errada tem seeds de sobra — e abriria o episódio errado.
+  [`TermosBusca::correspondeAoEpisodio()`](../backend/app/Services/Torrents/TermosBusca.php:240)
+  ganhou um crivo conservador: quando o título **declara** uma temporada (lida em
+  [`TermosBusca::temporadaDoTitulo()`](../backend/app/Services/Torrents/TermosBusca.php:279))
+  diferente da pedida, a fonte é descartada. Sem marcador de pack, o título passa
+  como sempre passou.
+- Como o pack muda o resultado de entradas já cacheadas no Redis, a
+  `VERSAO_CACHE` do
+  [`CatalogoProvedores`](../backend/app/Services/Torrents/CatalogoProvedores.php:49)
+  subiu para `10`, invalidando as respostas antigas.
+- O pack é **um torrent com todos os episódios**. O media-service passou a aceitar
+  `temporada`/`episodio` em
+  [`criarSessao()`](../media-service/src/services/sessoes.js:178) e escolhe o
+  arquivo do episódio dentro do pacote em
+  [`escolherArquivoDeVideo()`](../media-service/src/services/sessoes.js:1242),
+  casando `S01E02`/`T01E02`/`1x02`/`Temporada 1 ... Episódio 2` em
+  [`caminhoCorrespondeAoEpisodio()`](../media-service/src/services/sessoes.js:1283).
+  Sem correspondência, mantém o comportamento antigo (maior arquivo de vídeo).
+  Chamadas que mandam só `magnet` seguem válidas — o par é opcional.
+- O frontend propaga o par pelo
+  [`streamingService.criarSessao()`](../frontend/src/services/streaming.js:74) e pelo
+  [`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:1506).
+
+#### A exceção de idioma do pack
+
+Os packs entraram na busca, mas no primeiro teste real — *American Horror Story*,
+S01E01 — continuaram sem aparecer: a busca achava o pacote e o **descartava**
+depois. O corte de `apenas_pt_br` roda em **dois** pontos, e os dois reprovavam o
+pack:
+
+1. [`CatalogoProvedores::aproveitaveis()`](../backend/app/Services/Torrents/CatalogoProvedores.php:414),
+   ainda dentro da cascata, para o `temDublado()` julgar cada degrau sobre fontes
+   que de fato atendem ao pedido;
+2. [`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:209),
+   antes de devolver a lista ao frontend.
+
+Como o pack de série antiga quase nunca vem marcado como dublado, os dois cortes o
+jogavam fora — e a lista voltava vazia, o oposto do socorro pretendido. A correção
+é cirúrgica e não afrouxa o corte para o resto:
+
+- A fonte é **marcada como pack ainda na cascata**, em
+  [`CatalogoProvedores::marcarPacks()`](../backend/app/Services/Torrents/CatalogoProvedores.php:361),
+  chamado por `buscarGrupo()`. A marca nasce ali, e não no chamador, porque é este
+  método que entrega a lista já filtrada: ela precisa sobreviver ao filtro de
+  `aproveitaveis()` e à ordenação posterior. O chamador só informa se o termo
+  corrente é de pack, por
+  [`eTermoDePack()`](../backend/app/Services/Torrents/CatalogoProvedores.php:334),
+  que devolve `false` sempre que não há temporada **e** episódio — um filme jamais
+  é tratado como pack. A marca saiu do termo e passou a sair do **conteúdo** da
+  fonte; o porquê está em
+  [O pack se prova pelo nome do torrent](#o-pack-se-prova-pelo-nome-do-torrent-não-pelo-termo-consultado).
+- [`TermosBusca::eTermoDePack()`](../backend/app/Services/Torrents/TermosBusca.php:135)
+  reconhece o termo exigindo **os dois** sinais: um marcador de pacote
+  (`completa`/`completo`/`complete`/`superpack`) e uma numeração de temporada. Um
+  filme de título *The Complete ...* que passe por aqui não é confundido.
+- Os dois cortes passam a isentar **apenas** a fonte marcada como pack:
+  [`aproveitaveis()`](../backend/app/Services/Torrents/CatalogoProvedores.php:414)
+  e [`ordenar()`](../backend/app/Services/TorrentService.php:226). Episódio comum e
+  filme continuam sob o corte normal.
+- O pack entra **atrás do dublado**: a ordenação por prioridade de idioma
+  ([`IdiomaFonte::prioridade()`](../backend/app/Enums/IdiomaFonte.php:39)) já coloca
+  dublado e dual antes de legendado/original, então o pack só é usado quando não há
+  áudio PT-BR melhor.
+- A exceção é reversível por configuração: `TORRENTS_PACKS_QUALQUER_IDIOMA`
+  (padrão `true`). Em `false`, o comportamento anterior volta — pack desmarcado
+  volta a ser descartado pelo corte. Veja
+  [Ambiente](ambiente.md#variáveis-de-ambiente).
+- A `VERSAO_CACHE` subiu para `10`: a mudança atinge entradas já cacheadas, e a
+  chave precisa mudar para a reconsulta valer na próxima busca.
+- O log `Etapa da cascata de torrents concluída.` ganhou o campo `packs`, com
+  quantas fontes atravessaram pela exceção. Sem esse número, um pack que entra
+  legendado some no total de `fontes` e não dá para saber se a exceção funcionou.
+
+#### O pack se prova pelo nome do torrent, não pelo termo consultado
+
+O primeiro teste com o pack já marcado ainda devolvia **uma** fonte. O problema não
+estava na exceção de idioma, e sim em *quem* era marcado como pack: a marca saía do
+**termo** da consulta, não do conteúdo. Todo resultado do termo `S01 completa`
+virava pack — inclusive um `S01E01` avulso que respondera àquele termo —, enquanto o
+pacote de verdade, que voltara sob um termo de episódio, nunca era marcado e caía no
+corte de `apenas_pt_br`.
+
+A prova do pack está no **nome do torrent**, e ele não é o nome do arquivo. O
+protocolo Stremio traz os dois: `behaviorHints.filename` é o arquivo *dentro* do
+torrent (aponta para um episódio só) e a primeira linha do rótulo é o nome do
+release (a temporada inteira). Como o filho esconde o pai, ler só o arquivo perdia a
+evidência do pacote. A leitura passou a guardar os dois: `titulo` continua sendo o
+arquivo (bom para exibir e conferir numeração) e `release` leva o nome do torrent,
+como se vê em
+[`LeituraStreamStremio::normalizarStream()`](../backend/app/Services/Torrents/LeituraStreamStremio.php:28).
+
+A marcação então deixou de olhar para o termo:
+
+- [`CatalogoProvedores::marcarPacks()`](../backend/app/Services/Torrents/CatalogoProvedores.php:361)
+  decide por fonte, lendo `release ?? titulo`.
+- Um título que **declara episódio** nunca é pack —
+  [`TermosBusca::numeracaoDoTitulo()`](../backend/app/Services/Torrents/TermosBusca.php:383)
+  corta de saída. É o que impede o próprio filho do pacote
+  (`Season 1 - Episode 1 - Pilot.mkv`) de ser tratado como pacote.
+- Sem numeração de episódio, é pack quem **cobre a temporada pedida**, segundo
+  [`TermosBusca::temporadaNoRelease()`](../backend/app/Services/Torrents/TermosBusca.php:327).
+  Ele é mais tolerante que o `temporadaDoTitulo()` do corte de numeração — aceita
+  `S01`, `Temporada 1`, `Season 1`, `1ª Temporada` e as **faixas** (`S1-S5`,
+  `Seasons 1 to 8`) —, porque o socorro da série antiga costuma vir em pacotes
+  multi-temporada.
+- Quando o termo corrente **é** de pack, ele ainda vale como último recurso, mas só
+  para o que não tem temporada declarada: o marcador fraco não promove um feixe de
+  episódios a pacote.
+
+#### O idioma do pack mora no nome do torrent
+
+Marcar o pack certo revelou um segundo engano: o pacote nacional *"American Horror
+Story 1ª Temporada [2011 DUAL AUDIO] 720p"* aparecia como **Idioma original**. A
+classificação de idioma lia só o nome do arquivo — e o arquivo de um pacote raramente
+carrega a tag (`S01E01.mkv`). Quem diz *DUAL ÁUDIO* é o release.
+
+[`NormalizaFonte::montarFonte()`](../backend/app/Services/Torrents/NormalizaFonte.php:37)
+passou a aceitar `idioma_titulo`, um texto alternativo para a dedução, e a leitura do
+Stremio manda os **dois** nomes ali. O resultado é o pack dual subindo ao lado do
+dublado, em vez de se perder entre os originais — no teste da série, a ordem veio com
+o dublado em 1º, o pack Dual Áudio em 2º e os demais em idioma original.
+
+### Knaben e addons Stremio hospedados — o socorro que faltava
+
+A exceção de pack destravou o que a cascata **já achava** — ela não faz a busca achar
+mais. No teste da série antiga, mesmo com a exceção, a busca nativa voltava com
+**uma** fonte: os termos de pack passavam por provedores que simplesmente não indexam
+o release nacional. A Fase 2B acrescenta duas fontes ao degrau 1, por dois caminhos —
+ambos atrás de configuração e desligáveis sem reverter código.
+
+#### `ProvedorKnaben` — meta-buscador com API JSON
+
+O Knaben agrega dezenas de indexadores atrás de uma API JSON sem chave e varre
+trackers que os nossos provedores nativos não cobrem. É de lá que saem os packs
+nacionais das séries antigas: nos testes, `S01 completa` devolveu o *"American Horror
+Story S01 Completa Legendado PT-BR"*, e `Temporada 1` devolveu o *"1ª Temporada [2011
+DUAL AUDIO] 720p"*.
+
+A armadilha do contrato é o `search_type`. Com `"score"` — o valor que a maioria dos
+exemplos usa — a API **ignora a `query`** e devolve os torrents mais semeados do
+acervo inteiro: perguntar por *American Horror Story* devolvia Adobe Photoshop. Só com
+`"100%"` a API trata a `query` como busca de verdade, exigindo que todos os termos
+casem. Está fixo e comentado em
+[`ProvedorKnaben::buscar()`](../backend/app/Services/Torrents/ProvedorKnaben.php:58) —
+trocar de volta por `"score"` ressuscita o bug em silêncio.
+
+Outras decisões vieram dos testes:
+
+- **`order_by`**: a API aceita `seeders`, `date`, `size` e `peers`. `relevance` não
+  existe e responde HTTP 400; ordenamos por `seeders` para os packs vivos subirem.
+- **Piso de seeds**: o Knaben informa a contagem, mas ela vem de indexadores em cache
+  e os packs antigos aparecem com `0` mesmo vivos — foi o caso do próprio pack PT-BR.
+  Como [`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:211)
+  descarta quem tem zero seeds, tratar esse `0` como definitivo repetiria o descarte
+  que a Fase 2 veio resolver. O provedor aplica o mesmo piso `SEEDS_NAO_MEDIDOS` de
+  [`NormalizaFonte`](../backend/app/Services/Torrents/NormalizaFonte.php:1); quem
+  confirma se a fonte vive é o media-service, que mede os peers na prática.
+- **Corte de numeração**: um pack de `S01` pode vir junto de um `S10E01` da mesma
+  série, e o dublado de outra temporada subiria ao topo. O corte é o mesmo dos outros
+  provedores por nome; releases sem numeração (os packs) passam.
+
+#### `ProvedorAddonStremio` — addons hospedados por `imdb_id`
+
+O protocolo do Stremio provou o valor: um addon público responde por `imdb_id` (e por
+temporada/episódio, no caso de série) com uma lista de streams já pronta, varrendo
+trackers que o backend não consulta sozinho. Em vez de um provedor por addon, o
+[`ProvedorAddonStremio`](../backend/app/Services/Torrents/ProvedorAddonStremio.php:31)
+consulta **todos os endereços** de `TORRENTS_STREMIO_ADDONS` em paralelo
+(`Http::pool`) e trata cada resposta pelo mesmo contrato.
+
+- Série usa `/stream/series/{imdb}:{temporada}:{episodio}.json`; filme, só
+  `/stream/movie/{imdb}.json`. É o mesmo caminho do Torrentio, e trocar um pelo outro
+  devolve o conteúdo errado (o mesmo `imdb_id` serve à série e a um filme homônimo).
+- Cada entrada pode trazer o **segmento de configuração** junto do host (ex.:
+  `https://torrentio.strem.fun/language=portuguese`); o provedor só concatena
+  `/stream/...` ao final e o segmento chega intacto ao addon.
+- O corte de numeração e a deduplicação por infohash são os da cascata: o mesmo
+  torrent em dois addons entra uma vez só.
+- O Torrentio tem provedor próprio (carrega a configuração de idioma na URL) e não
+  precisa estar nesta lista; como a mesclagem deduplica por hash, listá-lo aqui seria
+  inofensivo.
+
+#### A leitura do protocolo Stremio virou trait
+
+O Torrentio já lia esse mesmo dialeto: todo o metadado (release, seeds, tamanho)
+vem embutido no rótulo `title`, com emojis separando os campos. Com um segundo
+provedor falando o mesmo protocolo, a leitura saiu de
+[`ProvedorTorrentio`](../backend/app/Services/Torrents/ProvedorTorrentio.php:27) para a
+trait [`LeituraStreamStremio`](../backend/app/Services/Torrents/LeituraStreamStremio.php:20)
+— `normalizarStream()`, `nomeDoRotulo()`, `seedsDoRotulo()`, `tamanhoDoRotulo()` e
+`idiomaDoNome()`. O provedor do Torrentio ficou só com o que é dele (a configuração de
+idioma na URL), e o comportamento não mudou.
+
+O que mudou depois — e vale para os dois provedores — é `normalizarStream()` passar a
+entregar **dois** nomes adiante: o arquivo como `titulo` e o torrent como `release`,
+este último alimentando tanto a marcação de pack quanto a dedução de idioma. Veja
+[O pack se prova pelo nome do torrent](#o-pack-se-prova-pelo-nome-do-torrent-não-pelo-termo-consultado).
+
+#### Variáveis da Fase 2B
+
+| Variável | Padrão | O que faz |
+|----------|--------|-----------|
+| `TORRENTS_KNABEN_HABILITADO` | `true` | Liga/desliga o Knaben. Ele bate num único host externo; se ele cair ou passar a limitar requisições, dá para desligá-lo sem tocar no código. |
+| `TORRENTS_KNABEN_URL` | `https://api.knaben.org/v1` | Endpoint da API. Use `api.knaben.org` — o `api.knaben.eu` responde 503. Vazio também desliga o provedor. |
+| `TORRENTS_KNABEN_LIMITE` | `20` | Quantos resultados pedir por termo. Cada termo é uma requisição; o corte de idioma descarta o resto. |
+| `TORRENTS_STREMIO_ADDONS` | `https://thepiratebay-plus.strem.fun` | Addons Stremio hospedados, por vírgula. O Torrentio tem provedor próprio e não precisa estar aqui. |
+
+A `VERSAO_CACHE` subiu de `6` para `10`. Cada provedor novo e cada correção de leitura
+mudam o conjunto — ou o próprio texto — das fontes já cacheadas no Redis (as entradas
+antigas guardam o `titulo`, o `idioma` e até a marca de pack do código anterior), então
+a chave precisa mudar para a reconsulta valer já na próxima busca, sem depender de
+limpar o Redis à mão.
+
 ### Ajustes obrigatórios no media-service
 
 Problemas de ambiente e de streaming encontrados na validação, já tratados:

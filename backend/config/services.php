@@ -54,9 +54,10 @@ return [
      * Busca de fontes para reprodução, organizada em três degraus.
      *
      * O primeiro degrau é a busca nativa do backend: HTTP direto nos trackers
-     * públicos PT-BR, mais os acervos amplos (APIBay, Torrentio e BT4G). É aqui
-     * que o sistema faz por conta própria o trabalho; nenhum serviço externo
-     * precisa estar de pé para achar um release dublado.
+     * públicos PT-BR, mais os acervos amplos (APIBay, Knaben, Torrentio, addons
+     * Stremio hospedados e BT4G). É aqui que o sistema faz por conta própria o
+     * trabalho; nenhum serviço externo precisa estar de pé para achar um release
+     * dublado.
      *
      * O segundo degrau é o indexador Torznab (Prowlarr), e o terceiro é o YTS.
      * A cascata só desce um degrau quando o anterior não devolveu fonte dublada
@@ -102,6 +103,38 @@ return [
         // trackers indexados não têm. A lista de espelhos é separada por
         // vírgula; o domínio principal sai do ar com frequência.
         'bt4g_urls' => env('TORRENTS_BT4G_URLS', 'https://bt4gprx.com'),
+
+        /*
+         * Knaben — meta-buscador dos indexadores públicos, por HTTP JSON.
+         *
+         * Cobre trackers que os provedores nativos não varrem e é de onde saem
+         * os packs nacionais das séries antigas (nos testes, o release "S01
+         * Completa Legendado PT-BR"). A chave liga/desliga existe porque ele
+         * bate num único host externo; se ele cair ou passar a limitar
+         * requisições, dá para desligá-lo sem tocar no código.
+         *
+         * Atenção ao contrato: ele só busca de verdade com `search_type=100%`
+         * (ver [`ProvedorKnaben`]).
+         */
+        'knaben_habilitado' => (bool) env('TORRENTS_KNABEN_HABILITADO', true),
+        'knaben_url' => env('TORRENTS_KNABEN_URL', 'https://api.knaben.org/v1'),
+        // Quantos resultados pedir por termo. Curto de propósito: cada termo é
+        // uma requisição, e o corte de idioma da cascata descarta o resto.
+        'knaben_limite' => (int) env('TORRENTS_KNABEN_LIMITE', 20),
+
+        /*
+         * Addons Stremio hospedados, separados por vírgula. O provedor genérico
+         * consulta cada endereço pelo protocolo `/stream/{type}/{id}.json` e
+         * reaproveita a leitura do Torrentio. Cada entrada pode trazer o caminho
+         * de configuração junto do host (ex.: `.../language=portuguese`).
+         *
+         * O Torrentio tem provedor próprio e não precisa estar aqui; a lista é
+         * para os demais — hoje, o TPB+.
+         */
+        'stremio_addons' => $lista(
+            env('TORRENTS_STREMIO_ADDONS'),
+            ['https://thepiratebay-plus.strem.fun']
+        ),
 
         /*
          * Teto de páginas de detalhe abertas em paralelo por busca. Cada detalhe
@@ -171,6 +204,33 @@ return [
          * rápido. Desligue quando o suporte a legendado/original entrar.
          */
         'apenas_pt_br' => (bool) env('TORRENTS_APENAS_PT_BR', true),
+
+        /*
+         * Busca de packs de temporada no fim da cascata de episódio.
+         *
+         * Um episódio isolado de série antiga raramente tem seeds; o pack da
+         * temporada segue vivo porque é o que a comunidade ainda procura. Com
+         * isto ligado, quando nenhum termo de episódio achou fonte dublada, a
+         * busca tenta "S01 completa" / "Temporada 1 completa". O media-service
+         * baixa só o arquivo do episódio pedido de dentro do pack.
+         *
+         * Fica atrás de configuração para poder desligar sem reverter código.
+         */
+        'packs_habilitados' => (bool) env('TORRENTS_PACKS_HABILITADOS', true),
+
+        /*
+         * Exceção de idioma só para pack de temporada.
+         *
+         * O corte de `apenas_pt_br` existe porque o player não aproveita áudio em
+         * outro idioma — mas o pack é o último recurso de uma série antiga, e a
+         * esmagadora maioria deles não vem marcada como dublado. Sem a exceção, o
+         * pack é encontrado e descartado, e a lista volta vazia (foi o caso de
+         * American Horror Story). Com isto ligado, só a fonte **marcada como
+         * pack** atravessa o corte sem ser dublada; episódios e filmes continuam
+         * sujeitos ao corte normal. O pack entra no fim da lista, atrás do
+         * dublado, quando ele existe.
+         */
+        'packs_qualquer_idioma' => (bool) env('TORRENTS_PACKS_QUALQUER_IDIOMA', true),
     ],
 
     // --- Provisionamento do Prowlarr (degrau 2) ---
