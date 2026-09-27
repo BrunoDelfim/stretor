@@ -24,10 +24,10 @@ use Illuminate\Support\Facades\Log;
  * 3. **YTS** ([`ProvedorYts`]) — a rede de segurança em inglês, quando nem o
  *    indexador achou algo em PT-BR.
  *
- * A cascata só avança de degrau quando o degrau atual **não devolveu nenhuma
- * fonte dublada válida**. Um filme que tem release nacional nunca chega a
- * consultar o YTS, e o contrário também vale: sem chave do indexador, a busca
- * nativa segue funcionando e o fluxo não para.
+ * A cascata só avança de degrau quando o degrau atual **não juntou fontes PT-BR
+ * suficientes** (`meta_pt_br_coleta`). Um filme que tem release nacional nunca
+ * chega a consultar o YTS, e o contrário também vale: sem chave do indexador, a
+ * busca nativa segue funcionando e o fluxo não para.
  *
  * Cada provedor é chamado isolado e cacheado individualmente. O cache é por
  * provedor (e não do resultado final) para que a queda de um site não invalide o
@@ -46,7 +46,7 @@ class CatalogoProvedores
      * mudança de comportamento de um provedor para a reconsulta valer já na
      * próxima busca, sem depender de limpar o Redis à mão.
      */
-    private const VERSAO_CACHE = 11;
+    private const VERSAO_CACHE = 12;
 
     /**
      * Provedores do primeiro degrau que buscam **por nome**.
@@ -90,6 +90,26 @@ class CatalogoProvedores
      */
     private int $barradasPeloGate = 0;
 
+    /**
+     * Quantas inspeções de conteúdo de pack a busca atual já disparou.
+     *
+     * Cada inspeção é uma conexão e uma espera no media-service, então a busca
+     * não pode abrir todos os packs que encontrar. O teto (`inspecao_packs_limite`)
+     * vale por busca e é zerado no início de `buscar()`.
+     */
+    private int $inspecoes = 0;
+
+    /**
+     * Ids (infohash) dos packs já inspecionados nesta busca.
+     *
+     * O mesmo pack reaparece em termos e degraus diferentes (o Torrentio e o
+     * indexador costumam devolver os mesmos lançamentos). Sem este conjunto, o
+     * orçamento de inspeções seria gasto reabrindo o que já foi julgado.
+     *
+     * @var array<string, bool>
+     */
+    private array $packsInspecionados = [];
+
     public function __construct(
         ProvedorTrackersBr $trackersBr,
         ProvedorApibay $apibay,
@@ -99,6 +119,7 @@ class CatalogoProvedores
         ProvedorBt4g $bt4g,
         private readonly ProvedorTorznab $torznab,
         private readonly ProvedorYts $yts,
+        private readonly InspecaoPack $inspecao,
     ) {
         $this->primarios = [$trackersBr, $apibay, $knaben, $bt4g];
         $this->porIdentificador = [$torrentio, $addonStremio];
@@ -123,18 +144,25 @@ class CatalogoProvedores
         $fontes = [];
 
         /*
+         * Contadores da busca atual. O de inspeções limita quantos packs abrimos
+         * (cada abertura é uma conexão e uma espera) e o conjunto evita reabrir o
+         * mesmo pack quando ele reaparece em outro termo ou em outro degrau.
+         */
+        $this->inspecoes = 0;
+        $this->packsInspecionados = [];
+
+        /*
          * Os provedores por identificador (Torrentio) são consultados uma única
          * vez, com o termo puro. O termo não muda a resposta deles — só o
          * `imdb_id` importa —, então repetir a chamada para cada variação dublada
          * seria gastar o provedor mais lento da cascata à toa.
          *
-         * O que ele devolve entra na lista, mas **não** decide a parada. Antes,
-         * esta fonte era mesclada ao acumulado e o `temDublado()` do laço de
-         * termos a enxergava: o Torrentio respondia uma única fonte rotulada
-         * "Dublado" (S01E01 720p PORTUGUÊS BR) e a cascata retornava logo no
-         * primeiro termo — que é o termo puro, sem a tag. As variações dubladas
-         * montadas pelo TorrentService e o degrau 2 inteiro nunca rodavam, e a
-         * busca de episódio terminava com uma fonte só, mesmo havendo mais.
+         * O que ele devolve entra na coleta e conta para o orçamento de fontes
+         * PT-BR. Antes, esta fonte era a que encerrava o laço no primeiro termo —
+         * o Torrentio respondia uma única fonte rotulada "Dublado" (S01E01 720p
+         * PORTUGUÊS BR) e as variações dubladas nunca eram perguntadas. O
+         * orçamento muda isso: ele olha o **acumulado** contra uma meta, então
+         * uma fonte boa não cala a busca, só a aproxima do fim.
          */
         $fontes = $this->mesclar(
             $fontes,
@@ -147,12 +175,13 @@ class CatalogoProvedores
          * "Spider-Man"). Tentamos os dois no degrau nativo antes de descer para o
          * indexador — é mais barato insistir no caminho principal do que delegar.
          *
-         * Cada título já chega com as variações dubladas montadas pelo
-         * TorrentService, então o `temDublado()` encerra a cascata assim que o
-         * release nacional aparece. O julgamento é sobre o que **esta etapa**
-         * devolveu, não sobre a lista acumulada: uma fonte promissora do degrau
-         * anterior (ou do grupo por identificador) não pode calar a busca que
-         * existe justamente para achar o dublado.
+         * Cada título chega com as variações dubladas montadas pelo
+         * TorrentService, e a cascata **não para mais na primeira fonte PT-BR**:
+         * ela segue somando até juntar a meta de coleta ou esgotar os termos.
+         * Parar no primeiro resultado era o que enchia o resto da lista com
+         * originais; agora o corte de idioma nem descarta mais nada — só etiqueta
+         * — e quem decide quanto de reserva entra é a montagem final, no
+         * TorrentService.
          */
         foreach ($titulos as $titulo) {
             $termoDePack = $this->eTermoDePack($titulo, $temporada, $episodio);
@@ -163,12 +192,14 @@ class CatalogoProvedores
 
             $this->registrarEtapa('nativos', $titulo, $desteTermo, $termoDeSerie, $this->barradasPeloGate);
 
-            if ($this->temDublado($desteTermo)) {
+            if ($this->coletaSuficiente($fontes)) {
                 return $fontes;
             }
         }
 
-        // Degrau 2: indexador. Só é consultado se a busca nativa não achou dublado.
+        // Degrau 2: indexador. Só é consultado se o degrau nativo não juntou a meta
+        // de fontes PT-BR — e para assim que a meta é alcançada, sem varrer todos
+        // os termos restantes.
         foreach ($titulos as $titulo) {
             $termoDePack = $this->eTermoDePack($titulo, $temporada, $episodio);
             $termoDeSerie = $this->eTermoDeSerie($titulo, $temporada, $episodio);
@@ -178,7 +209,7 @@ class CatalogoProvedores
 
             $this->registrarEtapa('indexador', $titulo, $desteTermo, $termoDeSerie, $this->barradasPeloGate);
 
-            if ($this->temDublado($desteTermo)) {
+            if ($this->coletaSuficiente($fontes)) {
                 return $fontes;
             }
         }
@@ -215,14 +246,11 @@ class CatalogoProvedores
     /**
      * Diz se a lista contém alguma fonte dublada ou em dual áudio.
      *
-     * É o critério de parada da cascata: dublado e dual áudio atendem o usuário
-     * brasileiro, então qualquer um dos dois encerra a busca pelos degraus
-     * seguintes.
-     *
-     * Quem decide a parada entrega **o que a própria etapa devolveu**, nunca a
-     * lista acumulada. A diferença não é cosmética: julgada sobre o acumulado, a
-     * fonte do Torrentio (que abre o degrau 1) encerrava o laço no primeiro termo
-     * e as variações dubladas ficavam sem ser perguntadas.
+     * Deixou de ser o critério de parada da cascata: quem decide a parada agora é
+     * o **orçamento de coleta** (`coletaSuficiente()`), que conta o acumulado de
+     * fontes PT-BR. Este método continua útil como leitura rápida da lista: o
+     * TorrentService o usa no log para separar "não existe release dublado" de
+     * "a classificação de idioma falhou".
      *
      * @param  array<int, array<string, mixed>>  $fontes
      */
@@ -240,15 +268,47 @@ class CatalogoProvedores
     }
 
     /**
-     * Registra o que cada etapa da cascata devolveu, com quantas dubladas.
+     * Conta quantas fontes da lista são PT-BR (dublado ou dual áudio).
+     *
+     * A leitura é pela etiqueta `pt_br`, gravada em `aproveitaveis()` a partir do
+     * idioma — e promovida a dublado quando a inspeção do conteúdo de um pack
+     * prova o PT-BR. Contar pelo idioma cru perderia justamente esses packs.
+     *
+     * @param  array<int, array<string, mixed>>  $fontes
+     */
+    private function ptBrAcumulado(array $fontes): int
+    {
+        return count(array_filter(
+            $fontes,
+            fn (array $fonte) => ($fonte['pt_br'] ?? false) === true
+        ));
+    }
+
+    /**
+     * Diz se a coleta já juntou fontes PT-BR suficientes para parar de buscar.
+     *
+     * A meta (`meta_pt_br_coleta`) é deliberadamente menor que o mínimo da lista
+     * final: o objetivo é garantir que o dublado venha primeiro, não catalogar
+     * todas as fontes. Assim que há base PT-BR, a cascata para e não faz o
+     * usuário esperar pelos degraus restantes — a reserva, se faltar, é montada
+     * depois com o que já foi recolhido.
+     *
+     * @param  array<int, array<string, mixed>>  $fontes
+     */
+    private function coletaSuficiente(array $fontes): bool
+    {
+        $meta = (int) config('services.torrents.meta_pt_br_coleta', 6);
+
+        return $this->ptBrAcumulado($fontes) >= $meta;
+    }
+
+    /**
+     * Registra o que cada etapa da cascata devolveu, com quantas fontes PT-BR.
      *
      * Sem este retrato, "só veio uma fonte" fica indistinguível de "a etapa não
-     * rodou". Foi o que a busca de episódio escondeu: o degrau nativo retornava no
-     * primeiro termo por causa da fonte do Torrentio, e nada no log dizia que os
-     * termos dublados e o indexador tinham ficado por executar.
-     *
-     * O `encerra` aqui é telemetria; quem para a cascata é o laço, com este
-     * mesmo conjunto.
+     * rodou". O `pt_br` e a `reserva` são o par que conta a história nova: o
+     * primeiro diz quanto desta etapa serve direto, o segundo quanto estaria
+     * disponível para completar a lista se faltasse dublado.
      *
      * @param  array<int, array<string, mixed>>  $fontes
      */
@@ -259,21 +319,17 @@ class CatalogoProvedores
         bool $termoDeSerie = false,
         int $barradasPeloGate = 0,
     ): void {
+        $ptBr = $this->ptBrAcumulado($fontes);
+
         Log::info('Etapa da cascata de torrents concluída.', [
             'degrau' => $degrau,
             'titulo' => $titulo,
             'fontes' => count($fontes),
-            'dubladas' => count(array_filter(
-                $fontes,
-                fn (array $fonte) => in_array(
-                    $fonte['idioma'] ?? '',
-                    [IdiomaFonte::DUBLADO->value, IdiomaFonte::DUAL_AUDIO->value],
-                    true
-                )
-            )),
-            // Quantos packs passaram pela exceção de idioma. Sem este número, um
-            // pack que entra legendado some no total de "fontes" e não dá para
-            // saber se a exceção funcionou.
+            'pt_br' => $ptBr,
+            'reserva' => count($fontes) - $ptBr,
+            // Quantos packs entraram nesta etapa. Sem este número, um pack que
+            // entra pela inspeção some no total de "fontes" e não dá para saber
+            // se a exceção do pack funcionou.
             'packs' => count(array_filter(
                 $fontes,
                 fn (array $fonte) => ($fonte['pack'] ?? false) === true
@@ -284,7 +340,6 @@ class CatalogoProvedores
             // `barradas_gate` diz quanto o gate descartou por falta de temporada.
             'termo_serie' => $termoDeSerie,
             'barradas_gate' => $barradasPeloGate,
-            'encerra' => $this->temDublado($fontes),
         ]);
     }
 
@@ -406,6 +461,10 @@ class CatalogoProvedores
      * - quando o termo era de pack e o nome não traz temporada reconhecível,
      *   confiamos no termo: o provedor nem sempre repete a temporada no nome.
      *
+     * Marcar como pack não basta: o idioma ainda pode estar em aberto no nome.
+     * Um pack marcado e sem PT-BR provado segue para `confirmarIdiomaDoPack()`,
+     * que tenta provar o dublado pelo conteúdo.
+     *
      * @param  array<int, array<string, mixed>>  $fontes
      * @return array<int, array<string, mixed>>
      */
@@ -422,30 +481,76 @@ class CatalogoProvedores
                 return $fonte;
             }
 
-            if (TermosBusca::temporadaNoRelease($nome, $temporada)) {
-                $fonte['pack'] = true;
+            $ePack = TermosBusca::temporadaNoRelease($nome, $temporada)
+                || ($termoDePack && TermosBusca::temporadaDoTitulo($nome) === null);
 
+            if (! $ePack) {
                 return $fonte;
             }
 
-            if ($termoDePack && TermosBusca::temporadaDoTitulo($nome) === null) {
-                $fonte['pack'] = true;
-            }
+            $fonte['pack'] = true;
 
-            return $fonte;
+            return $this->confirmarIdiomaDoPack($fonte);
         }, $fontes);
+    }
+
+    /**
+     * Confirma, pelo conteúdo, se um pack sem idioma no nome é dublado.
+     *
+     * O nome do pack é a primeira prova de idioma, mas muitos packs nacionais
+     * não a trazem: o "Dublado" mora na pasta de dentro ("Temporada 1 Dublado/")
+     * ou no nome de cada episódio. Quando o nome deixa o idioma em aberto — nem
+     * dublado, nem dual —, abrimos os metadados pelo media-service e lemos os
+     * caminhos. Se algum prova PT-BR, o idioma do pack é promovido a dublado e
+     * ele passa a contar como fonte boa na lista.
+     *
+     * O esforço é limitado de propósito: cada abertura é uma conexão e uma
+     * espera, e a busca não pode virar uma varredura de dezenas de packs. O teto
+     * (`inspecao_packs_limite`) e o conjunto de ids já vistos valem por busca.
+     *
+     * Falha de leitura não rebaixa nada: o pack fica como estava (reserva) e a
+     * próxima busca tenta de novo — o cache só guarda veredito definitivo.
+     *
+     * @param  array<string, mixed>  $fonte
+     * @return array<string, mixed>
+     */
+    private function confirmarIdiomaDoPack(array $fonte): array
+    {
+        $idioma = (string) ($fonte['idioma'] ?? '');
+
+        // O nome já provou PT-BR: não há o que inspecionar.
+        if (in_array($idioma, [IdiomaFonte::DUBLADO->value, IdiomaFonte::DUAL_AUDIO->value], true)) {
+            return $fonte;
+        }
+
+        $magnet = (string) ($fonte['magnet'] ?? '');
+        $id = (string) ($fonte['id'] ?? '');
+        $limite = (int) config('services.torrents.inspecao_packs_limite', 6);
+
+        if ($magnet === '' || $id === ''
+            || isset($this->packsInspecionados[$id])
+            || $this->inspecoes >= $limite) {
+            return $fonte;
+        }
+
+        $this->packsInspecionados[$id] = true;
+        $this->inspecoes++;
+
+        if ($this->inspecao->apurar($magnet, $id) !== true) {
+            return $fonte;
+        }
+
+        $fonte['idioma'] = IdiomaFonte::DUBLADO->value;
+        $fonte['idioma_rotulo'] = IdiomaFonte::DUBLADO->rotulo();
+        $fonte['idioma_por_inspecao'] = true;
+
+        return $fonte;
     }
 
     /**
      * Descarta, ainda dentro da cascata, o que não serve para o pedido.
      *
-     * O critério de parada da cascata é `temDublado()`, e ele precisa enxergar
-     * apenas fontes que realmente atendem ao pedido. Sem este corte, um dual
-     * áudio de outra temporada — que o Torrentio mistura na resposta da série —
-     * encerrava a busca no degrau 1 e, descartado depois na ordenação, deixava a
-     * lista vazia sem que os degraus seguintes fossem tentados.
-     *
-     * São três cortes, na ordem em que importam:
+     * São dois cortes de elegibilidade e uma etiqueta:
      *
      * 1. **Numeração** — releases que declaram uma temporada/episódio diferente
      *    da pedida. Releases sem numeração passam, para não apagar packs e nomes
@@ -454,75 +559,64 @@ class CatalogoProvedores
      *    de série, o silêncio deixa de ser inocente: sem numeração que a
      *    localize, ela precisa declarar a temporada pedida ou é descartada. É o
      *    gate que a largueza do termo de série torna obrigatório.
-     * 3. **Idioma** — quando `apenas_pt_br` está ligado, só dublado e dual áudio
-     *    seguem. É o mesmo corte que a ordenação faz, mas aplicado cedo o
-     *    bastante para a cascata reagir a ele.
-     *
-     * A exceção é o pack de temporada: ele é o último recurso de uma série
-     * antiga e quase nunca vem marcado como dublado — sem a exceção, o corte o
-     * joga fora e a lista volta vazia, que é o oposto do socorro pretendido.
-     * Marcado como pack, ele passa; episódios e filmes seguem o corte normal.
+     * 3. **Etiqueta de idioma** — cada fonte que passa recebe `pt_br` conforme o
+     *    idioma deduzido (dublado e dual valem). O idioma **não** descarta mais
+     *    nada aqui: o que não é PT-BR vira reserva, e a montagem final decide
+     *    quanto dela entra para completar o mínimo de fontes. Antes, o descarte
+     *    acontecia cedo e a lista ficava sem com o que preencher.
      *
      * @param  array<int, array<string, mixed>>  $fontes
      * @return array<int, array<string, mixed>>
      */
     private function aproveitaveis(array $fontes, ?int $temporada, ?int $episodio, bool $termoDeSerie = false): array
     {
-        $apenasPtBr = (bool) config('services.torrents.apenas_pt_br', true);
-        $packQualquerIdioma = (bool) config('services.torrents.packs_qualquer_idioma', true);
+        $resultado = [];
 
-        return array_values(array_filter(
-            $fontes,
-            function (array $fonte) use ($temporada, $episodio, $apenasPtBr, $packQualquerIdioma, $termoDeSerie): bool {
-                if ($temporada !== null && $episodio !== null
-                    && ! TermosBusca::correspondeAoEpisodio((string) ($fonte['titulo'] ?? ''), $temporada, $episodio)) {
-                    return false;
-                }
-
-                /*
-                 * Gate de temporada para fontes vindas de um termo de série.
-                 *
-                 * O termo de série existe para ser largo: sem "S01E01" e sem
-                 * "completa", ele pergunta pela série pelo nome, e é assim que os
-                 * packs nacionais aparecem. O preço da largueza é o provedor
-                 * devolver o que não é da temporada pedida — "Freak Show", que é
-                 * a 4ª, não declara número nenhum e passaria por qualquer corte
-                 * baseado em numeração. Então a prova aqui é invertida: não vale
-                 * "não declarou nada, deixa passar"; vale declarar a temporada, e
-                 * cobrindo a pedida — "1ª 2ª 3ª Temporadas" ou só a 1ª. O que
-                 * nada declara morre neste ponto, e é isso que separa o pack
-                 * multi-temporada da temporada avulsa homônima.
-                 *
-                 * Releases com numeração seguem julgados pelo
-                 * `correspondeAoEpisodio()` acima: o gate só olha o que não tem
-                 * número para provar a temporada.
-                 */
-                if ($termoDeSerie && $temporada !== null && $episodio !== null) {
-                    $nome = (string) ($fonte['release'] ?? $fonte['titulo'] ?? '');
-
-                    if (TermosBusca::numeracaoDoTitulo($nome) === null
-                        && ! TermosBusca::temporadaNoRelease($nome, $temporada)) {
-                        $this->barradasPeloGate++;
-
-                        return false;
-                    }
-                }
-
-                $ePack = ($fonte['pack'] ?? false) === true;
-
-                if ($apenasPtBr
-                    && ! ($ePack && $packQualquerIdioma)
-                    && ! in_array(
-                        $fonte['idioma'] ?? '',
-                        [IdiomaFonte::DUBLADO->value, IdiomaFonte::DUAL_AUDIO->value],
-                        true
-                    )) {
-                    return false;
-                }
-
-                return true;
+        foreach ($fontes as $fonte) {
+            if ($temporada !== null && $episodio !== null
+                && ! TermosBusca::correspondeAoEpisodio((string) ($fonte['titulo'] ?? ''), $temporada, $episodio)) {
+                continue;
             }
-        ));
+
+            /*
+             * Gate de temporada para fontes vindas de um termo de série.
+             *
+             * O termo de série existe para ser largo: sem "S01E01" e sem
+             * "completa", ele pergunta pela série pelo nome, e é assim que os
+             * packs nacionais aparecem. O preço da largueza é o provedor devolver
+             * o que não é da temporada pedida — "Freak Show", que é a 4ª, não
+             * declara número nenhum e passaria por qualquer corte baseado em
+             * numeração. Então a prova aqui é invertida: não vale "não declarou
+             * nada, deixa passar"; vale declarar a temporada, e cobrindo a pedida
+             * — "1ª 2ª 3ª Temporadas" ou só a 1ª. O que nada declara morre neste
+             * ponto, e é isso que separa o pack multi-temporada da temporada
+             * avulsa homônima.
+             *
+             * Releases com numeração seguem julgados pelo
+             * `correspondeAoEpisodio()` acima: o gate só olha o que não tem
+             * número para provar a temporada.
+             */
+            if ($termoDeSerie && $temporada !== null && $episodio !== null) {
+                $nome = (string) ($fonte['release'] ?? $fonte['titulo'] ?? '');
+
+                if (TermosBusca::numeracaoDoTitulo($nome) === null
+                    && ! TermosBusca::temporadaNoRelease($nome, $temporada)) {
+                    $this->barradasPeloGate++;
+
+                    continue;
+                }
+            }
+
+            $fonte['pt_br'] = in_array(
+                $fonte['idioma'] ?? '',
+                [IdiomaFonte::DUBLADO->value, IdiomaFonte::DUAL_AUDIO->value],
+                true
+            );
+
+            $resultado[] = $fonte;
+        }
+
+        return $resultado;
     }
 
     /**

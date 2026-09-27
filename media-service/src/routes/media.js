@@ -12,6 +12,7 @@ import {
   caminhoPlaylist,
   diretorioSessao,
   verificarFonte,
+  inspecionarTorrent,
   reposicionarSessao,
 } from '../services/sessoes.js'
 import { logger } from '../utils/logger.js'
@@ -92,6 +93,31 @@ router.post('/verificar', async (req, res, next) => {
     }
 
     const resultado = await verificarFonte(magnet)
+
+    res.json(resultado)
+  } catch (err) {
+    next(err)
+  }
+})
+
+/**
+ * Lê o conteúdo de um torrent e diz se há indício de áudio PT-BR.
+ *
+ * O backend chama este endpoint quando o **nome** do pack não prova o idioma:
+ * só os metadados revelam a pasta interna ("Dublado/...") ou o nome dos
+ * episódios. A resposta é um veredito — `indicio_pt_br` com a `prova` que o
+ * sustenta —, e a espera é curta de propósito: este caminho está no meio de uma
+ * busca e não pode segurar o usuário. Não baixa bytes nem deixa torrent vivo.
+ */
+router.post('/metadados', async (req, res, next) => {
+  try {
+    const { magnet, espera_ms: esperaMs } = req.body ?? {}
+
+    if (!magnet) {
+      return res.status(400).json({ error: 'O campo "magnet" é obrigatório.' })
+    }
+
+    const resultado = await inspecionarTorrent(magnet, Number(esperaMs) || undefined)
 
     res.json(resultado)
   } catch (err) {

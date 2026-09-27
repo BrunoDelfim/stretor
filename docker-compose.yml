@@ -102,6 +102,16 @@ services:
       - TORRENTS_KNABEN_URL=${TORRENTS_KNABEN_URL:-https://api.knaben.org/v1}
       - TORRENTS_KNABEN_LIMITE=${TORRENTS_KNABEN_LIMITE:-20}
       - TORRENTS_STREMIO_ADDONS=${TORRENTS_STREMIO_ADDONS:-https://thepiratebay-plus.strem.fun}
+      # Mínimo de fontes da lista final e meta de coleta PT-BR. Sem estas no
+      # environment, o container cai nos padrões do config/services.php e o
+      # valor do .env da raiz não chega a valer.
+      - TORRENTS_MINIMO_FONTES=${TORRENTS_MINIMO_FONTES:-15}
+      - TORRENTS_META_PT_BR=${TORRENTS_META_PT_BR:-6}
+      # Inspeção de pack: quantos por busca, quanto esperar e por quanto tempo
+      # guardar o veredito. É o que abre o pack quando o nome não prova idioma.
+      - TORRENTS_INSPECAO_PACKS_LIMITE=${TORRENTS_INSPECAO_PACKS_LIMITE:-6}
+      - TORRENTS_INSPECAO_TIMEOUT=${TORRENTS_INSPECAO_TIMEOUT:-12}
+      - TORRENTS_INSPECAO_CACHE_TTL=${TORRENTS_INSPECAO_CACHE_TTL:-86400}
     depends_on:
       init:
         condition: service_completed_successfully

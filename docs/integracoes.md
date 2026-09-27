@@ -636,9 +636,10 @@ não há mais canais de séries confiáveis e não há perspectiva de voltarem.
 
 ### Prioridade de idioma
 
-O usuário quer o filme **dublado em PT-BR**. A ordenação coloca as fontes
-marcadas como dubladas no topo; inglês ou idioma original só entram quando não
-existe torrent em PT-BR com peers.
+O usuário quer o filme **dublado em PT-BR**. O desenho atual não descarta nada de
+saída: a busca **coleta** fontes em duas pilhas — as que provam áudio PT-BR e as de
+reserva (idioma original ou legendado) — e só no fim monta a lista, com as PT-BR na
+frente e a reserva completando até um mínimo fixo.
 
 O idioma é deduzido por **dois caminhos**, em ordem de confiança:
 
@@ -646,126 +647,87 @@ O idioma é deduzido por **dois caminhos**, em ordem de confiança:
    `torznab:attr name="language"`. O
    [`TorznabService`](../backend/app/Services/TorznabService.php:150) repassa o
    valor cru em `idioma` e o
-   [`TorrentService`](../backend/app/Services/TorrentService.php:212) o
-   interpreta com
-   [`IdiomaFonte::deduzirDoIdioma()`](../backend/app/Enums/IdiomaFonte.php:116),
-   que reconhece códigos como `pt`, `pt-br`, `por` e `portuguese`.
+   [`IdiomaFonte::deduzirDoIdioma()`](../backend/app/Enums/IdiomaFonte.php:113) o
+   interpreta, reconhecendo códigos como `pt`, `pt-br`, `por` e `portuguese`.
 2. **Tags no título** — quando o atributo não existe ou não é reconhecido, cai
-   em [`IdiomaFonte::deduzirDoTitulo()`](../backend/app/Enums/IdiomaFonte.php:59),
-   que reconhece `dublado`, `nacional`, `pt-br` e `áudio pt`.
+   em [`IdiomaFonte::deduzirDoTitulo()`](../backend/app/Enums/IdiomaFonte.php:74).
 
-Como a tag do título é a pista mais forte — e é justamente ela que os releases
-brasileiros carregam —, a busca foi além da dedução: o `TorznabService` faz a
-segunda pergunta com o termo `dublado` e o
-[`TorrentService`](../backend/app/Services/TorrentService.php:169) funde as duas
-listas com os dublados na frente, sem duplicar por infohash
-([`mesclarFontes()`](../backend/app/Services/TorrentService.php:169)). Uma falha
-em uma das consultas não derruba a outra — cada uma é isolada por
-[`buscarNoTorznab()`](../backend/app/Services/TorrentService.php:148).
+#### A lista de indícios de áudio PT-BR é única
 
-A conclusão prática: um filme só vem com **áudio original em inglês** quando
-nenhuma fonte PT-BR passou pelo filtro de peers. Não é escolha do sistema, é
-escassez de fonte dublada — daí valer a pena conferir a origem da fonte (abaixo)
-antes de suspeitar do código.
+Antes, cada canto do código tinha a sua própria noção de "dublado", e isso produzia
+divergências: o backend reconhecia `dual`, o detector do pack não; o detector do
+media-service reconhecia a bandeira 🇧🇷, o do backend não. A lista agora mora num
+lugar só — [`IndiciosPtBr`](../backend/app/Support/IndiciosPtBr.php:1) no backend e
+[`contemIndicioPtBr()`](../media-service/src/utils/idiomas.js:184) no media-service —
+e é a mesma em toda parte.
 
-#### O corte no limite não pode descartar as dubladas
+Basta **um** indício para provar áudio PT-BR; não precisa ter todos:
 
-A lista é cortada em `LIMITE_FONTES` (20) antes de ir para o frontend. O corte,
-porém, não pode ser cego: um release nacional costuma ter pouquíssimos seeds —
-um WEB-DL gringo de 70 seeds esmaga um dublado de 1 seed na ordenação por seeds.
-Quando o provedor devolve muitas opções em inglês, cortar a lista ordenada em 20
-descartaria justamente a dublada que o usuário procura.
+| Indício | Exemplo |
+| --- | --- |
+| `dublado`, `dublada`, `dublagem` | `AHS S01 Dublado 720p` |
+| `dual` / `dual audio` | `Dual Áudio By-LuanHarper` |
+| `nacional` / `brasileiro` | `Nacional` |
+| `português` / `portuguese` / `pt` | `PORTUGUÊS BR`, `[pt-br]` |
+| `brasil` / `brazil` / `brazilian` | `Brasil` |
+| emoji 🇧🇷 | `🇧🇷 1080p` |
 
-Foi o que aconteceu com "Grey's Anatomy": o Torrentio devolveu 26 streams, dos
-quais 2 dubladas, e a única que sobreviveu ao corte foi a de maior seed. A outra
-(`Dual Áudio 720p By-LuanHarper`, 1 seed) ficou de fora enquanto 19 originais
-entraram.
+O `pt` só vale como **palavra inteira** — `720p` não conta, e é por isso que a
+regra exige borda de palavra.
 
-A regra em [`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:171)
-agora reserva espaço para **todas** as fontes dubladas e em dual áudio antes de
-completar o restante com as demais. Se as dubladas já preencherem o limite, elas
-são a resposta e nenhuma original entra. Só quando não há dublada alguma é que a
-lista é preenchida apenas com originais/legendadas.
+#### Legendado sem áudio PT-BR é reserva, não dublado
 
-#### O corte precisa acontecer dentro da cascata, não depois dela
+Um release `Legendado pt BR` traz a marca de português, mas o áudio é o original e
+as legendas é que são PT-BR. Ele **não** entra na pilha PT-BR boa: cai na reserva.
+É o que separa `Clube da Luta 1999 Bluray 720p Legendado pt BR` das fontes que o
+usuário de fato quer ouvir.
 
-O critério de parada da cascata é `temDublado()`: assim que aparece uma fonte
-dublada ou em dual áudio, os degraus seguintes não são consultados. O problema é
-que esse critério rodava sobre a lista **crua**, antes de qualquer validação.
+#### A cascata coleta com orçamento, não para no primeiro acerto
 
-Foi o que produziu a lista vazia em "American Horror Story" S01E01: o Torrentio
-devolveu um dual áudio de **S10E01** (ele mistura temporadas na resposta da
-série), o `temDublado()` viu "dual áudio" e encerrou a busca no degrau 1. Depois,
-na ordenação, aquele release foi descartado pela numeração errada — e não sobrou
-nada, sem que o Torznab ou o YTS fossem tentados.
+O critério de parada antigo (`temDublado()`) encerrava a busca assim que o primeiro
+resultado PT-BR aparecia e completava o resto com idioma original — o usuário pedia
+dublado e recebia uma dublada em 1º e originais em 2º a 20º. A cascata agora
+**acumula** até juntar um orçamento de fontes PT-BR
+([`coletaSuficiente()`](../backend/app/Services/Torrents/CatalogoProvedores.php:298),
+contra `TORRENTS_META_PT_BR`, padrão `6`) ou esgotar termos e degraus.
 
-A correção move os dois cortes para dentro da cascata, em
-[`CatalogoProvedores::aproveitaveis()`](../backend/app/Services/Torrents/CatalogoProvedores.php:255),
-aplicado ao fim de cada grupo de provedores:
+Cada fonte que passa pelo filtro de numeração é **etiquetada**, não descartada, em
+[`aproveitaveis()`](../backend/app/Services/Torrents/CatalogoProvedores.php:571):
+ganha `pt_br` (entra na pilha boa) ou vira reserva. Nada de aproveitável some por
+idioma; a decisão de ordem fica para o fim.
 
-1. **Numeração** — descarta releases que declaram temporada/episódio diferente
-   da pedida (os sem numeração passam, para não apagar packs legítimos).
-2. **Idioma** — com `apenas_pt_br` ligado, só dublado e dual áudio seguem.
+#### A montagem final: PT-BR na frente, reserva completando
 
-Assim o `temDublado()` só enxerga fontes que de fato servem, e a cascata desce
-para o próximo degrau quando o atual só trouxe release inútil.
+A lista final sai de
+[`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:242):
+primeiro as fontes PT-BR, depois a reserva preenchendo até o **mínimo fixo**
+(`TORRENTS_MINIMO_FONTES`, padrão `15`), sempre respeitando o teto de
+`LIMITE_FONTES` (20). Se só há 7 PT-BR, as seguintes vêm da reserva; se há 20
+PT-BR, a reserva nem é tocada.
 
-#### A parada é julgada pelo degrau, não pela lista acumulada
+Assim o corte para de descartar dubladas por falta de seed: como a pilha PT-BR tem
+prioridade absoluta, um dublado de 1 seed entra na frente de um WEB-DL de 70 seeds
+— sem que os originais mais "populares" empurrem a dublada para fora. A reserva só
+completa o que falta.
 
-O `temDublado()` continua sendo o critério de parada, mas agora sobre **o que
-cada etapa devolveu**, e não sobre a lista acumulada. A diferença apareceu em
-"American Horror Story" S01E01, com o dado exato vindo da tela: o sistema
-oferecia **uma fonte só**, rotulada `Torrentio · Dublado`.
-
-O grupo por identificador (Torrentio) é consultado uma única vez, com o termo
-puro, e entrava na lista **antes** do laço de termos. Como o `temDublado()` olhava
-o acumulado, ele enxergava aquele release dublado já no primeiro termo — que é o
-termo puro, sem a tag — e encerrava a cascata ali. As três variações dubladas
-montadas por `TorrentService::titulosDeEpisodio()` (`dublado`, `dublada`, `dual
-áudio`) e o degrau 2 inteiro nunca eram perguntados.
-
-A correção, em
-[`CatalogoProvedores::buscar()`](../backend/app/Services/Torrents/CatalogoProvedores.php:87),
-captura o resultado de cada etapa numa variável própria (`$desteTermo`) e julga
-esse recorte:
-
-1. O grupo por identificador continua entrando na lista, mas **não decide** a
-   parada.
-2. Cada termo do degrau nativo é perguntado; a busca só encerra se **aquela
-   etapa** trouxe dublado ou dual áudio.
-3. O degrau 2 percorre os mesmos termos com o mesmo julgamento.
-
-Uma fonte promissora de um degrau anterior não pode calar a etapa que existe
-justamente para achar o dublado — era isso que produzia "uma fonte só" com o
-indexador cheio de lançamentos nacionais disponível logo abaixo.
+Com `TORRENTS_APENAS_PT_BR=false`, a reserva inteira também pode entrar — sem tocar
+em código.
 
 Cada etapa deixa uma linha em
-[`CatalogoProvedores::registrarEtapa()`](../backend/app/Services/Torrents/CatalogoProvedores.php:220):
+[`CatalogoProvedores::registrarEtapa()`](../backend/app/Services/Torrents/CatalogoProvedores.php:315):
 
 ```text
-Etapa da cascata de torrents concluída. {"degrau":"indexador","titulo":"American Horror Story S01E01 dublado","fontes":2,"dubladas":2,"encerra":true}
+Etapa da cascata de torrents concluída. {"degrau":"indexador","titulo":"American Horror Story S01E01 dublado","fontes":2,"pt_br":2,"reserva":0,"encerra":true}
 ```
 
-`degrau`, `titulo`, `fontes`, `dubladas` e `encerra` contam a história da busca
-sem instrumentar nada depois: se o rastro parou em `nativos` com `dubladas: 0`, o
-suspeito é o `temDublado()`; se o `indexador` nunca aparece, o degrau 2 não foi
-alcançado.
+`degrau`, `titulo`, `fontes`, `pt_br`, `reserva` e `encerra` contam a história da
+busca sem instrumentar nada depois: se a etapa parou com `pt_br: 2` e `encerra:
+true`, o orçamento foi atingido; se parou com `pt_br: 0` e `reserva: 12`, os termos
+renderam fonte, mas nenhuma dublada.
 
-#### Enquanto só há áudio PT-BR, o resto é descartado
-
-A prioridade de idioma resolve a *ordem*, mas não o *desperdício*: com o player
-ainda restrito a áudio em português, uma fonte legendada ou em idioma original
-que entra na lista só faz o frontend tentar, falhar e passar para a próxima —
-cada tentativa custa uma sessão no media-service.
-
-Por isso [`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:180)
-agora descarta, antes de ordenar, tudo que não seja **dublado** ou **dual áudio**
-quando `TORRENTS_APENAS_PT_BR` está ligado (padrão `true`). A lista chega curta
-ao frontend e o teste fica rápido.
-
-O corte é reversível por configuração de propósito: no dia em que legendado e
-idioma original forem suportados, basta `TORRENTS_APENAS_PT_BR=false` para a
-lista voltar a trazer todas as faixas — sem tocar em código.
+Como o conjunto e o próprio texto das entradas cacheadas mudaram, a `VERSAO_CACHE`
+do [`CatalogoProvedores`](../backend/app/Services/Torrents/CatalogoProvedores.php:49)
+subiu para `12`.
 
 ### De onde veio a fonte?
 
@@ -1000,6 +962,50 @@ Stremio manda os **dois** nomes ali. O resultado é o pack dual subindo ao lado 
 dublado, em vez de se perder entre os originais — no teste da série, a ordem veio com
 o dublado em 1º, o pack Dual Áudio em 2º e os demais em idioma original.
 
+#### Quando o nome não basta, a inspeção abre o pack
+
+O nome do torrent cobre a maioria dos packs nacionais, mas não todos: um
+`American Horror Story (2011) Season 1 to 8 with Extras [1080p H265][MP3 5.1 Ch]`
+não diz nada sobre idioma — e ainda assim pode ser dublado. Para esses casos, a
+busca **abre o pack** e olha os nomes dos arquivos lá dentro.
+
+A inspeção só entra quando o nome **não** provou PT-BR, e é a última cartada,
+porque custa uma sessão no media-service:
+
+1. [`CatalogoProvedores::confirmarIdiomaDoPack()`](../backend/app/Services/Torrents/CatalogoProvedores.php:517)
+   intercepta a fonte já marcada como pack que ainda não é PT-BR.
+2. [`InspecaoPack::apurar()`](../backend/app/Services/Torrents/InspecaoPack.php:47)
+   chama `POST /api/media/metadados` com o magnet e o infohash.
+3. O media-service
+   ([`inspecionarTorrent()`](../media-service/src/services/sessoes.js:1969)) abre o
+   torrent, lê a lista de arquivos e aplica
+   [`contemIndicioPtBr()`](../media-service/src/utils/idiomas.js:184) sobre cada
+   caminho. Se **qualquer** arquivo (ou a pasta do pack) provar PT-BR, a resposta
+   traz `indicio_pt_br: true` e a `prova` que o sustenta.
+4. Com `true`, a fonte é promovida a **Dublado** e ganha
+   `idioma_por_inspecao: true` — o frontend e os logs sabem que a prova veio do
+   conteúdo, não da tag.
+
+O custo é contido por três travas, todas em
+[`services.php`](../backend/config/services.php:180):
+
+| Trava | Config | Padrão |
+| --- | --- | --- |
+| Teto de packs inspecionados por busca | `TORRENTS_INSPECAO_PACKS_LIMITE` | `6` |
+| Tempo máximo de espera por pack | `TORRENTS_INSPECAO_TIMEOUT` | `12`s |
+| Cache do veredito por infohash | `TORRENTS_INSPECAO_CACHE_TTL` | `86400`s |
+
+O cache guarda **só respostas definitivas** — nunca o `sem_peers` nem o tempo
+esgotado: um pack que não respondeu agora pode responder no próximo minuto, e
+gravar "sem PT-BR" ali envenenaria o resultado até o TTL inteiro. O veredito é
+chaveado por infohash e versão
+([`InspecaoPack::VERSAO_CACHE`](../backend/app/Services/Torrents/InspecaoPack.php:37)),
+pelo mesmo motivo da `VERSAO_CACHE` da busca.
+
+Um pack que a inspeção não prova PT-BR **não** é descartado: ele desce para a
+reserva, como qualquer outro original, e ainda aparece na lista — atrás das fontes
+dubladas.
+
 ### Knaben e addons Stremio hospedados — o socorro que faltava
 
 A exceção de pack destravou o que a cascata **já achava** — ela não faz a busca achar
@@ -1085,7 +1091,8 @@ este último alimentando tanto a marcação de pack quanto a dedução de idioma
 | `TORRENTS_KNABEN_LIMITE` | `20` | Quantos resultados pedir por termo. Cada termo é uma requisição; o corte de idioma descarta o resto. |
 | `TORRENTS_STREMIO_ADDONS` | `https://thepiratebay-plus.strem.fun` | Addons Stremio hospedados, por vírgula. O Torrentio tem provedor próprio e não precisa estar aqui. |
 
-A `VERSAO_CACHE` subiu de `6` para `11`. Cada provedor novo e cada correção de leitura
+A `VERSAO_CACHE` subiu de `6` para `11`, e depois para `12` com a coleta por
+orçamento e a inspeção de packs. Cada provedor novo e cada correção de leitura
 mudam o conjunto — ou o próprio texto — das fontes já cacheadas no Redis (as entradas
 antigas guardam o `titulo`, o `idioma` e até a marca de pack do código anterior), então
 a chave precisa mudar para a reconsulta valer já na próxima busca, sem depender de

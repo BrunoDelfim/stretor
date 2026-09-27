@@ -16,6 +16,7 @@ import {
   temFaixaPortuguesa,
 } from './hls.js'
 import { logger } from '../utils/logger.js'
+import { contemIndicioPtBr } from '../utils/idiomas.js'
 
 /**
  * Gerenciador de sessões de reprodução.
@@ -1143,9 +1144,10 @@ function aguardarDownloadCompleto(sessao, arquivo, timeoutMs = 10 * 60 * 1000) {
  * assíncrona para poder aguardá-la.
  *
  * @param {string} magnet
+ * @param {number} timeoutMs prazo para os metadados, em ms
  * @returns {Promise<import('webtorrent').Torrent>}
  */
-async function adicionarTorrent(magnet) {
+async function adicionarTorrent(magnet, timeoutMs = TIMEOUT_METADADOS_MS) {
   const existente = await cliente.get(magnet)
 
   if (existente) {
@@ -1153,10 +1155,10 @@ async function adicionarTorrent(magnet) {
       return existente
     }
 
-    return esperarMetadados(existente)
+    return esperarMetadados(existente, timeoutMs)
   }
 
-  return esperarMetadados(cliente.add(magnet, { path: os.tmpdir() }))
+  return esperarMetadados(cliente.add(magnet, { path: os.tmpdir() }), timeoutMs)
 }
 
 /**
@@ -1173,9 +1175,10 @@ async function adicionarTorrent(magnet) {
  * ainda vale uma nova tentativa.
  *
  * @param {import('webtorrent').Torrent} torrent
+ * @param {number} timeoutMs prazo, em ms (a inspeção de pack usa um prazo curto)
  * @returns {Promise<import('webtorrent').Torrent>}
  */
-function esperarMetadados(torrent) {
+function esperarMetadados(torrent, timeoutMs = TIMEOUT_METADADOS_MS) {
   if (torrent.ready) {
     return Promise.resolve(torrent)
   }
@@ -1205,10 +1208,10 @@ function esperarMetadados(torrent) {
       reject(
         erroDaFonte(
           peers === 0 ? 'sem_peers' : 'sem_metadados',
-          `A fonte não entregou os metadados em ${TIMEOUT_METADADOS_MS / 1000}s (peers: ${peers}).`
+          `A fonte não entregou os metadados em ${timeoutMs / 1000}s (peers: ${peers}).`
         )
       )
-    }, TIMEOUT_METADADOS_MS)
+    }, timeoutMs)
 
     torrent.once('ready', aoFicarPronto)
     torrent.once('error', aoFalhar)
@@ -1941,5 +1944,88 @@ export function limparSessoesAntigas(idadeMaximaMs = 3 * 60 * 60 * 1000) {
       logger.info(`[sessao ${id}] removida por inatividade`)
       encerrarSessao(id)
     }
+  }
+}
+
+/**
+ * Inspeciona o conteúdo de um torrent à procura de indício de áudio PT-BR.
+ *
+ * Diferente de `verificarFonte()`, que mede a malha (peers, velocidade), esta
+ * função só precisa dos **metadados**: lê o nome do torrent e os caminhos dos
+ * arquivos e classifica o pack. É o socorro do backend quando o nome do pack não
+ * prova o idioma — o pack nacional costuma esconder a tag na pasta ("Dublado/...")
+ * ou no nome de cada episódio, não no título do torrent.
+ *
+ * Não baixa nenhum byte: `torrent.files` já vem preenchido assim que o `info` do
+ * magnet chega. O torrent é removido no fim para não ocupar o cliente com um
+ * pack de dezenas de gigabytes — a reprodução, quando houver, o adiciona de novo.
+ * Se o magnet já estiver no cliente (uma sessão em andamento), ele é preservado:
+ * remover um torrent em uso derrubaria a reprodução do usuário.
+ *
+ * @param {string} magnet
+ * @param {number} esperaMs prazo para os metadados (curto: é caminho crítico)
+ * @returns {Promise<{ok: boolean, motivo?: string, nome: string, arquivos: number, indicio_pt_br: boolean, prova: string|null, amostra: string[]}>}
+ */
+export async function inspecionarTorrent(magnet, esperaMs = TIMEOUT_METADADOS_MS) {
+  let torrent
+  let jaEstavaNoCliente = false
+
+  try {
+    const existente = await cliente.get(magnet)
+
+    if (existente) {
+      jaEstavaNoCliente = true
+      torrent = existente.ready ? existente : await esperarMetadados(existente, esperaMs)
+    } else {
+      torrent = await esperarMetadados(cliente.add(magnet, { path: os.tmpdir() }), esperaMs)
+    }
+  } catch (erro) {
+    logger.warn('[inspecao] falha ao ler o metadado do pack:', erro.message)
+
+    return {
+      ok: false,
+      motivo: erro.motivo ?? 'sem_metadados',
+      nome: '',
+      arquivos: 0,
+      indicio_pt_br: false,
+      prova: null,
+      amostra: [],
+    }
+  }
+
+  const nome = torrent.name ?? ''
+  const caminhos = (torrent.files ?? []).map((arquivo) => arquivo.path || arquivo.name || '')
+
+  // O nome do torrent é a prova mais barata; se ele já indica PT-BR, nem vale
+  // varrer os arquivos. Quando não indica, olhamos os caminhos: muitos packs
+  // nacionais marcam a pasta ("Temporada 1 Dublado/") ou cada episódio.
+  let indicio = contemIndicioPtBr(nome)
+  let prova = indicio ? nome : null
+
+  if (!indicio) {
+    for (const caminho of caminhos) {
+      if (contemIndicioPtBr(caminho)) {
+        indicio = true
+        prova = caminho
+        break
+      }
+    }
+  }
+
+  if (!jaEstavaNoCliente) {
+    try {
+      cliente.remove(torrent, { destroyStore: true })
+    } catch (erro) {
+      logger.warn('[inspecao] falha ao remover o torrent de teste:', erro.message)
+    }
+  }
+
+  return {
+    ok: true,
+    nome,
+    arquivos: caminhos.length,
+    indicio_pt_br: indicio,
+    prova,
+    amostra: caminhos.slice(0, 5),
   }
 }

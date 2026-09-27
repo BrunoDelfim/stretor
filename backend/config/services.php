@@ -245,6 +245,53 @@ return [
          * que não declarar a temporada pedida.
          */
         'termos_serie_habilitados' => (bool) env('TORRENTS_TERMOS_SERIE_HABILITADO', true),
+
+        /*
+         * Mínimo de fontes que a lista final precisa ter antes de ir ao frontend.
+         *
+         * A cascata junta o que acha em PT-BR e o resto vira reserva; quando o
+         * PT-BR não chega a este mínimo, a reserva completa a lista até aqui e
+         * só então ela é enviada. Sem este piso, uma busca que só achou o pack
+         * dublado devolvia uma lista de um item — e o player ficava sem
+         * alternativa quando aquela fonte não respondia.
+         */
+        'minimo_fontes' => (int) env('TORRENTS_MINIMO_FONTES', 15),
+
+        /*
+         * Meta de fontes PT-BR que a coleta tenta alcançar antes de parar.
+         *
+         * Antes, a cascata parava no primeiro termo que trouxesse uma dublada e
+         * completava o resto com original — o que enchia a lista de releases
+         * errados. Agora ela segue termo a termo até juntar esta meta ou esgotar
+         * os degraus; o que passar disso é reserva.
+         */
+        'meta_pt_br_coleta' => (int) env('TORRENTS_META_PT_BR', 6),
+
+        /*
+         * Teto de packs inspecionados por busca.
+         *
+         * O nome do pack quase sempre prova o idioma; só quando ele não prova é
+         * que o backend abre o conteúdo pelo media-service — caro e lento. Este
+         * teto limita quantos packs podem pagar esse preço em uma mesma busca.
+         */
+        'inspecao_packs_limite' => (int) env('TORRENTS_INSPECAO_PACKS_LIMITE', 6),
+
+        /*
+         * Tempo limite, em segundos, da inspeção de um pack no media-service.
+         *
+         * A leitura dos metadados depende de achar peers para o magnet; sem
+         * teto, um pack morto seguraria a busca inteira. Ao estourar, o backend
+         * desiste e joga o pack na reserva.
+         */
+        'inspecao_timeout' => (int) env('TORRENTS_INSPECAO_TIMEOUT', 12),
+
+        /*
+         * Tempo de cache do veredito da inspeção, em segundos (padrão 24h).
+         *
+         * Só respostas definitivas entram no cache: o resultado de uma inspeção
+         * que estourou o tempo não vira "não é dublado" permanente.
+         */
+        'inspecao_cache_ttl' => (int) env('TORRENTS_INSPECAO_CACHE_TTL', 86400),
     ],
 
     // --- Provisionamento do Prowlarr (degrau 2) ---

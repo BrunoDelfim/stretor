@@ -2,6 +2,8 @@
 
 namespace App\Enums;
 
+use App\Support\IndiciosPtBr;
+
 /**
  * Idioma de uma fonte de torrent.
  *
@@ -51,54 +53,42 @@ enum IdiomaFonte: string
      *
      * As APIs de torrents não têm um campo confiável de idioma, então a
      * classificação sai das tags que a comunidade usa nos nomes dos arquivos
-     * (ex.: "Dublado", "Dual Áudio", "Legendado", "Nacional", "PT-BR").
+     * (ex.: "Dublado", "Dual Áudio", "Nacional", "PT-BR", "🇧🇷"). A lista de
+     * indícios mora em [`IndiciosPtBr`], compartilhada com a leitura do conteúdo
+     * dos packs — assim o que vale como "nacional" é o mesmo em todos os pontos.
      *
-     * Os indexadores Torznab agregam trackers PT-BR, cujos títulos trazem essas
-     * tags com frequência — é o que permite priorizar o dublado de verdade.
+     * A ordem das checagens é o que separa um release dublado de um apenas
+     * legendado:
+     *
+     * 1. **Dual áudio** — é a tag mais específica: diz que o arquivo carrega as
+     *    duas faixas. Vem antes de tudo.
+     * 2. **Áudio explícito** — "dublado", "nacional", "português", "brasileiro"
+     *    e a bandeira. Se qualquer um aparecer, o áudio é PT-BR e ponto.
+     * 3. **Legendado** — antes da faixa ambígua de propósito. Um release
+     *    "Legendado pt BR" carrega o "pt BR" da **legenda**, não do áudio: se o
+     *    código viesse primeiro, ele viraria "Dublado" e a fonte seria oferecida
+     *    errada (era o caso do filme 550).
+     * 4. **Código ambíguo** — "PT-BR", "PT", "PTBR". Sem uma tag de legendado por
+     *    perto, o código prova que o áudio é PT-BR.
      */
     public static function deduzirDoTitulo(string $titulo): self
     {
-        $texto = mb_strtolower($titulo);
-
-        // A ordem importa: "dual áudio" contém "áudio", e "dublado" pode
-        // aparecer junto de "legendado" em lançamentos com as duas faixas.
-        if (str_contains($texto, 'dual')) {
+        if (IndiciosPtBr::eDual($titulo)) {
             return self::DUAL_AUDIO;
         }
 
-        /*
-         * Tags de dublagem PT-BR. Além de "dublado", os trackers nacionais usam
-         * "nacional" (produção brasileira), "dublagem", "pt-br"/"ptbr"/"pt br" e
-         * variações de "áudio português". As formas com espaço no início
-         * (" pt-br", " pt br") evitam casar com o sufixo "pt-br" colado em outra
-         * palavra.
-         */
-        $tagsDublado = [
-            'dublado',
-            'dublada',
-            'dublagem',
-            'nacional',
-            ' pt-br',
-            ' ptbr',
-            ' pt br',
-            ' pt_br',
-            'pt-br',
-            'ptbr',
-            'br-pt',
-            'áudio pt',
-            'audio pt',
-            'português',
-            'portugues',
-        ];
-
-        foreach ($tagsDublado as $tag) {
-            if (str_contains($texto, $tag)) {
-                return self::DUBLADO;
-            }
+        if (IndiciosPtBr::temAudioExplicito($titulo)) {
+            return self::DUBLADO;
         }
+
+        $texto = mb_strtolower($titulo);
 
         if (str_contains($texto, 'legendado') || str_contains($texto, 'legenda')) {
             return self::LEGENDADO;
+        }
+
+        if (IndiciosPtBr::contem($titulo)) {
+            return self::DUBLADO;
         }
 
         return self::ORIGINAL;
@@ -144,7 +134,7 @@ enum IdiomaFonte: string
             'br',
         ];
 
-        if (in_array($texto, $codigosPt, true) || str_contains($texto, 'portugu')) {
+        if (in_array($texto, $codigosPt, true) || IndiciosPtBr::contem($idioma)) {
             return self::DUBLADO;
         }
 

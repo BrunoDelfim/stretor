@@ -107,3 +107,90 @@ export function descreverIdioma(codigo) {
 
   return IDIOMAS[normalizado] ?? IDIOMAS[base] ?? null
 }
+
+/*
+ * Indícios de áudio em PT-BR, espelho fiel de `App\Support\IndiciosPtBr` do
+ * backend. A duplicação é consciente: a mesma pergunta ("este release é
+ * dublado?") precisa ser respondida nos dois lados — o backend julga o nome do
+ * torrent e o media-service lê o conteúdo do pack —, e as duas pontas não
+ * compartilham código. Se a lista mudar de um lado, precisa mudar do outro.
+ *
+ * A divisão em dois níveis é o que separa prova de pista. As tags de áudio
+ * ("dublado", "nacional", "português", "brasileiro", a bandeira) falam do
+ * **áudio** e provam sozinhas. Os códigos soltos ("pt", "ptbr") são ambíguos:
+ * em "Legendado pt BR" o "pt BR" descreve a **legenda**, não o áudio. Por isso
+ * a decisão final fica com quem consulta, que checa "legendado" antes de aceitar
+ * um código — igual ao `deduzirDoTitulo()` do backend.
+ */
+
+const INDICIOS_PT_BR_AUDIO = [
+  'dublado',
+  'dublada',
+  'dublagem',
+  'dual',
+  'nacional',
+  'portugu',
+  'áudio pt',
+  'audio pt',
+  'brasileiro',
+  'brasileira',
+  'brasil',
+  'brazil',
+  'brazilian',
+]
+
+const INDICIOS_PT_BR_CODIGO = ['ptbr', 'br-pt']
+
+// Bandeira do Brasil: dois code points (regional indicators B e R). É prova de
+// áudio — quem publica com a bandeira no nome está dizendo "isto é brasileiro".
+const EMOJI_BRASIL = '\u{1F1E7}\u{1F1F7}'
+
+/**
+ * Diz se o texto carrega indício **de áudio** em PT-BR (o nível forte).
+ *
+ * Exclui os códigos ambíguos de propósito: quem precisa da decisão completa de
+ * "é dublado?" deve chamar `contemIndicioPtBr()`, que já aplica a ordem.
+ */
+function temAudioPtBr(texto) {
+  if (!texto) return false
+  if (texto.includes(EMOJI_BRASIL)) return true
+
+  const normalizado = texto.toLowerCase()
+
+  return INDICIOS_PT_BR_AUDIO.some((tag) => normalizado.includes(tag))
+}
+
+/** Diz se o texto tem um código de idioma PT-BR isolado ("pt-br", "ptbr"). */
+function temCodigoPtBr(texto) {
+  if (!texto) return false
+
+  const normalizado = texto.toLowerCase()
+
+  if (INDICIOS_PT_BR_CODIGO.some((tag) => normalizado.includes(tag))) {
+    return true
+  }
+
+  // "pt" sozinho, delimitado: evita casar "script" ou "pt" no meio de palavra.
+  return /(?<![a-z0-9])pt(?![a-z0-9])/.test(normalizado)
+}
+
+/**
+ * Decide se um texto (nome do torrent, caminho de arquivo) indica áudio PT-BR.
+ *
+ * A ordem é o que importa, e reproduz [`IdiomaFonte::deduzirDoTitulo()`]: prova
+ * de áudio primeiro; se só houver código ambíguo e a palavra "legendado" estiver
+ * por perto, o código fala da legenda e **não** vale como dublado.
+ */
+export function contemIndicioPtBr(texto) {
+  if (!texto) return false
+
+  if (temAudioPtBr(texto)) return true
+
+  const normalizado = texto.toLowerCase()
+
+  if (normalizado.includes('legendado') || normalizado.includes('legenda')) {
+    return false
+  }
+
+  return temCodigoPtBr(texto)
+}

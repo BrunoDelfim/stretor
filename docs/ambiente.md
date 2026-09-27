@@ -161,6 +161,11 @@ valores reais. As variáveis que exigem atenção:
 | `TORRENTS_PACKS_HABILITADOS` | Não | Busca packs de temporada (`S01 completa`, `Temporada 1 completa`) como **último** termo do episódio. É o que destrava séries antigas, cujo episódio isolado não tem mais seed; o media-service baixa só o arquivo do episódio pedido de dentro do pacote (padrão `true`). |
 | `TORRENTS_PACKS_QUALQUER_IDIOMA` | Não | Isenta **apenas** a fonte marcada como pack do corte de `TORRENTS_APENAS_PT_BR`. O pack de série antiga quase nunca vem marcado como dublado; sem a exceção ele é achado e descartado, e a lista volta vazia. Episódios e filmes seguem o corte normal, e o pack entra atrás do dublado (padrão `true`). |
 | `TORRENTS_TERMOS_SERIE_HABILITADO` | Não | Acrescenta termos de série sem numeração de episódio e sem "completa" (`"... dublado"`, `"... temporada N"`, `"... SN"`) **depois** dos termos de pack. É o que faz o buscador casar o nome do pacote multi-temporada das séries antigas. As fontes vindas deles passam pelo gate de temporada: quem não declara a temporada pedida é descartado (padrão `true`). |
+| `TORRENTS_MINIMO_FONTES` | Não | Mínimo de fontes na lista final. As PT-BR vêm primeiro e a reserva (idioma original/legendado) completa até esse total, sem passar do teto de 20 (padrão `15`). |
+| `TORRENTS_META_PT_BR` | Não | Orçamento de fontes PT-BR que a cascata tenta juntar antes de encerrar a coleta. Atingido o alvo, os degraus seguintes não são consultados (padrão `6`). |
+| `TORRENTS_INSPECAO_PACKS_LIMITE` | Não | Quantos packs, no máximo, têm o conteúdo inspecionado por busca quando o nome não prova PT-BR (padrão `6`). |
+| `TORRENTS_INSPECAO_TIMEOUT` | Não | Tempo máximo, em segundos, esperando os metadados de cada pack inspecionado (padrão `12`). |
+| `TORRENTS_INSPECAO_CACHE_TTL` | Não | Tempo de cache do veredito da inspeção por infohash, em segundos. Só respostas definitivas são guardadas (padrão `86400`). |
 | `TORRENTS_KNABEN_HABILITADO` | Não | Liga/desliga o Knaben, meta-buscador de indexadores públicos que devolve os packs nacionais das séries antigas (padrão `true`). |
 | `TORRENTS_KNABEN_URL` | Não | Endpoint da API do Knaben (padrão `https://api.knaben.org/v1`). Use o domínio `.org`: o `.eu` responde `503`. Vazio desliga o provedor. |
 | `TORRENTS_KNABEN_LIMITE` | Não | Quantos resultados pedir por termo ao Knaben (padrão `20`). |

@@ -218,19 +218,23 @@ class TorrentService
     }
 
     /**
-     * Filtra e ordena as fontes.
+     * Filtra e monta a lista final.
      *
-     * O filtro de seeds é a primeira barreira contra fontes mortas, e a ordenação
-     * é o que faz o dublado aparecer antes do legendado na interface.
+     * O filtro de seeds é a primeira barreira contra fontes mortas. Depois, a
+     * montagem é por mérito de idioma: as fontes PT-BR (dublado e dual áudio,
+     * mais os packs que a inspeção provou dublados) vêm primeiro, na frente de
+     * qualquer reserva.
      *
-     * O corte no limite não é cego: as fontes dubladas e em dual áudio são o que
-     * o usuário brasileiro procura, e costumam ter pouquíssimos seeds (um release
-     * nacional raramente compete com um WEB-DL gringo de 70 seeds). Cortar a lista
-     * ordenada em 20 descartaria justamente essas fontes quando o provedor devolve
-     * muitas opções em inglês — foi o que aconteceu com "Grey's Anatomy", em que a
-     * única dublada ficou de fora enquanto 19 originais entraram. Por isso o corte
-     * reserva espaço para todas as dubladas/dual e só então completa o restante
-     * com as demais, respeitando o limite total.
+     * A regra do mínimo é o que resolve o problema das séries antigas. Quando há
+     * poucas fontes PT-BR, a lista não fica curta nem é preenchida de originais
+     * por acaso: ela completa **até o mínimo** com o que houver de reserva, e o
+     * PT-BR continua no topo. Um filme com 7 dubladas e 40 originais devolve as 7
+     * dubladas seguidas de 8 originais — nunca 20 originais com o dublado
+     * escondido no meio.
+     *
+     * Com `apenas_pt_br` ligado, a reserva entra só até o mínimo. Desligado, ela
+     * completa até o teto — o comportamento para o dia em que legendado e
+     * original forem reproduzíveis.
      *
      * @param  array<int, array<string, mixed>>  $fontes
      * @return array<int, array<string, mixed>>
@@ -242,69 +246,62 @@ class TorrentService
             fn (array $fonte) => ($fonte['seeds'] ?? 0) > 0 && ($fonte['magnet'] ?? '') !== ''
         ));
 
-        // Enquanto o player só reproduz áudio em PT-BR, manter releases em
-        // outros idiomas na lista é trabalho perdido: o frontend tenta a fonte,
-        // falha e passa para a próxima. O corte é reversível por configuração
-        // para o dia em que legendado e original forem suportados.
-        //
-        // O pack de temporada é a exceção: quase nunca vem marcado como dublado,
-        // e é justamente o último recurso de uma série antiga. Barrá-lo aqui
-        // repetiria, na ordenação, o descarte que a cascata já isentou — e a
-        // busca voltaria vazia. Ele passa, mas entra atrás do dublado porque a
-        // ordenação por prioridade de idioma o coloca depois.
-        if (config('services.torrents.apenas_pt_br', true)) {
-            $packQualquerIdioma = (bool) config('services.torrents.packs_qualquer_idioma', true);
-
-            $fontes = array_values(array_filter(
-                $fontes,
-                fn (array $fonte) => in_array(
-                    $fonte['idioma'] ?? '',
-                    [IdiomaFonte::DUBLADO->value, IdiomaFonte::DUAL_AUDIO->value],
-                    true
-                ) || ($packQualquerIdioma && ($fonte['pack'] ?? false) === true)
-            ));
-        }
-
-        usort($fontes, function (array $a, array $b) {
+        $porPrioridade = function (array $a, array $b): int {
             $prioridadeA = IdiomaFonte::tryFrom($a['idioma'] ?? '')?->prioridade() ?? 99;
             $prioridadeB = IdiomaFonte::tryFrom($b['idioma'] ?? '')?->prioridade() ?? 99;
 
             return $prioridadeA <=> $prioridadeB ?: $b['seeds'] <=> $a['seeds'];
-        });
+        };
+
+        $ptBr = [];
+        $reserva = [];
+
+        foreach ($fontes as $fonte) {
+            if ($this->ePtBr($fonte)) {
+                $ptBr[] = $fonte;
+            } else {
+                $reserva[] = $fonte;
+            }
+        }
+
+        usort($ptBr, $porPrioridade);
+        usort($reserva, $porPrioridade);
 
         $limite = MensagensTorrent::LIMITE_FONTES;
+        $minimo = (int) config('services.torrents.minimo_fontes', 15);
+        $apenasPtBr = (bool) config('services.torrents.apenas_pt_br', true);
 
-        if (count($fontes) <= $limite) {
-            return $fontes;
+        // O alvo é o tamanho que a lista precisa ter: o mínimo quando só o áudio
+        // PT-BR interessa, o teto quando a reserva também serve para reproduzir.
+        $alvo = $apenasPtBr ? min($minimo, $limite) : $limite;
+
+        // Já há PT-BR suficiente: ele é a resposta, sem gastar espaço com reserva.
+        if (count($ptBr) >= $alvo) {
+            return array_slice($ptBr, 0, $limite);
         }
 
-        $nacionais = array_filter(
-            $fontes,
-            fn (array $fonte) => in_array(
-                $fonte['idioma'] ?? '',
-                [IdiomaFonte::DUBLADO->value, IdiomaFonte::DUAL_AUDIO->value],
-                true
-            )
-        );
+        return array_merge($ptBr, array_slice($reserva, 0, $alvo - count($ptBr)));
+    }
 
-        // Se as dubladas já preenchem o limite, elas são a resposta: devolvemos
-        // só elas, sem gastar espaço com originais.
-        if (count($nacionais) >= $limite) {
-            return array_slice(array_values($nacionais), 0, $limite);
+    /**
+     * Diz se a fonte é PT-BR para efeito de montagem.
+     *
+     * Prefere a etiqueta `pt_br` gravada na cascata — ela já embute a promoção
+     * dos packs cujo conteúdo provou o dublado. Sem a etiqueta (chamada fora da
+     * cascata), cai no idioma cru.
+     *
+     * @param  array<string, mixed>  $fonte
+     */
+    private function ePtBr(array $fonte): bool
+    {
+        if (array_key_exists('pt_br', $fonte)) {
+            return (bool) $fonte['pt_br'];
         }
 
-        $restantes = array_filter(
-            $fontes,
-            fn (array $fonte) => ! in_array(
-                $fonte['idioma'] ?? '',
-                [IdiomaFonte::DUBLADO->value, IdiomaFonte::DUAL_AUDIO->value],
-                true
-            )
-        );
-
-        return array_merge(
-            array_values($nacionais),
-            array_slice(array_values($restantes), 0, $limite - count($nacionais))
+        return in_array(
+            $fonte['idioma'] ?? '',
+            [IdiomaFonte::DUBLADO->value, IdiomaFonte::DUAL_AUDIO->value],
+            true
         );
     }
 
@@ -321,11 +318,18 @@ class TorrentService
      */
     private function registrar(array $fontes, array $titulos, ?int $ano, ?string $imdbId): void
     {
+        $ptBr = count(array_filter($fontes, fn (array $fonte) => $this->ePtBr($fonte)));
+
         $contexto = [
             'titulos' => $titulos,
             'ano' => $ano,
             'imdb_id' => $imdbId,
             'fontes' => count($fontes),
+            // O par que conta a montagem: quantas PT-BR vieram no topo e quanta
+            // reserva foi necessária para chegar ao mínimo. Sem ele, "a lista veio
+            // cheia de original" fica indistinguível de "não havia dublado".
+            'pt_br' => $ptBr,
+            'reserva' => count($fontes) - $ptBr,
         ];
 
         if (empty($fontes)) {
