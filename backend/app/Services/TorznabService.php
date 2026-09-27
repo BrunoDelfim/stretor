@@ -22,6 +22,14 @@ use SimpleXMLElement;
 class TorznabService
 {
     /**
+     * Cache em memória dos ids de indexador habilitados, para não repetir a
+     * listagem a cada consulta dentro da mesma requisição.
+     *
+     * @var list<int>|null
+     */
+    private ?array $idsEmCache = null;
+
+    /**
      * Indica se o indexador está configurado.
      *
      * Sem URL e chave o serviço não tem como consultar; o TorrentService usa
@@ -33,13 +41,17 @@ class TorznabService
     }
 
     /**
-     * Busca torrents de filme pelo título.
+     * Busca torrents pelo título.
+     *
+     * A categoria é parâmetro porque o Prowlarr filtra por ela: filmes são
+     * `2000` e séries são `5000`. Consultar um episódio com a categoria de
+     * filme devolve zero resultados, por mais que o release exista no tracker.
      *
      * @return array<int, array<string, mixed>>
      */
-    public function buscar(string $titulo, ?int $ano = null): array
+    public function buscar(string $titulo, ?int $ano = null, ?string $categoria = null): array
     {
-        return $this->consultar($this->termoBase($titulo, $ano));
+        return $this->consultar($this->termoBase($titulo, $ano), $categoria);
     }
 
     /**
@@ -52,9 +64,9 @@ class TorznabService
      *
      * @return array<int, array<string, mixed>>
      */
-    public function buscarDublado(string $titulo, ?int $ano = null): array
+    public function buscarDublado(string $titulo, ?int $ano = null, ?string $categoria = null): array
     {
-        return $this->consultar($this->termoBase($titulo, $ano).' dublado');
+        return $this->consultar($this->termoBase($titulo, $ano).' dublado', $categoria);
     }
 
     /**
@@ -71,36 +83,121 @@ class TorznabService
     /**
      * Executa a consulta ao indexador e traduz o XML.
      *
+     * A rota importa e já custou uma depuração inteira: o Prowlarr **não** expõe
+     * `/api/v1/search` como o Jackett. A busca Torznab dele vive em
+     * `/api/v1/indexer/{id}/search`, um endpoint por indexador. Chamar a rota do
+     * Jackett devolve 404 e o provedor some da cascata sem erro visível — a lista
+     * volta vazia e parece que "não há fonte".
+     *
+     * Como o backend não guarda os ids dos indexadores (eles nascem no
+     * provisionamento), descobrimos a lista uma vez e consultamos cada um,
+     * agregando os resultados. Um indexador fora do ar não derruba os outros.
+     *
      * @return array<int, array<string, mixed>>
      */
-    private function consultar(string $termo): array
+    private function consultar(string $termo, ?string $categoria = null): array
     {
         if (! $this->configurado()) {
             return [];
         }
 
+        $itens = [];
+
+        foreach ($this->idsDosIndexadores() as $id) {
+            $itens = array_merge($itens, $this->consultarIndexador($id, $termo, $categoria));
+        }
+
+        return $itens;
+    }
+
+    /**
+     * Consulta um indexador específico pela rota Torznab do Prowlarr.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function consultarIndexador(int $id, string $termo, ?string $categoria): array
+    {
         $parametros = [
             'apikey' => $this->chave(),
             't' => 'search',
-            'cat' => (string) config('services.torrents.torznab_categoria', '2000'),
+            'cat' => $categoria ?? (string) config('services.torrents.torznab_categoria', '2000'),
             'q' => $termo,
         ];
 
         try {
             $resposta = Http::baseUrl($this->url())
                 ->timeout(20)
-                ->get('/api/v1/search', $parametros);
+                ->get(sprintf('/api/v1/indexer/%d/search', $id), $parametros);
         } catch (\Throwable $excecao) {
-            throw new RuntimeException(MensagensTorrent::FALHA_PROVEDOR, previous: $excecao);
+            // Um indexador indisponível não pode derrubar a busca inteira: o
+            // outro pode ter o release. Só registramos e seguimos.
+            report($excecao);
+
+            return [];
         }
 
         if ($resposta->failed()) {
-            throw new RuntimeException(
-                MensagensTorrent::FALHA_PROVEDOR.' (HTTP '.$resposta->status().')'
-            );
+            return [];
         }
 
         return $this->interpretarXml($resposta->body());
+    }
+
+    /**
+     * Ids de todos os indexadores cadastrados no Prowlarr.
+     *
+     * Não filtramos por `enable`: esse campo controla apenas se o indexador
+     * participa das buscas automáticas do Prowlarr, não se o endpoint Torznab
+     * dele responde. Como o provisionamento grava desabilitado quando o tracker
+     * está fora do ar (fallback do Cloudflare/domínio sequestrado), filtrar por
+     * `enable` deixaria a lista vazia e o degrau 2 nunca seria consultado — que
+     * era exatamente o sintoma de "nenhuma fonte" com os indexadores cadastrados.
+     *
+     * O resultado fica em cache de memória durante a requisição para não repetir
+     * a listagem a cada consulta (são duas por título, mais as variações).
+     *
+     * @return list<int>
+     */
+    private function idsDosIndexadores(): array
+    {
+        if ($this->idsEmCache !== null) {
+            return $this->idsEmCache;
+        }
+
+        try {
+            $resposta = Http::baseUrl($this->url())
+                ->withHeaders(['X-Api-Key' => $this->chave()])
+                ->timeout(20)
+                ->get('/api/v1/indexer');
+        } catch (\Throwable) {
+            return $this->idsEmCache = [];
+        }
+
+        if ($resposta->failed()) {
+            return $this->idsEmCache = [];
+        }
+
+        $lista = $resposta->json();
+
+        if (! is_array($lista)) {
+            return $this->idsEmCache = [];
+        }
+
+        $ids = [];
+
+        foreach ($lista as $indexador) {
+            if (! is_array($indexador)) {
+                continue;
+            }
+
+            $id = (int) ($indexador['id'] ?? 0);
+
+            if ($id > 0) {
+                $ids[] = $id;
+            }
+        }
+
+        return $this->idsEmCache = $ids;
     }
 
     /**

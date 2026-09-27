@@ -145,6 +145,79 @@ final class TermosBusca
     }
 
     /**
+     * Confere se o título de um release corresponde à temporada/episódio pedidos.
+     *
+     * Os provedores por identificador (Torrentio) e os agregadores por nome não
+     * são infalíveis: o Torrentio, em especial, responde pela série inteira e
+     * mistura temporadas na mesma lista. Foi assim que "American Horror Story"
+     * pedido como S01E01 voltou com um release "S10E01" em dual áudio — que, por
+     * ser dublado, subiu para o topo da ordenação e foi a primeira fonte tentada
+     * pelo player, mesmo sendo de outra temporada.
+     *
+     * A regra é conservadora: só descartamos quando o título **declara** uma
+     * numeração diferente da pedida. Releases sem numeração nenhuma (comuns em
+     * packs e em alguns nomes nacionais) passam, porque não há como provar que
+     * estão errados — e descartá-los apagaria fontes legítimas.
+     *
+     * Aceita as grafias que os trackers usam: "S01E01", "s1e1", "1x01" e
+     * "Temporada 1 Episódio 1" (com ou sem acento).
+     */
+    public static function correspondeAoEpisodio(string $titulo, int $temporada, int $episodio): bool
+    {
+        $numeracao = self::numeracaoDoTitulo($titulo);
+
+        // Sem numeração declarada não há o que reprovar: a fonte fica.
+        if ($numeracao === null) {
+            return true;
+        }
+
+        return $numeracao['temporada'] === $temporada && $numeracao['episodio'] === $episodio;
+    }
+
+    /**
+     * Extrai a numeração de temporada/episódio declarada no título, se houver.
+     *
+     * Devolve `null` quando o título não traz numeração reconhecível. A leitura
+     * cobre os formatos que aparecem na prática nos nomes de release:
+     *
+     * - `S01E02`, `s1e2`, `S01.E02`, `S01 E02`
+     * - `1x02`, `01x02`
+     * - `Temporada 1 Episódio 2`, `Temporada 1 Episodio 2`, `1ª Temporada`
+     *
+     * @return array{temporada: int, episodio: int}|null
+     */
+    public static function numeracaoDoTitulo(string $titulo): ?array
+    {
+        $texto = mb_strtolower($titulo);
+
+        // Formato padrão dos releases: S01E02 (com separadores opcionais).
+        if (preg_match('/s(\d{1,2})[\s._-]*e(\d{1,3})/i', $texto, $achados)) {
+            return [
+                'temporada' => (int) $achados[1],
+                'episodio' => (int) $achados[2],
+            ];
+        }
+
+        // Formato alternativo "1x02", comum em catálogos antigos.
+        if (preg_match('/(?<!\d)(\d{1,2})x(\d{1,3})(?!\d)/i', $texto, $achados)) {
+            return [
+                'temporada' => (int) $achados[1],
+                'episodio' => (int) $achados[2],
+            ];
+        }
+
+        // Formato por extenso, usado por trackers que traduzem o nome do arquivo.
+        if (preg_match('/temporada\s*(\d{1,2}).{0,20}?epis[oó]dio\s*(\d{1,3})/iu', $texto, $achados)) {
+            return [
+                'temporada' => (int) $achados[1],
+                'episodio' => (int) $achados[2],
+            ];
+        }
+
+        return null;
+    }
+
+    /**
      * Remove o que atrapalha a busca por palavra-chave.
      *
      * Alguns sites não lidam bem com dois-pontos (títulos como "Homem-Aranha:

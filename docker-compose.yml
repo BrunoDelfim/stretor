@@ -16,6 +16,12 @@ services:
     container_name: stretor_backend
     restart: unless-stopped
     working_dir: /var/www/backend
+    # DNS confiável: o resolver padrão do host (herdado da operadora) costuma
+    # bloquear ou devolver NXDOMAIN para domínios de tracker, o que faz o
+    # indexador parecer "morto". Cloudflare e Google resolvem sem filtro.
+    dns:
+      - ${DNS_PRIMARIO:-1.1.1.1}
+      - ${DNS_SECUNDARIO:-8.8.8.8}
     volumes:
       - ./backend:/var/www/backend
       - ./docker/backend/php.ini:/usr/local/etc/php/conf.d/custom.ini
@@ -47,9 +53,22 @@ services:
       # Prowlarr. Só defina no .env para usar um Prowlarr externo.
       - TORRENTS_TORZNAB_KEY=${TORRENTS_TORZNAB_KEY:-}
       - TORRENTS_TORZNAB_CATEGORIA=${TORRENTS_TORZNAB_CATEGORIA:-2000}
+      # Categoria Torznab de séries (5000 = TV). Sem ela, o Prowlarr filtraria
+      # um episódio pela categoria de filme e devolveria zero resultados.
+      - TORRENTS_TORZNAB_CATEGORIA_SERIE=${TORRENTS_TORZNAB_CATEGORIA_SERIE:-5000}
       # Usados pelo comando `prowlarr:provisionar` na subida do container.
       - PROWLARR_URL=${PROWLARR_URL:-http://prowlarr:9696}
+      # Sem este caminho o provisionamento não acha o config.xml, não descobre a
+      # chave da API e nunca chega a cadastrar o indexador.
       - PROWLARR_CONFIG_PATH=${PROWLARR_CONFIG_PATH:-/prowlarr-config/config.xml}
+      - PROWLARR_TEMPO_LIMITE=${PROWLARR_TEMPO_LIMITE:-20}
+      # O 1337x vive atrás do CloudFlare e recusa o teste de busca do Prowlarr,
+      # que por isso nunca sai de inativo. O FlareSolverr resolve o desafio e o
+      # backend o registra como proxy do indexador na subida.
+      - FLARESOLVERR_URL=${FLARESOLVERR_URL:-http://flaresolverr:8191}
+      # false pula o registro do proxy: o indexador protegido volta a ficar
+      # apenas cadastrado, sem funcionar.
+      - PROWLARR_PROXY_ATIVO=${PROWLARR_PROXY_ATIVO:-true}
       # Reserva de torrents (YTS) usada quando o indexador não responde.
       - TORRENTS_BASE_URL=${TORRENTS_BASE_URL:-https://yts.gg}
       - TORRENTS_CACHE_TTL=${TORRENTS_CACHE_TTL:-1800}
@@ -65,6 +84,12 @@ services:
         condition: service_healthy
       prowlarr:
         condition: service_started
+      # O provisionamento grava o proxy no Prowlarr, e essa gravação testa a
+      # conexão. Esperar o FlareSolverr ficar saudável evita subir o backend
+      # enquanto o Chromium ainda está abrindo — quando o teste falha e o
+      # indexador protegido acaba ficando inativo.
+      flaresolverr:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "php -r \"exit(@fsockopen('127.0.0.1', 9000) ? 0 : 1);\""]
       interval: 10s
@@ -194,6 +219,12 @@ services:
     image: linuxserver/prowlarr:latest
     container_name: stretor_prowlarr
     restart: unless-stopped
+    # O Prowlarr é quem resolve os domínios dos trackers ao cadastrar e ao
+    # consultar os indexadores. Sem DNS confiável, um tracker bloqueado pela
+    # operadora aparece como "indexador fora do ar" no painel.
+    dns:
+      - ${DNS_PRIMARIO:-1.1.1.1}
+      - ${DNS_SECUNDARIO:-8.8.8.8}
     ports:
       - "${PROWLARR_PORT:-9696}:9696"
     environment:
@@ -205,6 +236,47 @@ services:
       # Definições customizadas ficam versionadas no projeto e são montadas por
       # cima da pasta padrão, para sobreviverem a recriações do container.
       - ./docker/prowlarr/Definitions/Custom:/config/Definitions/Custom
+    networks:
+      - stretor
+
+  # Alguns trackers públicos respondem ao Prowlarr com "blocked by CloudFlare
+  # Protection": o teste de busca falha, o cadastro é recusado e o indexador fica
+  # inativo para sempre. O FlareSolverr abre um navegador headless, resolve o
+  # desafio e devolve os cookies — o Prowlarr então alcança o tracker como se
+  # fosse um visitante comum. Ele não expõe porta no host: só o Prowlarr fala
+  # com ele, pela rede interna.
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: stretor_flaresolverr
+    restart: unless-stopped
+    # O Chromium daqui é quem resolve o domínio do tracker, então a consulta de
+    # nomes precisa ser a mesma do Prowlarr. Sem este bloco, o FlareSolverr herda
+    # o resolver do operador: dele vem ora NXDOMAIN, ora uma página de bloqueio —
+    # e nenhuma das duas passa pelo CloudFlare, que é justamente o que o proxy
+    # existe para resolver.
+    dns:
+      - ${DNS_PRIMARIO:-1.1.1.1}
+      - ${DNS_SECUNDARIO:-8.8.8.8}
+    # O Chromium embutido precisa de /dev/shm com folga. O padrão do Docker é de
+    # 64 MB, e abaixo disso o navegador morre ao subir: o FlareSolverr então
+    # responde 500 em toda requisição.
+    shm_size: "1gb"
+    environment:
+      - LOG_LEVEL=${FLARESOLVERR_LOG_LEVEL:-info}
+      - CAPTCHA_SOLVER=none
+      # O Chromium resolve por DoH, fora do UDP/53 do provedor — é o que sobra
+      # quando o DNS do operador intercepta as consultas.
+      - DNS_OVER_HTTPS=${FLARESOLVERR_DNS_OVER_HTTPS:-true}
+      - TZ=${TZ:-America/Sao_Paulo}
+    expose:
+      - "8191"
+    healthcheck:
+      # A imagem traz Python, então evitamos depender de curl/wget.
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8191/health').status == 200 else 1)"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     networks:
       - stretor
 

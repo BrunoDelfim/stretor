@@ -214,6 +214,22 @@ const LIMITE_TENTATIVAS_DE_TRECHO = 60
 const INTERVALO_TENTATIVA_DE_TRECHO_MS = 2000
 
 /*
+ * Recuperação de erro de mídia (MSE).
+ *
+ * Um `MEDIA_ERROR` fatal não é rede: o segmento chegou, mas o `SourceBuffer`
+ * recusou o conteúdo — codec declarado que não bate com o stream, ou o decoder
+ * tropeçou num trecho. O hls.js expõe `recoverMediaError()`, que descarta o
+ * `SourceBuffer` atual e cria outro com o mesmo codec, retomando a carga do
+ * ponto onde parou. Vale tentar antes de desistir: muitas vezes o primeiro
+ * trecho passa e um seguinte é rejeitado, e a recuperação salva a reprodução
+ * sem que o usuário perceba. O teto evita insistir num stream realmente
+ * incompatível — aí a mensagem de erro é a resposta honesta.
+ */
+const LIMITE_RECUPERACOES_DE_MIDIA = 3
+
+let recuperacoesDeMidia = 0
+
+/*
  * Vigia do início da reprodução.
  *
  * O primeiro `play()` raramente basta. A política de autoplay do navegador
@@ -440,7 +456,23 @@ async function iniciarPlayer(url, minhaGeracao) {
     instanciaHls = new Hls({
       enableWorker: true,
       autoStartLoad: false,
-      liveDurationInfinity: false,
+
+      /*
+       * Enquanto a conversão corre, a playlist sai como `EVENT` (live) e só
+       * declara os trechos já publicados — no começo do Lanterns, 40 s de 3388.
+       * Com esta flag em `false`, o `getDurationAndRange()` do hls.js gravava
+       * essa duração parcial no `mediaSource.duration`; o buffer atingia o fim
+       * declarado, o `bufferEOS` chamava `mediaSource.endOfStream()` e o
+       * MediaSource entrava em `ended`. A partir daí todo `appendBuffer`
+       * falhava (`bufferAppendingError`, no áudio primeiro), o hls.js reescrevia
+       * para `mediaSourceRequiresReset` e a reprodução morria como fatal.
+       *
+       * Em `true`, o hls.js mantém a duração em `Infinity` para níveis live e
+       * não há "fim" para o buffer alcançar. A barra de progresso não perde
+       * nada: a duração real exibida continua vindo de `aplicarDuracaoReal()`.
+       */
+      liveDurationInfinity: true,
+
       backBufferLength: 90,
 
       /*
@@ -511,11 +543,22 @@ async function iniciarPlayer(url, minhaGeracao) {
        * de onde pretende partir — a leitura que separa um problema de playlist de
        * um problema de player.
        */
-      const detalhes = instanciaHls.levels?.[instanciaHls.currentLevel]?.details
+      const nivel = instanciaHls.levels?.[instanciaHls.currentLevel ?? 0]
+      const detalhes = nivel?.details
 
+      /*
+       * Aqui o hls.js ainda não baixou a playlist — o `startLoad` é a linha
+       * seguinte, e é ele que dispara a busca. Por isso `details` é nulo neste
+       * ponto e a linha anterior saía inteira em `undefined`, sem servir para
+       * nada. Registramos o que já se sabe do nível (o `CODECS` declarado, quando
+       * o manifesto traz um, e o que o hls.js farejou do TS); o retrato completo
+       * da playlist fica no `LEVEL_LOADED`, logo abaixo.
+       */
       anotarDiagnostico(
-        `manifesto: live=${detalhes?.live} trechos=${detalhes?.fragments?.length} ` +
-          `inicio=${detalhes?.fragments?.[0]?.start}`
+        `manifesto: niveis=${instanciaHls.levels?.length ?? '?'} ` +
+          `codecs=${nivel?.attrs?.CODECS ?? nivel?.codecSet ?? 'sem CODECS'} ` +
+          `video=${nivel?.videoCodec ?? '?'} audio=${nivel?.audioCodec ?? '?'} ` +
+          `trechos=${detalhes?.fragments?.length ?? '?'}`
       )
 
       instanciaHls.startLoad(0)
@@ -557,6 +600,38 @@ async function iniciarPlayer(url, minhaGeracao) {
       if (cancelado || minhaGeracao !== geracao) return
 
       aplicarDuracaoReal()
+    })
+
+    /*
+     * Retrato fiel da playlist, uma única vez por reprodução.
+     *
+     * É este evento que traz os `details` de verdade: quantos trechos, a faixa de
+     * sequência (`startSN`/`endSN`), o `EXT-X-TARGETDURATION` e — o mais
+     * importante — os codecs que o hls.js farejou do TS e vai declarar ao
+     * `SourceBuffer`. Um `bufferAppendingError` já na primeira anexação é quase
+     * sempre desencontro entre esses codecs e o que veio dentro do segmento, e
+     * sem estes números não há como provar qual dos dois lados está errado.
+     *
+     * Só o primeiro disparo é registrado: o evento se repete a cada recarga da
+     * playlist e encheria o painel, empurrando para fora justamente a linha do erro.
+     */
+    let retratoDaPlaylist = false
+
+    instanciaHls.on(Hls.Events.LEVEL_LOADED, (_evento, dados) => {
+      if (cancelado || minhaGeracao !== geracao || retratoDaPlaylist) return
+
+      retratoDaPlaylist = true
+
+      const detalhes = dados?.details
+      const nivel = instanciaHls.levels?.[dados?.level ?? 0]
+
+      anotarDiagnostico(
+        `playlist: live=${detalhes?.live} trechos=${detalhes?.fragments?.length} ` +
+          `seq=${detalhes?.startSN}..${detalhes?.endSN} alvo=${detalhes?.targetduration}s ` +
+          `duracao=${detalhes?.totalduration ? detalhes.totalduration.toFixed(1) : '?'} ` +
+          `codecs=${nivel?.attrs?.CODECS ?? nivel?.codecSet ?? 'sem CODECS'} ` +
+          `video=${nivel?.videoCodec ?? '?'} audio=${nivel?.audioCodec ?? '?'}`
+      )
     })
 
     /*
@@ -684,6 +759,53 @@ async function iniciarPlayer(url, minhaGeracao) {
     })
 
     /*
+     * Sonda do ciclo de vida do MediaSource.
+     *
+     * O `readyState` do MediaSource apareceu como `ended` no primeiro erro, com
+     * o buffer ainda vazio — ou seja, o encerramento aconteceu antes de qualquer
+     * `appendBuffer`, e nenhuma duração explica isso. O hls.js tem exatamente
+     * dois caminhos para chamar `mediaSource.endOfStream()`: o desanexo da mídia
+     * (`destroy`/`detachMedia`) e o `bufferEOS`. Os eventos abaixo dizem qual
+     * deles rodou, na ordem: `BUFFERED_TO_END` só sai **depois** de um
+     * `endOfStream()` do próprio hls.js, e `MEDIA_DETACHED` só sai de um
+     * desanexo. Se nenhum dos dois aparecer antes do primeiro `erro hls.js`, o
+     * `ended` veio do motor do navegador na largada — o caso que o hls.js cita
+     * como "ended readyState on cold start", e que não se conserta configurando
+     * o player.
+     */
+    instanciaHls.on(Hls.Events.MEDIA_ATTACHED, () => anotarDiagnostico('ciclo: mídia anexada'))
+    instanciaHls.on(Hls.Events.MEDIA_DETACHED, () =>
+      anotarDiagnostico('ciclo: mídia desanexada')
+    )
+    instanciaHls.on(Hls.Events.BUFFER_CREATED, () =>
+      anotarDiagnostico('ciclo: sourcebuffers criadas')
+    )
+    instanciaHls.on(Hls.Events.BUFFER_EOS, () => anotarDiagnostico('ciclo: hls.js pediu EOS'))
+    instanciaHls.on(Hls.Events.BUFFERED_TO_END, () =>
+      anotarDiagnostico('ciclo: mediaSource.endOfStream() chamado')
+    )
+
+    /*
+     * Do lado do elemento, `emptied` é o sinal de que algo recarregou o
+     * `<video>`: recarregar desanexa o MediaSource e todo `appendBuffer`
+     * seguinte falha. Não custa registrar também o erro do próprio elemento —
+     * um `MediaError` ali é o decoder recusando o stream, causa bem diferente.
+     */
+    const elementoDoPlayer = player?.media ?? midia
+    const eventosDoElemento = ['emptied', 'loadstart', 'loadedmetadata', 'ended']
+
+    for (const nome of eventosDoElemento) {
+      elementoDoPlayer?.addEventListener(nome, () => anotarDiagnostico(`elemento: ${nome}`))
+    }
+
+    elementoDoPlayer?.addEventListener('error', () =>
+      anotarDiagnostico(
+        `elemento: mediaError codigo=${elementoDoPlayer.error?.code ?? '?'} ` +
+          `msg=${elementoDoPlayer.error?.message ?? '-'}`
+      )
+    )
+
+    /*
      * Uma falha fatal aqui é de reprodução, não de fonte: a playlist existe e
      * foi servida. Avisamos o usuário sem mexer no fluxo de fontes, que já
      * terminou quando a playlist ficou pronta.
@@ -695,11 +817,36 @@ async function iniciarPlayer(url, minhaGeracao) {
      * de onde o usuário soltou o cursor assim que o trecho for publicado.
      */
     instanciaHls.on(Hls.Events.ERROR, (_evento, dados) => {
-      // O detalhe é o que distingue um stall de buffer de um erro de rede; sem
-      // ele o console não ajuda a diagnosticar a tela preta.
+      /*
+       * O `details` diz a categoria, mas o motivo real só aparece na mensagem que
+       * o navegador deu ao recusar a anexação — `NotSupportedError` para codec
+       * fora do `SourceBuffer`, `QuotaExceededError` para buffer cheio,
+       * `InvalidStateError` para MediaSource já fechado — e no tamanho do que se
+       * tentou anexar. Sem eles, "erro de mídia" não separa um codec incompatível
+       * de um segmento truncado, que são problemas opostos.
+       */
+      const trecho = dados?.parent ?? dados?.frag
+
+      /*
+       * A duração do elemento espelha o `mediaSource.duration`, e o fim do buffer
+       * é até onde já se anexou. Registrar os dois aqui é o que separa "o hls.js
+       * encerrou o programa cedo" — quando a duração é a da playlist parcial e o
+       * buffer encostou nela — de "o decoder recusou o trecho", em que a duração
+       * é a esperada e o buffer tem folga à frente.
+       */
+      const midiaDaFalha = player?.media
+      const fimDoBuffer = midiaDaFalha?.buffered?.length
+        ? midiaDaFalha.buffered.end(midiaDaFalha.buffered.length - 1)
+        : null
+
       anotarDiagnostico(
         `erro hls.js: ${dados.type}/${dados.details} fatal=${dados.fatal} ` +
-          `${dados.reason ?? ''}`
+          `motivo=${dados.reason ?? '-'} ` +
+          `msg=${dados.err?.message ?? dados.error?.message ?? '-'} ` +
+          `url=${dados.url ?? trecho?.url ?? '-'} ` +
+          `bytes=${dados.chunkMeta?.byteLength ?? '-'} http=${dados.response?.code ?? '-'} ` +
+          `duracao=${midiaDaFalha?.duration ?? '-'} ` +
+          `buffer=${fimDoBuffer !== null ? fimDoBuffer.toFixed(1) : '-'}`
       )
 
       if (!dados.fatal) return
@@ -725,6 +872,32 @@ async function iniciarPlayer(url, minhaGeracao) {
            */
           instanciaHls.startLoad(player?.media?.currentTime ?? 0)
         }, INTERVALO_TENTATIVA_DE_TRECHO_MS)
+
+        return
+      }
+
+      /*
+       * Erro de mídia: o segmento chegou, mas o `SourceBuffer` o recusou. Não é
+       * rede nem fonte — é o decoder. `recoverMediaError()` descarta o buffer
+       * atual e cria outro com o mesmo codec, retomando do ponto onde parou; na
+       * prática resolve a maioria dos tropeços de decodificação sem que o
+       * usuário veja nada. Só desistimos depois de esgotar as tentativas, quando
+       * aí sim o stream é realmente incompatível com o navegador.
+       */
+      const erroDeMidia = dados.type === Hls.ErrorTypes.MEDIA_ERROR
+
+      if (erroDeMidia && recuperacoesDeMidia < LIMITE_RECUPERACOES_DE_MIDIA) {
+        recuperacoesDeMidia += 1
+
+        anotarDiagnostico(
+          `recuperando erro de mídia (${recuperacoesDeMidia}/${LIMITE_RECUPERACOES_DE_MIDIA})`
+        )
+
+        try {
+          instanciaHls.recoverMediaError()
+        } catch (falha) {
+          anotarDiagnostico(`recoverMediaError falhou: ${falha?.message ?? falha}`)
+        }
 
         return
       }
@@ -1173,6 +1346,9 @@ async function buscarTrechoRemoto(tempoFilme) {
   if (!sessao) return
 
   // A timeline inteira vai mudar: a insistência num trecho antigo perde sentido.
+  // O mesmo vale para as recuperações de mídia: a playlist nova é outro stream.
+  recuperacoesDeMidia = 0
+
   if (timerTrecho) {
     clearTimeout(timerTrecho)
     timerTrecho = null
@@ -1295,6 +1471,13 @@ function aguardarReposicionamento(sessao, minhaGeracao) {
  * mexendo no estado do player atual.
  */
 async function tentarFontes(fontes, minhaGeracao) {
+  /*
+   * Quantas fontes foram descartadas por não trazerem áudio em português. Se a
+   * lista inteira cair por esse motivo, a mensagem final precisa dizer isso —
+   * "nenhuma fonte conseguiu conectar" esconderia que o problema é de idioma.
+   */
+  let recusadasPorIdioma = 0
+
   for (let indice = 0; indice < fontes.length; indice += 1) {
     if (cancelado || minhaGeracao !== geracao) return
 
@@ -1317,10 +1500,14 @@ async function tentarFontes(fontes, minhaGeracao) {
 
       // A sessão foi criada; acompanhamos até ficar pronta ou falhar. Se
       // falhar, o loop segue para a próxima fonte.
-      const resultado = await aguardarFonte(minhaGeracao)
+      const resultado = await aguardarFonte(minhaGeracao, fonte)
 
       if (resultado === 'pronto') {
         return
+      }
+
+      if (resultado === 'sem_audio_pt') {
+        recusadasPorIdioma += 1
       }
     } catch {
       // Fonte indisponível: seguimos para a próxima.
@@ -1328,7 +1515,10 @@ async function tentarFontes(fontes, minhaGeracao) {
   }
 
   if (!cancelado && minhaGeracao === geracao) {
-    erro.value = 'Nenhuma fonte conseguiu conectar. Tente novamente mais tarde.'
+    erro.value =
+      recusadasPorIdioma > 0 && recusadasPorIdioma === fontes.length
+        ? 'Nenhuma fonte traz áudio em português.'
+        : 'Nenhuma fonte conseguiu conectar. Tente novamente mais tarde.'
     estado.value = 'erro'
   }
 }
@@ -1363,17 +1553,31 @@ function mensagemDeProgresso(status) {
 }
 
 /**
+ * Diz se a fonte prometia áudio em português.
+ *
+ * O contrato do backend só rotula como `pt-BR` (dublado) ou `dual` (dual áudio)
+ * as fontes que declaram português. É essa promessa que o porteiro abaixo
+ * confere contra o áudio real do arquivo.
+ */
+function prometePortugues(fonte) {
+  return fonte?.idioma === 'pt-BR' || fonte?.idioma === 'dual'
+}
+
+/**
  * Aguarda o desfecho de uma única fonte.
  *
- * Devolve `pronto` quando a playlist ficou disponível no servidor, ou `falhou`
- * para o chamador seguir para a próxima fonte. A montagem do player não entra
- * nessa decisão: uma vez que a playlist existe, a fonte é válida.
+ * Devolve `pronto` quando a playlist ficou disponível no servidor, `falhou` para
+ * o chamador seguir para a próxima fonte, ou `sem_audio_pt` quando a fonte
+ * conectou mas o arquivo não tem áudio em português — caso em que ela é
+ * descartada em vez de tocar em inglês sob um rótulo de dublagem. A montagem do
+ * player não entra nessa decisão: uma vez que a playlist existe e o áudio
+ * confere, a fonte é válida.
  *
  * A sessão desta fonte é capturada de uma vez, em vez de lida da variável
  * compartilhada a cada consulta: assim uma troca de filme no meio do caminho
  * não faz este laço consultar (nem encerrar) a sessão de outro filme.
  */
-function aguardarFonte(minhaGeracao) {
+function aguardarFonte(minhaGeracao, fonte) {
   const inicio = Date.now()
   const sessaoDaFonte = sessaoId
 
@@ -1417,6 +1621,19 @@ function aguardarFonte(minhaGeracao) {
         }
 
         if (status.status === 'pronto' && status.playlist) {
+          /*
+           * Porteiro de idioma. A fonte prometeu dublagem, mas quem diz o que há
+           * no arquivo é o ffprobe: `tem_audio_pt === false` prova que só existe
+           * áudio original. A fonte é descartada em vez de tocar em inglês sob o
+           * rótulo "Dublado", e o loop segue para a próxima.
+           *
+           * O `null` (sem faixas para julgar) não reprova: só o `false` é prova.
+           */
+          if (prometePortugues(fonte) && status.tem_audio_pt === false) {
+            await limparSessaoAtual()
+            return resolve('sem_audio_pt')
+          }
+
           const url = streamingService.urlPlaylist(status.playlist)
 
           /*
@@ -1545,6 +1762,7 @@ async function iniciar() {
   // herdaria o tamanho do antigo até o status trazer o valor correto.
   duracaoTotal.value = null
   tentativasDeTrecho = 0
+  recuperacoesDeMidia = 0
   // Uma busca pendente pertence ao filme anterior.
   alvoDeSeek = null
   // A timeline do filme novo começa do zero.

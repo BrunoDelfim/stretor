@@ -11,7 +11,9 @@ import {
   aguardarBufferInicial,
   localizarMoov,
   mapearCaixas,
+  profundidadeRelevante,
   somarDuracaoDaPlaylist,
+  temFaixaPortuguesa,
 } from './hls.js'
 import { logger } from '../utils/logger.js'
 
@@ -527,6 +529,15 @@ async function prepararSessao(sessao) {
   sessao.idiomaAudio = analise.idiomaAudio ?? null
   sessao.idiomaAudioRotulo = analise.idiomaAudioRotulo ?? null
 
+  /*
+   * Fato que o porteiro de idioma consulta: existe faixa em português? Fica
+   * `null` quando a sondagem não trouxe faixas, para não reprovar uma fonte por
+   * falta de dado — só o `false` (prova de que só há áudio original) reprova.
+   */
+  sessao.temAudioPortugues = sessao.idiomasAudio.length
+    ? temFaixaPortuguesa(sessao.idiomasAudio)
+    : null
+
   // Agora a resposta é definitiva: com o cabeçalho lido, o `moov` de um arquivo
   // com índice no fim já chegou ao disco.
   const indiceNoFim = await indiceEstaNoFim(sessao, arquivo, caminho)
@@ -546,6 +557,9 @@ async function prepararSessao(sessao) {
   sessao.modo = analise.modo
   sessao.indiceNoFim = indiceNoFim
   sessao.tempoBase = 0
+  // Faixa de áudio escolhida na análise; o reposicionamento precisa dela para
+  // remontar a conversão com o mesmo mapeamento de faixas.
+  sessao.indiceAudio = analise.indiceAudio ?? null
 
   /*
    * Este log é a leitura do caso: caminho escolhido, codecs, duração e o
@@ -555,7 +569,15 @@ async function prepararSessao(sessao) {
    * adivinhar pelo comportamento do player.
    */
   logger.info(
-    `[sessao ${sessao.id}] caminho=${indiceNoFim ? 'disco' : 'pipe'} modo=${analise.modo} video=${analise.videoCodec} audio=${analise.audioCodec} audioIdioma=${sessao.idiomaAudioRotulo ?? sessao.idiomaAudio ?? '?'} faixasAudio=${sessao.idiomasAudio.length} keyframes=${analise.intervaloKeyframes?.toFixed(2) ?? '?'}s duracao=${sessao.duracao ?? '?'} inicioFonte=${analise.inicioFonte ?? '?'}s cabecalho=${descreverCabecalho(caminho)}`
+    `[sessao ${sessao.id}] caminho=${indiceNoFim ? 'disco' : 'pipe'} modo=${analise.modo} video=${analise.videoCodec} pixFmt=${analise.pixFmt ?? '?'} audio=${analise.audioCodec} audioIdioma=${sessao.idiomaAudioRotulo ?? sessao.idiomaAudio ?? '?'} faixaAudio=${analise.indiceAudio ?? '?'} faixasAudio=${sessao.idiomasAudio.length} keyframes=${analise.intervaloKeyframes?.toFixed(2) ?? '?'}s duracao=${sessao.duracao ?? '?'} inicioFonte=${analise.inicioFonte ?? '?'}s cabecalho=${descreverCabecalho(caminho)}`
+  )
+
+  /*
+   * A lista completa das faixas fica numa linha própria: é longa e só interessa
+   * quando o áudio escolhido não bate com o que a fonte prometia.
+   */
+  logger.info(
+    `[sessao ${sessao.id}] faixas de áudio: ${descreverFaixasAudio(sessao.idiomasAudio)} (português: ${sessao.temAudioPortugues === null ? '?' : sessao.temAudioPortugues ? 'sim' : 'não'})`
   )
 
   if (indiceNoFim) {
@@ -584,6 +606,7 @@ async function prepararSessao(sessao) {
       diretorio: sessao.diretorio,
       modo: analise.modo,
       duracaoEsperada: sessao.duracao,
+      indiceAudio: analise.indiceAudio,
       aoProgredir: (progresso) => {
         sessao.progresso = progresso
       },
@@ -652,6 +675,7 @@ async function prepararSessao(sessao) {
         diretorio: sessao.diretorio,
         modo: analise.modo,
         duracaoEsperada: sessao.duracao,
+        indiceAudio: analise.indiceAudio,
         aoProgredir: (progresso) => {
           sessao.progresso = progresso
         },
@@ -741,12 +765,46 @@ function descreverCabecalho(caminho) {
 }
 
 /**
+ * Resume as faixas de áudio do arquivo para o log da sessão.
+ *
+ * O log antes só dizia o idioma da faixa escolhida. Quando a fonte promete
+ * "Dublado" e toca em inglês, a pergunta é sempre a mesma: o arquivo não tem
+ * PT-BR, ou tem e não foi reconhecido? Só a lista completa responde — cada
+ * faixa com seu código (`language`) e título (`title`), que é onde a dublagem
+ * costuma se esconder quando o encoder não marca o idioma.
+ *
+ * @param {Array<object>} faixas faixas descritas por `descreverFaixaAudio`
+ * @returns {string}
+ */
+function descreverFaixasAudio(faixas) {
+  if (!faixas?.length) return 'nenhuma'
+
+  return faixas
+    .map((faixa) => {
+      const codigo = faixa.codigo ?? 'sem-código'
+      const titulo = faixa.rotulo ?? 'sem-título'
+
+      return `#${faixa.indice}[${codigo}|${titulo}]`
+    })
+    .join(' ')
+}
+
+/**
  * Registra no log como a playlist publicada começa.
  *
  * Sequência de mídia, primeiro `#EXTINF` e quantidade de segmentos: se o
  * primeiro trecho tiver duração coerente e a sequência for zero, a conversão
  * partiu do início do arquivo. É a evidência que faltava para separar um
  * problema de conversão de um problema de player.
+ *
+ * Vai além da contagem porque ela sozinha não distingue uma conversão saudável
+ * de um muxer que cria o arquivo e morre antes de fechá-lo: um `.ts` de 4 s em
+ * 1080p ocupa centenas de KB, e algumas centenas de **bytes** significam um
+ * segmento quebrado. Como o `SourceBuffer` recusa anexar exatamente isso, o
+ * tamanho dos primeiros trechos é o dado que separa "codec incompatível" de
+ * "arquivo vazio". O cabeçalho cru da playlist entra junto pelo mesmo motivo: é
+ * nele que se lê a versão do HLS, o `TARGETDURATION` e os nomes reais dos
+ * trechos, sem depender do que o player interpretou.
  *
  * @param {object} sessao
  */
@@ -760,11 +818,25 @@ function registrarDiagnostico(sessao) {
 
     const sequencia = linhas.find((linha) => linha.startsWith('#EXT-X-MEDIA-SEQUENCE'))
     const primeiro = linhas.find((linha) => linha.startsWith('#EXTINF'))
-    const segmentos = linhas.filter((linha) => linha.endsWith('.ts')).length
+    const nomes = linhas.filter((linha) => linha.endsWith('.ts'))
 
     logger.info(
-      `[sessao ${sessao.id}] playlist: ${sequencia ?? 'sem sequência'} | ${primeiro ?? 'sem EXTINF'} | segmentos=${segmentos}`
+      `[sessao ${sessao.id}] playlist: ${sequencia ?? 'sem sequência'} | ${primeiro ?? 'sem EXTINF'} | segmentos=${nomes.length}`
     )
+
+    const tamanhos = nomes
+      .slice(0, 3)
+      .map((nome) => {
+        try {
+          return `${nome}=${fs.statSync(path.join(sessao.diretorio, nome)).size}`
+        } catch {
+          return `${nome}=ausente`
+        }
+      })
+      .join(' ')
+
+    logger.info(`[sessao ${sessao.id}] primeiros trechos: ${tamanhos || 'nenhum'}`)
+    logger.info(`[sessao ${sessao.id}] playlist crua:\n${linhas.slice(0, 12).join('\n')}`)
   } catch (erro) {
     logger.warn(`[sessao ${sessao.id}] falha ao inspecionar a playlist:`, erro.message)
   }
@@ -1196,7 +1268,30 @@ async function analisarComEspera(sessao, caminho, arquivo, timeoutMs = 120000) {
       // Um cabeçalho lido pela metade devolve os streams sem os codecs. Aceitar
       // isso faria o FFmpeg "concluir" sem gerar segmento nenhum, então só
       // consideramos a análise válida quando vídeo e áudio foram identificados.
-      if (analise.videoCodec && analise.audioCodec) {
+      const audioEVideoLidos = Boolean(analise.videoCodec && analise.audioCodec)
+
+      /*
+       * Para um codec que copiaríamos, o `codec_name` sozinho não basta. Ele sai
+       * do cabeçalho do contêiner e chega antes dos dados, enquanto o `pix_fmt`
+       * depende do SPS, que vive nos primeiros quadros do stream. Aceitar a
+       * análise só com o codec deixava passar um 10-bit lido pela metade
+       * (`codec_name='h264'`, `pix_fmt` vazio): `decidirModo` o classificava
+       * como copiável e o MSE recusava o segmento. Por isso insistimos até o
+       * `pix_fmt` chegar, enquanto o codec for de um tipo que copiaríamos.
+       */
+      const faltaProfundidade = profundidadeRelevante(analise.videoCodec) && !analise.pixFmt
+
+      if (audioEVideoLidos && !faltaProfundidade) {
+        return analise
+      }
+
+      /*
+       * Com o torrent completo os dados estão todos em disco: se o `pix_fmt`
+       * ainda não veio, não virá. Aceitamos a análise e deixamos `decidirModo`
+       * tratar a ausência como motivo para transcodificar, em vez de copiar um
+       * vídeo de profundidade desconhecida.
+       */
+      if (arquivo.progress >= 1 && audioEVideoLidos) {
         return analise
       }
 
@@ -1262,6 +1357,13 @@ export function obterSessao(id) {
     idioma_audio: sessao.idiomaAudio ?? null,
     idioma_audio_rotulo: sessao.idiomaAudioRotulo ?? null,
     idiomas_audio: sessao.idiomasAudio ?? [],
+    /*
+     * Fato do áudio para o porteiro de idioma: `true`/`false` quando o arquivo
+     * foi sondado, `null` quando não há faixas a julgar. O frontend só reprova a
+     * fonte no `false` — prometer dublagem e entregar o áudio original é o caso
+     * que ele precisa descartar antes de montar o player.
+     */
+    tem_audio_pt: sessao.temAudioPortugues ?? null,
     /*
      * Tempo, em segundos, onde começa a timeline atual. Vale zero na reprodução
      * normal; depois de um seek remoto vale o ponto buscado, porque a conversão
@@ -1478,6 +1580,7 @@ async function reposicionarEmSegundoPlano(sessao, tempo) {
         modo: sessao.modo,
         duracaoEsperada: duracaoRestante,
         tempoInicial: tempo,
+        indiceAudio: sessao.indiceAudio,
         aoProgredir: (progresso) => {
           sessao.progresso = progresso
         },
@@ -1534,6 +1637,7 @@ async function reposicionarEmSegundoPlano(sessao, tempo) {
         modo: sessao.modo,
         duracaoEsperada: duracaoRestante,
         tempoInicial: residual,
+        indiceAudio: sessao.indiceAudio,
         aoProgredir: (progresso) => {
           sessao.progresso = progresso
         },

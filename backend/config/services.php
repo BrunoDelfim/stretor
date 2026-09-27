@@ -111,6 +111,13 @@ return [
         'torznab_key' => env('TORRENTS_TORZNAB_KEY', ''),
         // Categoria Torznab de filmes (2000 = Movies).
         'torznab_categoria' => env('TORRENTS_TORZNAB_CATEGORIA', '2000'),
+        /*
+         * Categoria Torznab de séries (5000 = TV). É uma chave separada porque
+         * o Prowlarr filtra por categoria: pedir um episódio com `cat=2000`
+         * (filmes) devolve zero resultados, por mais que o release exista. Era
+         * por isso que uma série só vinha vazia mesmo com o indexador saudável.
+         */
+        'torznab_categoria_serie' => env('TORRENTS_TORZNAB_CATEGORIA_SERIE', '5000'),
 
         // --- Degrau 3: YTS (reserva em inglês) ---
 
@@ -119,6 +126,15 @@ return [
         // contrato da API v2, então é ele que fica como padrão.
         'base_url' => env('TORRENTS_BASE_URL', 'https://yts.gg'),
         'cache_ttl' => (int) env('TORRENTS_CACHE_TTL', 1800),
+
+        /*
+         * Enquanto o player só lida com áudio em PT-BR, manter releases em
+         * outros idiomas na lista só faz o frontend perder tempo tentando uma
+         * fonte que não vai servir. Com isto ligado, a ordenação descarta tudo
+         * que não seja dublado ou dual áudio — a lista fica curta e o teste,
+         * rápido. Desligue quando o suporte a legendado/original entrar.
+         */
+        'apenas_pt_br' => (bool) env('TORRENTS_APENAS_PT_BR', true),
     ],
 
     // --- Provisionamento do Prowlarr (degrau 2) ---
@@ -140,8 +156,36 @@ return [
         // Nome exibido no Prowlarr caso o schema não traga um.
         'rotulo_padrao' => env('PROWLARR_ROTULO_PADRAO', 'Índice público PT-BR'),
 
-        // Ids das definições Cardigann versionadas em
-        // docker/prowlarr/Definitions/Custom. Cada uma vira um indexador.
-        'indexadores' => ['torrentdosfilmes'],
+        /*
+         * Ids das definições Cardigann que viram indexador. A lista mistura dois
+         * tipos:
+         *
+         *   - `torrentdosfilmes`: definição própria, versionada em
+         *     docker/prowlarr/Definitions/Custom. É a única fonte PT-BR, mas o
+         *     domínio público vive caindo (hoje está sequestrado por um site de
+         *     apostas). O cadastro usa `forceSave` para sobreviver a isso.
+         *   - `1337x`: definição oficial que já vem embutida no Prowlarr. É um
+         *     tracker público estável e com acervo amplo; entra como rede de
+         *     segurança quando o tracker PT-BR está fora do ar. Vive atrás do
+         *     CloudFlare, então depende do proxy configurado abaixo.
+         */
+        'indexadores' => ['torrentdosfilmes', '1337x'],
+
+        /*
+         * Proxy para os trackers que o CloudFlare barra. O Prowlarr recusa o
+         * cadastro enquanto o teste de busca falha, e o 1337x responde
+         * justamente com "blocked by CloudFlare Protection". O FlareSolverr sobe
+         * junto com o stack, o backend o cadastra como proxy e associa os
+         * indexadores abaixo por tag — depois disso o teste passa e o indexador
+         * nasce ativo.
+         *
+         * `proxy_ativo` em false volta ao comportamento antigo: o 1337x fica
+         * cadastrado, porém inativo.
+         */
+        'flaresolverr_url' => env('FLARESOLVERR_URL', 'http://flaresolverr:8191'),
+        'proxy_ativo' => (bool) env('PROWLARR_PROXY_ATIVO', true),
+        'proxy_nome' => env('PROWLARR_PROXY_NOME', 'FlareSolverr'),
+        'proxy_tag' => env('PROWLARR_PROXY_TAG', 'flaresolverr'),
+        'proxy_indexadores' => ['1337x'],
     ],
 ];

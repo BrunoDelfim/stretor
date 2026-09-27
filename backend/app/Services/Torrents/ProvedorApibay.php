@@ -103,6 +103,18 @@ class ProvedorApibay implements ProvedorTorrents
             $nome = $this->limparTexto((string) ($item['name'] ?? ''));
             $hash = strtolower((string) $item['info_hash']);
 
+            /*
+             * O APIBay indexa o acervo mundial e a busca por nome devolve
+             * temporadas vizinhas junto do episódio pedido. Sem esta peneira, um
+             * release "S10E01" poderia entrar na lista de um pedido "S01E01" e,
+             * se fosse dublado, subir para o topo da ordenação — o player tentaria
+             * a temporada errada antes de chegar à certa.
+             */
+            if ($episodioDeSerie
+                && ! TermosBusca::correspondeAoEpisodio($nome, $temporada, $episodio)) {
+                continue;
+            }
+
             $fontes[] = $this->montarFonte([
                 'id' => $hash,
                 'titulo' => $nome,

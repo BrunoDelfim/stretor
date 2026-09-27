@@ -4,6 +4,7 @@ namespace App\Services\Torrents;
 
 use App\Contracts\ProvedorTorrents;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Provedor Torrentio — agregador por identificador do IMDb.
@@ -111,9 +112,40 @@ class ProvedorTorrentio implements ProvedorTorrents
         foreach ($streams as $stream) {
             $fonte = $this->normalizarStream((array) $stream, $titulo);
 
-            if ($fonte !== null) {
-                $fontes[] = $fonte;
+            if ($fonte === null) {
+                continue;
             }
+
+            /*
+             * O Torrentio responde pela série inteira e mistura temporadas na
+             * mesma lista: pedir o S01E01 de "American Horror Story" devolveu um
+             * release "S10E01" em dual áudio. Como o dublado sobe para o topo da
+             * ordenação, essa fonte de outra temporada era a primeira tentada
+             * pelo player — e só depois de ela falhar o fluxo chegava à original
+             * correta. Descartamos aqui o que declara numeração diferente da
+             * pedida; releases sem numeração passam, para não apagar packs e
+             * nomes nacionais legítimos.
+             */
+            if ($temporada !== null && $episodio !== null
+                && ! TermosBusca::correspondeAoEpisodio($fonte['titulo'], $temporada, $episodio)) {
+                continue;
+            }
+
+            /*
+             * Diagnóstico do idioma. Registra o que o nome do release declarou e
+             * como ele foi classificado, para confirmar pelo log que a
+             * classificação deixou de ler o rótulo global do Torrentio — o
+             * release americano do EZTV tem de sair como "original", não como
+             * "dublado".
+             */
+            if (config('app.debug')) {
+                Log::debug('[torrentio] idioma da fonte', [
+                    'titulo' => $fonte['titulo'],
+                    'idioma' => $fonte['idioma'],
+                ]);
+            }
+
+            $fontes[] = $fonte;
         }
 
         return $fontes;
@@ -134,7 +166,21 @@ class ProvedorTorrentio implements ProvedorTorrents
         }
 
         $rotulo = (string) ($stream['title'] ?? '');
+
+        /*
+         * O nome do release vive na primeira linha do rótulo, não no campo
+         * `name` do stream. O `name` traz apenas o provedor e a qualidade
+         * ("Torrentio\n720p"), então usá-lo como título apagava a numeração
+         * ("S01E01") e as tags de idioma ("PORTUGUÊS BR", "DUAL") — era por isso
+         * que a validação de episódio e a classificação de idioma falhavam e
+         * todas as fontes do Torrentio eram descartadas.
+         *
+         * O `filename` do `behaviorHints`, quando existe, é o nome do arquivo
+         * dentro do torrent e é a fonte mais confiável; o rótulo cobre os casos
+         * em que ele não vem (a maioria dos streams nacionais).
+         */
         $nome = (string) ($stream['behaviorHints']['filename'] ?? '')
+            ?: $this->nomeDoRotulo($rotulo)
             ?: (string) ($stream['name'] ?? '')
             ?: $titulo;
 
@@ -149,8 +195,29 @@ class ProvedorTorrentio implements ProvedorTorrents
             'tamanho_bytes' => $this->tamanhoDoRotulo($rotulo),
             'seeds' => $this->seedsDoRotulo($rotulo),
             'peers' => 0,
-            'idioma' => $this->idiomaDoRotulo($nome.' '.$rotulo),
+            'idioma' => $this->idiomaDoNome($nome),
         ], $this->identificador(), $this->rotulo());
+    }
+
+    /**
+     * Extrai o nome do release da primeira linha do rótulo do Torrentio.
+     *
+     * O rótulo vem em várias linhas: a primeira é o nome do release, a segunda
+     * traz os metadados ("👤 0 💾 1.62 GB ⚙️ ThePirateBay") e as seguintes as
+     * faixas de áudio e bandeiras. Devolve vazio quando a primeira linha é só o
+     * nome do provedor (ex.: "Torrentio"), para não repetir o que o `name` já dá.
+     */
+    private function nomeDoRotulo(string $rotulo): string
+    {
+        $linhas = preg_split('/\r\n|\r|\n/', trim($rotulo)) ?: [];
+
+        $primeira = trim((string) ($linhas[0] ?? ''));
+
+        if ($primeira === '' || stripos($primeira, 'torrentio') === 0) {
+            return '';
+        }
+
+        return $primeira;
     }
 
     /**
@@ -211,20 +278,31 @@ class ProvedorTorrentio implements ProvedorTorrents
     }
 
     /**
-     * Deduz o idioma pelo rótulo do stream.
+     * Deduz o idioma pelo **nome do release**, nunca pelo rótulo do Torrentio.
      *
-     * O Torrentio marca conteúdo dublado com a bandeira do país (🇧🇷) e às vezes
-     * escreve o idioma por extenso. Quando encontra a bandeira, avisamos o
-     * montador da fonte via campo de idioma, que tem precedência sobre a tag do
-     * nome do arquivo.
+     * A busca vai configurada com `language=portuguese` para o Torrentio incluir
+     * os provedores nacionais, mas esse filtro faz o indexador anotar a resposta
+     * inteira com a bandeira de português. Ler o rótulo completo classificava
+     * *todas* as fontes como "Dublado" — inclusive um release americano do EZTV
+     * ou um WEB-DL "ENG/ITA" — e, como o idioma do provedor tem precedência no
+     * `NormalizaFonte::montarFonte()`, a tag do próprio nome do arquivo nunca era
+     * consultada. O player então tocava em inglês uma fonte prometida como
+     * dublada, que foi exatamente o caso do "Lanterns".
+     *
+     * A bandeira e o texto do rótulo são promessa do indexador; o nome do release
+     * é o que a fonte de fato declara. Por isso só olhamos para ele aqui — e o
+     * que ele não provar, o `IdiomaFonte::deduzirDoTitulo()` decide a partir das
+     * tags do próprio nome ("DUAL", "DUBLADO", "PT-BR", "NACIONAL").
+     *
+     * O valor devolvido é o código que `IdiomaFonte::deduzirDoIdioma()` entende
+     * ("portuguese"); devolver vazio deixa a classificação para a tag do nome.
      */
-    private function idiomaDoRotulo(string $texto): string
+    private function idiomaDoNome(string $nome): string
     {
-        if (str_contains($texto, '🇧🇷') || stripos($texto, 'brazil') !== false) {
-            return 'pt-BR';
-        }
-
-        if (stripos($texto, 'portuguese') !== false) {
+        if (stripos($nome, 'brazil') !== false
+            || stripos($nome, 'portuguese') !== false
+            || stripos($nome, 'português') !== false
+            || stripos($nome, 'portugues') !== false) {
             return 'portuguese';
         }
 

@@ -4,6 +4,7 @@ namespace App\Services\Torrents;
 
 use App\Contracts\ProvedorTorrents;
 use App\Enums\IdiomaFonte;
+use App\Services\Torrents\TermosBusca;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
@@ -227,7 +228,53 @@ class CatalogoProvedores
             );
         }
 
-        return $fontes;
+        return $this->aproveitaveis($fontes, $temporada, $episodio);
+    }
+
+    /**
+     * Descarta, ainda dentro da cascata, o que não serve para o pedido.
+     *
+     * O critério de parada da cascata é `temDublado()`, e ele precisa enxergar
+     * apenas fontes que realmente atendem ao pedido. Sem este corte, um dual
+     * áudio de outra temporada — que o Torrentio mistura na resposta da série —
+     * encerrava a busca no degrau 1 e, descartado depois na ordenação, deixava a
+     * lista vazia sem que os degraus seguintes fossem tentados.
+     *
+     * São dois cortes, na ordem em que importam:
+     *
+     * 1. **Numeração** — releases que declaram uma temporada/episódio diferente
+     *    da pedida. Releases sem numeração passam, para não apagar packs e nomes
+     *    nacionais legítimos.
+     * 2. **Idioma** — quando `apenas_pt_br` está ligado, só dublado e dual áudio
+     *    seguem. É o mesmo corte que a ordenação faz, mas aplicado cedo o
+     *    bastante para a cascata reagir a ele.
+     *
+     * @param  array<int, array<string, mixed>>  $fontes
+     * @return array<int, array<string, mixed>>
+     */
+    private function aproveitaveis(array $fontes, ?int $temporada, ?int $episodio): array
+    {
+        $apenasPtBr = (bool) config('services.torrents.apenas_pt_br', true);
+
+        return array_values(array_filter(
+            $fontes,
+            function (array $fonte) use ($temporada, $episodio, $apenasPtBr): bool {
+                if ($temporada !== null && $episodio !== null
+                    && ! TermosBusca::correspondeAoEpisodio((string) ($fonte['titulo'] ?? ''), $temporada, $episodio)) {
+                    return false;
+                }
+
+                if ($apenasPtBr && ! in_array(
+                    $fonte['idioma'] ?? '',
+                    [IdiomaFonte::DUBLADO->value, IdiomaFonte::DUAL_AUDIO->value],
+                    true
+                )) {
+                    return false;
+                }
+
+                return true;
+            }
+        ));
     }
 
     /**

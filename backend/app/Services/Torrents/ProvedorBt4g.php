@@ -85,7 +85,7 @@ class ProvedorBt4g implements ProvedorTorrents
                     continue 2;
                 }
 
-                $fontes = array_merge($fontes, $this->extrair($html));
+                $fontes = array_merge($fontes, $this->extrair($html, $temporada, $episodio));
             }
 
             if (! empty($fontes)) {
@@ -123,7 +123,7 @@ class ProvedorBt4g implements ProvedorTorrents
      *
      * @return array<int, array<string, mixed>>
      */
-    private function extrair(string $html): array
+    private function extrair(string $html, ?int $temporada = null, ?int $episodio = null): array
     {
         $documento = $this->carregarHtml($html);
 
@@ -151,6 +151,17 @@ class ProvedorBt4g implements ProvedorTorrents
             $titulo = $this->limparTexto($link->textContent);
 
             if ($titulo === '') {
+                continue;
+            }
+
+            /*
+             * O BT4G agrega o DHT inteiro, então a busca por nome traz temporadas
+             * vizinhas. A peneira descarta o que declara numeração diferente da
+             * pedida — sem ela, um "S10E01" dublado poderia se passar por
+             * "S01E01" e ser a primeira fonte tentada pelo player.
+             */
+            if ($temporada !== null && $episodio !== null
+                && ! TermosBusca::correspondeAoEpisodio($titulo, $temporada, $episodio)) {
                 continue;
             }
 

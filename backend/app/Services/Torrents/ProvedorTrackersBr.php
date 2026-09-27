@@ -105,7 +105,7 @@ class ProvedorTrackersBr implements ProvedorTorrents
             return [];
         }
 
-        return $this->recolherMagnets($candidatos);
+        return $this->recolherMagnets($candidatos, $temporada, $episodio);
     }
 
     /**
@@ -162,7 +162,7 @@ class ProvedorTrackersBr implements ProvedorTorrents
      * @param  array<int, array{titulo: string, url: string}>  $candidatos
      * @return array<int, array<string, mixed>>
      */
-    private function recolherMagnets(array $candidatos): array
+    private function recolherMagnets(array $candidatos, ?int $temporada = null, ?int $episodio = null): array
     {
         /*
          * O teto por site vale dentro de cada site, mas a soma dos sites poderia
@@ -189,6 +189,18 @@ class ProvedorTrackersBr implements ProvedorTorrents
             $resposta = $respostas[md5($candidato['url'])] ?? null;
 
             if (! $resposta instanceof Response || $resposta->failed()) {
+                continue;
+            }
+
+            /*
+             * O tracker pode devolver a página de outra temporada quando o termo
+             * casa parcialmente (o buscador do site ignora a numeração). A peneira
+             * descarta o candidato que declara numeração diferente da pedida antes
+             * de abrir a página — economiza a requisição e evita que um release
+             * dublado de outra temporada suba para o topo da lista.
+             */
+            if ($temporada !== null && $episodio !== null
+                && ! TermosBusca::correspondeAoEpisodio($candidato['titulo'], $temporada, $episodio)) {
                 continue;
             }
 

@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import { spawn } from 'node:child_process'
 
 import { logger } from '../utils/logger.js'
-import { descreverIdioma } from '../utils/idiomas.js'
+import { descreverIdioma, normalizarIdioma } from '../utils/idiomas.js'
 
 /**
  * Pipeline de conversão para HLS.
@@ -34,6 +34,22 @@ import { descreverIdioma } from '../utils/idiomas.js'
 
 /** Codecs de vídeo que o navegador toca sem transcodificar. */
 const VIDEO_COMPATIVEIS = ['h264', 'avc1', 'avc']
+
+/**
+ * Formatos de pixel que o MSE decodifica sem transcodificar.
+ *
+ * O `codec_name` sozinho não basta: um H.264 **10-bit** (`yuv420p10le`) também
+ * se chama `h264`, então passava como "compatível" e o vídeo era copiado
+ * (`remux`/`audio`). O `SourceBuffer` do Chrome aceita o `mimeCodec` (`avc1...`)
+ * mas **rejeita o `appendBuffer`** de um stream 10-bit — o hls.js emite
+ * `bufferAppendingError` seguido de `mediaSourceRequiresReset` e a reprodução
+ * morre com "não foi possível carregar o vídeo". Era o sintoma das séries novas
+ * (Lanterns), que costumam vir em 10-bit, enquanto as antigas são 8-bit.
+ *
+ * Só os formatos 8-bit abaixo são copiáveis. Qualquer outro (10-bit, 12-bit,
+ * HDR) força a transcodificação para `yuv420p`.
+ */
+const PIX_FMT_COMPATIVEIS = ['yuv420p', 'yuvj420p']
 
 /** Codecs de áudio que o navegador toca sem transcodificar. */
 const AUDIO_COMPATIVEIS = ['aac', 'mp3']
@@ -89,8 +105,13 @@ const FORMATOS_CONTAINER = {
  * vivo e reporta `Infinity` — então o frontend usa este valor como fonte de
  * verdade enquanto a conversão não termina.
  *
+ * Devolvemos também o `pixFmt` do vídeo, mesmo quando vazio. O chamador precisa
+ * distinguir "é 8-bit" de "ainda não sei": um cabeçalho lido pela metade traz o
+ * `codec_name` sem o `pix_fmt`, e tratar os dois como iguais foi o que copiou um
+ * 10-bit e derrubou o MSE.
+ *
  * @param {string} arquivo caminho do arquivo de vídeo dentro do torrent
- * @returns {Promise<{modo: string, videoCodec: string, audioCodec: string, duracao: number|null, inicioFonte: number|null, idiomaAudio: string|null, idiomaAudioRotulo: string|null, idiomasAudio: Array<object>}>}
+ * @returns {Promise<{modo: string, videoCodec: string, pixFmt: string, audioCodec: string, duracao: number|null, inicioFonte: number|null, idiomaAudio: string|null, idiomaAudioRotulo: string|null, idiomasAudio: Array<object>}>}
  */
 export async function analisarArquivo(arquivo) {
   const metadados = await new Promise((resolve, reject) => {
@@ -103,10 +124,17 @@ export async function analisarArquivo(arquivo) {
 
   const streams = metadados?.streams ?? []
   const video = streams.find((s) => s.codec_type === 'video')
-  const audio = streams.find((s) => s.codec_type === 'audio')
 
   const videoCodec = (video?.codec_name ?? '').toLowerCase()
-  const audioCodec = (audio?.codec_name ?? '').toLowerCase()
+
+  /*
+   * O formato de pixel é o que separa um H.264 copiável de um que o MSE recusa.
+   * Um encode 10-bit (`yuv420p10le`) tem `codec_name = 'h264'` igual a um 8-bit,
+   * mas o `SourceBuffer` do navegador só decodifica 8-bit — copiá-lo produz
+   * `bufferAppendingError` e a reprodução morre. Lemos aqui para que
+   * `decidirModo` force a transcodificação quando não for 8-bit.
+   */
+  const pixFmt = (video?.pix_fmt ?? '').toLowerCase()
 
   /*
    * O idioma da faixa de áudio vive nas tags do contêiner e é a única prova de
@@ -115,7 +143,15 @@ export async function analisarArquivo(arquivo) {
    * "dual áudio" traz duas ou mais, e é a soma delas que confirma a promessa.
    */
   const faixasAudio = streams.filter((s) => s.codec_type === 'audio').map(descreverFaixaAudio)
-  const faixaPadrao = faixasAudio.find((faixa) => faixa.padrao) ?? faixasAudio[0] ?? null
+  const faixaPadrao = escolherFaixaAudio(faixasAudio)
+
+  /*
+   * O codec de áudio que decide o modo é o da faixa escolhida, não o da
+   * primeira do arquivo. Num dual áudio as faixas podem ter codecs diferentes
+   * (a dublagem em AC3 e o original em AAC, por exemplo); decidir pelo codec
+   * errado levaria a um `remux` que copia um áudio que o MSE não decodifica.
+   */
+  const audioCodec = (faixaPadrao?.codec ?? '').toLowerCase()
 
   // `format.duration` é a duração do contêiner inteiro; é mais confiável
   // que a duração de um stream isolado quando há faixas de tamanhos
@@ -141,8 +177,9 @@ export async function analisarArquivo(arquivo) {
   const intervaloKeyframes = videoOk ? await medirIntervaloKeyframes(arquivo) : null
 
   return {
-    modo: decidirModo(videoCodec, audioCodec, intervaloKeyframes),
+    modo: decidirModo(videoCodec, audioCodec, intervaloKeyframes, pixFmt),
     videoCodec,
+    pixFmt,
     audioCodec,
     intervaloKeyframes,
     duracao: Number.isFinite(duracao) ? duracao : null,
@@ -150,6 +187,12 @@ export async function analisarArquivo(arquivo) {
     idiomaAudio: faixaPadrao?.codigo ?? null,
     idiomaAudioRotulo: faixaPadrao?.rotulo ?? null,
     idiomasAudio: faixasAudio,
+    /*
+     * Índice da faixa de áudio escolhida para a saída. A conversão mapeia só
+     * esta faixa: sem isso o FFmpeg levaria todas as faixas do arquivo para o
+     * mesmo segmento e o hls.js não decodificaria o resultado.
+     */
+    indiceAudio: faixaPadrao?.indice ?? null,
   }
 }
 
@@ -163,7 +206,7 @@ export async function analisarArquivo(arquivo) {
  *
  * @param {object} stream stream de áudio do ffprobe
  * @param {number} indice posição da faixa na ordem do arquivo
- * @returns {{indice: number, codigo: string|null, rotulo: string|null, canais: number|null, padrao: boolean}}
+ * @returns {{indice: number, codigo: string|null, rotulo: string|null, codec: string, canais: number|null, padrao: boolean}}
  */
 function descreverFaixaAudio(stream, indice) {
   const codigo = stream?.tags?.language ?? null
@@ -173,11 +216,90 @@ function descreverFaixaAudio(stream, indice) {
     indice,
     codigo,
     rotulo: descreverIdioma(codigo) ?? titulo,
+    // Codec da faixa: é ele que decide se o áudio pode ser copiado (`remux`)
+    // ou precisa ser convertido para AAC (`audio`).
+    codec: (stream?.codec_name ?? '').toLowerCase(),
     canais: stream?.channels ?? null,
     // `default` é a bandeira que o muxer usa para dizer qual faixa o player
     // escolhe sozinho — é a que o usuário vai ouvir sem mexer em nada.
     padrao: stream?.disposition?.default === 1,
   }
+}
+
+/**
+ * Escolhe qual faixa de áudio será levada para a saída HLS.
+ *
+ * Um lançamento "dual áudio" traz duas ou mais faixas no mesmo arquivo. Sem
+ * escolher uma, o FFmpeg mapeia todas para o segmento MPEG-TS e o hls.js não
+ * consegue decodificar o resultado — o `SourceBuffer` rejeita o trecho com
+ * múltiplos áudios e o player falha. Além disso, a faixa que tocaria seria a
+ * primeira do arquivo, que num dual costuma ser o idioma original.
+ *
+ * A preferência é a dublagem em português: é o que o usuário pediu ao escolher
+ * uma fonte "Dublado". Só caímos para a faixa marcada como padrão (ou a
+ * primeira) quando não há nenhuma em PT-BR — aí a fonte não entregou o que
+ * prometia, e o selo de idioma no player denuncia isso.
+ *
+ * @param {Array<object>} faixas faixas de áudio descritas por `descreverFaixaAudio`
+ * @returns {object|null}
+ */
+function escolherFaixaAudio(faixas) {
+  if (!faixas.length) return null
+
+  const portugues = faixas.find(descrevePortugues)
+
+  if (portugues) return portugues
+
+  return faixas.find((faixa) => faixa.padrao) ?? faixas[0]
+}
+
+/**
+ * Diz se uma faixa de áudio é a dublagem em português.
+ *
+ * A tag `language` é a prova mais forte, mas não é a única: muitos lançamentos
+ * "dual áudio" deixam a dublagem sem código de idioma e a identificam apenas no
+ * `title` da faixa ("Português (BR)", "DUBLADO", "PT-BR"). Olhar só para o
+ * código descartava justamente a faixa que o usuário pediu ao escolher uma fonte
+ * "Dublado", e o player caía no áudio original — foi o que aconteceu com o
+ * "Lanterns", que tocou em inglês apesar do rótulo.
+ *
+ * O título é comparado em minúsculas e sem acento para casar "Português",
+ * "portugues" e "PORTUGUÊS BR" sem depender da grafia do encoder.
+ *
+ * @param {object} faixa faixa descrita por `descreverFaixaAudio`
+ * @returns {boolean}
+ */
+function descrevePortugues(faixa) {
+  const codigo = normalizarIdioma(faixa.codigo)
+
+  if (codigo === 'por' || codigo === 'pt' || codigo.startsWith('pt-')) {
+    return true
+  }
+
+  const titulo = normalizarIdioma(faixa.rotulo)
+
+  return (
+    titulo.includes('portug') ||
+    titulo.includes('dublado') ||
+    titulo.includes('dublagem') ||
+    titulo.includes('pt-br') ||
+    titulo.includes('ptbr')
+  )
+}
+
+/**
+ * Diz se o arquivo traz alguma faixa de áudio em português.
+ *
+ * É o fato que o porteiro de idioma consulta: a fonte prometeu dublagem no nome,
+ * mas só a sondagem do arquivo prova se a faixa existe. Um release só com áudio
+ * original — o caso do americano do EZTV que o Torrentio rotulava como
+ * "Dublado" — devolve `false` e a fonte é descartada em vez de tocar em inglês.
+ *
+ * @param {Array<object>} faixas faixas descritas por `descreverFaixaAudio`
+ * @returns {boolean}
+ */
+export function temFaixaPortuguesa(faixas = []) {
+  return faixas.some(descrevePortugues)
 }
 
 /**
@@ -302,32 +424,63 @@ function calcularIntervalo(tempos) {
 }
 
 /**
+ * Diz se a profundidade de cor decide alguma coisa para este codec de vídeo.
+ *
+ * Só faz sentido esperar pelo `pix_fmt` quando o codec seria **copiado** — é o
+ * único caso em que ele muda a decisão. Para HEVC, AV1 ou VP9 o modo já é
+ * `video` de qualquer forma, e exigir o `pix_fmt` só atrasaria a análise sem
+ * motivo.
+ *
+ * @param {string} videoCodec codec de vídeo detectado
+ * @returns {boolean}
+ */
+export function profundidadeRelevante(videoCodec) {
+  return VIDEO_COMPATIVEIS.includes((videoCodec ?? '').toLowerCase())
+}
+
+/**
  * Decide o modo de conversão a partir dos codecs encontrados.
  *
  * A ordem de verificação vai do mais barato para o mais caro: se o vídeo já é
  * compatível, nunca transcodificamos o vídeo — no máximo o áudio.
  *
- * A exceção é o `remux` com keyframes esparsos. Como `-c copy` não permite
- * forçar keyframes, os segmentos sairiam irregulares e o player saltaria. Nesse
- * caso promovemos para `video`, aceitando o custo de CPU em troca de uma
- * timeline regular — condição para o seek e para a duração correta.
+ * Duas exceções promovem para `video` (transcodificação):
+ *
+ * 1. **Keyframes esparsos no `remux`.** Como `-c copy` não permite forçar
+ *    keyframes, os segmentos sairiam irregulares e o player saltaria. Nesse caso
+ *    aceitamos o custo de CPU em troca de uma timeline regular — condição para o
+ *    seek e para a duração correta.
+ * 2. **Formato de pixel não confirmado como 8-bit.** Um H.264 10-bit
+ *    (`yuv420p10le`) tem o mesmo `codec_name` de um 8-bit, mas o `SourceBuffer`
+ *    do navegador só decodifica 8-bit: copiá-lo produz `bufferAppendingError` e
+ *    a reprodução morre. Exigimos a **prova** de que é 8-bit; quando o `pix_fmt`
+ *    não veio (cabeçalho lido pela metade), tratamos como suspeito e
+ *    transcodificamos — copiar às cegas é justamente o que derrubava o player.
  *
  * @param {string} videoCodec codec de vídeo detectado
  * @param {string} audioCodec codec de áudio detectado
  * @param {number|null} [intervaloKeyframes] intervalo médio entre keyframes
+ * @param {string} [pixFmt] formato de pixel do vídeo (ex.: `yuv420p10le`)
  */
-export function decidirModo(videoCodec, audioCodec, intervaloKeyframes = null) {
+export function decidirModo(videoCodec, audioCodec, intervaloKeyframes = null, pixFmt = '') {
   const videoOk = VIDEO_COMPATIVEIS.includes(videoCodec)
   const audioOk = AUDIO_COMPATIVEIS.includes(audioCodec)
 
-  if (videoOk && audioOk) {
+  /*
+   * A ausência do `pix_fmt` **não** é sinal verde: significa que ainda não
+   * sabemos a profundidade de cor. Exigimos que o formato esteja entre os 8-bit
+   * conhecidos; só assim é seguro copiar o vídeo.
+   */
+  const pixelOk = PIX_FMT_COMPATIVEIS.includes(pixFmt)
+
+  if (videoOk && audioOk && pixelOk) {
     const keyframesEsparsos =
       intervaloKeyframes !== null && intervaloKeyframes > INTERVALO_KEYFRAME_MAXIMO
 
     return keyframesEsparsos ? 'video' : 'remux'
   }
 
-  if (videoOk) return 'audio'
+  if (videoOk && pixelOk) return 'audio'
 
   return 'video'
 }
@@ -361,6 +514,7 @@ export function iniciarConversao({
   modo,
   duracaoEsperada,
   tempoInicial = 0,
+  indiceAudio = null,
   aoProgredir,
 }) {
   fs.mkdirSync(diretorio, { recursive: true })
@@ -430,6 +584,30 @@ export function iniciarConversao({
    * sozinho já ancora a timeline em zero sem mexer no alinhamento dos segmentos.
    */
   comando.inputOptions(['-fflags +genpts'])
+
+  /*
+   * Mapeamento explícito das faixas.
+   *
+   * Sem `-map`, o FFmpeg leva TODAS as faixas de áudio do arquivo para a saída.
+   * Num lançamento dual áudio isso produz um segmento MPEG-TS com dois áudios
+   * no mesmo programa, que o hls.js não consegue decodificar — o `SourceBuffer`
+   * rejeita o trecho e o player falha com "não foi possível exibir o vídeo".
+   * Era exatamente o sintoma das fontes dubladas.
+   *
+   * Mapeamos o primeiro vídeo e apenas a faixa de áudio escolhida (a dublada em
+   * PT-BR quando existe). O `?` no fim torna o mapeamento opcional: se a faixa
+   * não existir, o FFmpeg não aborta — apenas segue sem áudio, e o erro real
+   * aparece no log em vez de virar uma falha silenciosa de mapeamento.
+   */
+  const mapeamentos = ['0:v:0']
+
+  if (indiceAudio !== null) {
+    mapeamentos.push(`0:a:${indiceAudio}?`)
+  } else {
+    mapeamentos.push('0:a:0?')
+  }
+
+  comando.outputOptions(mapeamentos.map((mapa) => `-map ${mapa}`))
 
   aplicarModo(comando, modo)
 
@@ -635,6 +813,33 @@ export function somarDuracaoDaPlaylist(conteudo) {
 }
 
 /**
+ * Fixa o AAC de saída na configuração que os navegadores conseguem ler.
+ *
+ * O encoder AAC do FFmpeg não tem configuração equivalente para `5.1(side)` — o
+ * layout que o E-AC-3 dos lançamentos dublados costuma trazer. Sem equivalente
+ * ele grava `channel_configuration = 0` no ADTS e passa a descrever os canais
+ * num PCE (Program Config Element) dentro dos quadros de áudio.
+ *
+ * Nenhum navegador aceita esse cabeçalho. Num segmento real deste caso o
+ * `ffprobe` devolvia `aac, sample_rate=0, channels=0, channel_layout=unknown` e
+ * o decodificador rejeitava todos os quadros de áudio do trecho, enquanto o
+ * vídeo copiado no mesmo arquivo decodificava inteiro — prova de que a entrada
+ * estava sã e o defeito nascia no reencode do áudio. No MSE o fim da linha é
+ * `PipelineStatus::CHUNK_DEMUXER_ERROR_APPEND_FAILED: RunSegmentParserLoop:
+ * stream parsing failed` no SourceBuffer de áudio; como o Chromium encerra o
+ * MediaSource no primeiro append inválido, todo `appendBuffer` seguinte falha
+ * em cascata e o hls.js esgota as recuperações de mídia.
+ *
+ * `-ac 2` e `-ar 48000` produzem um AAC-LC estéreo canônico, com
+ * `channel_configuration = 2` e taxa de amostragem explícita no ADTS — o
+ * cabeçalho que qualquer decodificador reconhece. O downmix é o que o navegador
+ * entregaria de qualquer forma: surround 5.1 não sobrevive ao caminho web.
+ */
+function fixarAacCanonico(comando) {
+  return comando.audioCodec('aac').audioBitrate('192k').audioChannels(2).audioFrequency(48000)
+}
+
+/**
  * Aplica as opções de codec conforme o modo escolhido.
  *
  * No remux usamos `-c copy` (custo de CPU quase zero). No modo áudio copiamos o
@@ -647,7 +852,8 @@ function aplicarModo(comando, modo) {
   }
 
   if (modo === 'audio') {
-    comando.videoCodec('copy').audioCodec('aac').audioBitrate('192k')
+    comando.videoCodec('copy')
+    fixarAacCanonico(comando)
     return
   }
 
@@ -664,16 +870,36 @@ function aplicarModo(comando, modo) {
    * Ao reencodar, marcar um keyframe a cada `DURACAO_SEGMENTO` segundos alinha
    * os cortes do muxer HLS e produz uma timeline regular — condição para o seek
    * e para a duração correta.
+   *
+   * NÃO fixamos `-level`. Um nível declarado à mão vira uma promessa no SPS/PPS
+   * que o encoder não cumpre quando o conteúdo real a excede: uma série nova em
+   * 1080p de bitrate alto (ou 2160p) estoura o Nível 4.0, mas o FFmpeg escreve
+   * o nível assim mesmo. O navegador então cria o `SourceBuffer` com um codec
+   * (`avc1.4d4028`) que não corresponde ao stream e o decoder rejeita os
+   * segmentos no MSE — a reprodução começa e morre com "não foi possível exibir
+   * o vídeo". Sem `-level`, o FFmpeg deriva o nível correto de resolução,
+   * bitrate e framerate, e o cabeçalho passa a dizer a verdade.
+   *
+   * O perfil `main` permanece: é o mais compatível com MSE em todos os
+   * navegadores e não carrega a mesma armadilha — o perfil descreve recursos
+   * (B-frames, entropia) que o encoder realmente usa, não um teto de banda.
    */
-  comando
-    .videoCodec('libx264')
-    .audioCodec('aac')
-    .audioBitrate('192k')
-    .outputOptions([
+  comando.videoCodec('libx264')
+
+  fixarAacCanonico(comando)
+
+  comando.outputOptions([
       '-preset veryfast',
       '-crf 23',
       '-profile:v main',
-      '-level 4.0',
+      /*
+       * `yuv420p` é o único formato de pixel que o MSE decodifica em todos os
+       * navegadores. Sem esta linha, um encode de origem 10-bit (ou HDR) seria
+       * reencodado mantendo a profundidade de cor e o `SourceBuffer` voltaria a
+       * recusar o `appendBuffer` — a transcodificação não teria resolvido nada.
+       * Declarar o formato de saída é o que garante o resultado 8-bit.
+       */
+      '-pix_fmt yuv420p',
       `-force_key_frames expr:gte(t,n_forced*${DURACAO_SEGMENTO})`,
     ])
 }

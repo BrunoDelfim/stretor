@@ -48,6 +48,19 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
+> **DNS dos containers:** o `docker-compose.yml` já fixa Cloudflare (`1.1.1.1`) e
+> Google (`8.8.8.8`) como resolvers do backend, do Prowlarr e do FlareSolverr
+> ([`docker-compose.yml`](../docker-compose.yml:257)). Isso não é detalhe: quem
+> resolve o domínio do tracker é o Chromium embutido no FlareSolverr
+> ([`docker-compose.yml`](../docker-compose.yml:248)), e o resolver padrão do
+> host, herdado da operadora, costuma bloquear ou devolver NXDOMAIN — o indexador
+> aparece como "fora do ar" no painel sem que haja nada errado com ele. O
+> FlareSolverr ainda recebe `DNS_OVER_HTTPS=true`, que resolve por fora do UDP/53
+> do provedor. Se precisar trocar, ajuste `DNS_PRIMARIO`/`DNS_SECUNDARIO` no
+> `.env` e recrie os containers (`docker compose up -d --force-recreate backend
+> prowlarr flaresolverr`), porque a diretiva `dns` só entra no container na
+> criação dele.
+
 Pronto. Nesta única etapa o sistema executa, de forma automática e idempotente:
 
 | Etapa | Onde acontece |
@@ -85,6 +98,15 @@ provisionamento a qualquer momento, rode `make prowlarr`.
 > Se o provisionamento falhar (Prowlarr fora do ar, volume recém-apagado), a
 > subida **não** é interrompida: a busca simplesmente cai para o degrau 1
 > (nativa) e, em seguida, para o degrau 3 (YTS).
+
+> **Tags no painel do Prowlarr:** a tag criada pelo projeto (`flaresolverr`) não é
+> enfeite — é o **vínculo com o proxy**. O Prowlarr só encaminha pelo FlareSolverr
+> os indexadores que carregam essa tag, então quem quiser marcar o 1337x com uma
+> tag própria deve **somá-la** à que já existe, nunca substituí-la: trocada, o
+> `blocked by CloudFlare Protection` volta na hora. As tags do Prowlarr também
+> **não filtram idioma** — "só dublado" é decisão do backend
+> (`TORRENTS_APENAS_PT_BR`). O provisionamento mescla as tags do indexador e
+> nunca apaga as suas.
 
 #### Definição customizada de indexador público PT-BR
 
@@ -125,8 +147,15 @@ valores reais. As variáveis que exigem atenção:
 | `TORRENTS_TORZNAB_KEY` | Não | Chave da API do Prowlarr. É **preenchida automaticamente** na subida; só defina para apontar a um Prowlarr externo. |
 | `TORRENTS_TORZNAB_URL` | Não | URL interna do indexador (padrão `http://prowlarr:9696`). |
 | `TORRENTS_TORZNAB_CATEGORIA` | Não | Categoria Torznab de filmes (padrão `2000`). |
+| `TORRENTS_TORZNAB_CATEGORIA_SERIE` | Não | Categoria Torznab de séries (padrão `5000`). Separada da de filmes porque o Prowlarr filtra por categoria. |
+| `TORRENTS_APENAS_PT_BR` | Não | Descarta da lista tudo que não seja dublado ou dual áudio (padrão `true`). |
 | `TORRENTS_BASE_URL` | Não | Provedor de reserva (YTS), usado quando o indexador não está configurado. |
 | `TORRENTS_CACHE_TTL` | Não | Tempo de cache da busca de fontes (padrão `1800`s). |
+| `DNS_PRIMARIO` / `DNS_SECUNDARIO` | Não | Resolvers dos containers `backend`, `prowlarr` e `flaresolverr` (padrão `1.1.1.1` / `8.8.8.8`). Evitam o bloqueio de DNS da operadora sobre domínios de tracker. |
+| `FLARESOLVERR_URL` | Não | Endereço interno do FlareSolverr (padrão `http://flaresolverr:8191`). O backend o cadastra como proxy no Prowlarr e liga o 1337x a ele por tag. |
+| `FLARESOLVERR_DNS_OVER_HTTPS` | Não | Faz o Chromium do FlareSolverr resolver por DoH, fora do UDP/53 do provedor (padrão `true`). É o caminho que resta quando o resolver da operadora bloqueia o tracker. |
+| `FLARESOLVERR_LOG_LEVEL` | Não | Nível de log do serviço `flaresolverr` (padrão `info`). Use `debug` para investigar os desafios do CloudFlare. |
+| `PROWLARR_PROXY_ATIVO` | Não | Liga o cadastro do proxy no Prowlarr e a associação do 1337x por tag (padrão `true`). Em `false`, o 1337x volta a ficar inativo. |
 | `PROWLARR_PORT` | Não | Porta do painel do Prowlarr (padrão `9696`). |
 | `PROWLARR_URL` | Não | Endereço interno do Prowlarr usado no provisionamento (padrão `http://prowlarr:9696`). |
 | `PROWLARR_CONFIG_PATH` | Não | Caminho do `config.xml` dentro do backend (padrão `/prowlarr-config/config.xml`). Vazio desativa o provisionamento. |

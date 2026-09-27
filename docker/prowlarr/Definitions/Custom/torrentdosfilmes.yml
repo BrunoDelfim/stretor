@@ -14,6 +14,13 @@
 # troque a lista `links` pelo endereço atual do site. O resto da definição
 # (seletores, categorias, filtros) continua válido.
 #
+# Estado em 2026-09: `torrentdosfilmes.tv` foi sequestrado e hoje serve um site
+# de apostas ("377bet Casino"), e `torrentsfilmeshd.net` não resolve mais. O
+# cadastro no Prowlarr é feito com `forceSave=true` justamente para sobreviver a
+# esse tipo de queda: o indexador fica gravado e volta a funcionar sozinho
+# quando o domínio correto reaparecer. Ao encontrar o endereço novo, basta
+# atualizar a lista `links` abaixo.
+#
 # O Prowlarr lê definições customizadas de /config/Definitions/Custom/. O
 # docker-compose monta esta pasta lá dentro, então o arquivo é versionado junto
 # com o projeto e sobrevive a recriações do container.
@@ -27,10 +34,15 @@ encoding: UTF-8
 requestDelay: 2
 
 links:
+  # O site canônico responde em www; sem ele o Prowlarr cai no redirect e perde
+  # o cookie de sessão da busca.
+  - https://www.torrentdosfilmes.tv/
+
+legacylinks:
+  # Endereços que já foram o domínio principal. Mantidos para o Prowlarr tentar
+  # sozinho caso o site volte a migrar.
   - https://torrentdosfilmes.tv/
   - https://torrentsfilmeshd.net/
-  
-legacylinks:
   - https://torrentdosfilmes.se/
   - https://torrentdosfilmes.info/
   - https://torrentdosfilmes.com/

@@ -184,6 +184,21 @@ class TorrentService
             fn (array $fonte) => ($fonte['seeds'] ?? 0) > 0 && ($fonte['magnet'] ?? '') !== ''
         ));
 
+        // Enquanto o player só reproduz áudio em PT-BR, manter releases em
+        // outros idiomas na lista é trabalho perdido: o frontend tenta a fonte,
+        // falha e passa para a próxima. O corte é reversível por configuração
+        // para o dia em que legendado e original forem suportados.
+        if (config('services.torrents.apenas_pt_br', true)) {
+            $fontes = array_values(array_filter(
+                $fontes,
+                fn (array $fonte) => in_array(
+                    $fonte['idioma'] ?? '',
+                    [IdiomaFonte::DUBLADO->value, IdiomaFonte::DUAL_AUDIO->value],
+                    true
+                )
+            ));
+        }
+
         usort($fontes, function (array $a, array $b) {
             $prioridadeA = IdiomaFonte::tryFrom($a['idioma'] ?? '')?->prioridade() ?? 99;
             $prioridadeB = IdiomaFonte::tryFrom($b['idioma'] ?? '')?->prioridade() ?? 99;

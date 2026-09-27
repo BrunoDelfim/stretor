@@ -72,15 +72,27 @@ class ProvedorTorznab implements ProvedorTorrents
          * reanexaria a tag e geraria "dublado dublado" — termo que não casa com
          * release nenhum e ainda gasta uma consulta extra por episódio.
          */
-        $anoDoTermo = ($temporada !== null && $episodio !== null) ? null : $ano;
+        $episodioDeSerie = $temporada !== null && $episodio !== null;
+
+        $anoDoTermo = $episodioDeSerie ? null : $ano;
+
+        /*
+         * A categoria muda com o tipo de mídia e isso não é detalhe: o Prowlarr
+         * filtra por categoria, então pedir um episódio com `cat=2000` (filmes)
+         * devolve zero resultados mesmo com o release indexado. Séries usam
+         * `5000` (TV).
+         */
+        $categoria = $episodioDeSerie
+            ? (string) config('services.torrents.torznab_categoria_serie', '5000')
+            : null;
 
         $consultas = [];
 
         if (! TermosBusca::jaEDublado($titulo)) {
-            $consultas[] = fn () => $this->torznab->buscarDublado($titulo, $anoDoTermo);
+            $consultas[] = fn () => $this->torznab->buscarDublado($titulo, $anoDoTermo, $categoria);
         }
 
-        $consultas[] = fn () => $this->torznab->buscar($titulo, $anoDoTermo);
+        $consultas[] = fn () => $this->torznab->buscar($titulo, $anoDoTermo, $categoria);
 
         $itens = array_merge(...array_map(
             fn (callable $consulta) => $this->consultar($consulta),

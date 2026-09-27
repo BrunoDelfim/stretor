@@ -139,13 +139,43 @@ A numeração também entra na **chave de cache** de cada provedor
 (`...|temporada|episodio`). Sem ela, o resultado do S01E01 seria servido para o
 S01E02 durante todo o TTL.
 
+#### A fonte precisa declarar a numeração pedida
+
+Os provedores não são infalíveis na numeração. O Torrentio responde pela série
+inteira e **mistura temporadas na mesma lista**: pedir o S01E01 de "American
+Horror Story" devolveu um release `S10E01` em dual áudio. Como o dublado sobe
+para o topo da ordenação, essa fonte de outra temporada era a **primeira tentada
+pelo player** — e só depois de ela falhar o fluxo chegava à original correta. O
+sintoma era exatamente "tentou uma fonte dublada e depois foi para a original".
+
+A correção é uma peneira em cada provedor, apoiada em
+[`TermosBusca::correspondeAoEpisodio()`](../backend/app/Services/Torrents/TermosBusca.php:147):
+o título do release é lido por
+[`TermosBusca::numeracaoDoTitulo()`](../backend/app/Services/Torrents/TermosBusca.php:180)
+e, se ele **declarar** uma numeração diferente da pedida, a fonte é descartada.
+
+A regra é conservadora de propósito: releases **sem numeração nenhuma** (packs,
+nomes nacionais) passam, porque não há como provar que estão errados — descartá-los
+apagaria fontes legítimas. A leitura cobre as grafias que aparecem na prática:
+`S01E02`, `s1e2`, `1x02` e `Temporada 1 Episódio 2`.
+
+A peneira foi aplicada em todos os provedores que podem devolver temporada errada:
+
+- [`ProvedorTorrentio`](../backend/app/Services/Torrents/ProvedorTorrentio.php:128)
+  — o caso que originou o bug;
+- [`ProvedorApibay`](../backend/app/Services/Torrents/ProvedorApibay.php:113) e
+  [`ProvedorBt4g`](../backend/app/Services/Torrents/ProvedorBt4g.php:163) — acervo
+  mundial, devolvem temporadas vizinhas na busca por nome;
+- [`ProvedorTrackersBr`](../backend/app/Services/Torrents/ProvedorTrackersBr.php:202)
+  — o buscador do site ignora a numeração e pode trazer a página de outra temporada.
+
 #### O Torrentio precisa da configuração de idioma na URL
 
 O Torrentio aceita uma configuração embutida na própria URL, no segmento que
 antecede `/stream`. Sem ela, ele responde com o **catálogo padrão** — quase todo
 em inglês —, e era essa a razão de uma série trazer só fontes `Idioma original`
 mesmo com o resto da cascata saudável. O
-[`ProvedorTorrentio`](../backend/app/Services/Torrents/ProvedorTorrentio.php:44)
+[`ProvedorTorrentio`](../backend/app/Services/Torrents/ProvedorTorrentio.php:45)
 passou a montar a URL como
 `{base}/{configuração}stream/series/{imdbId}:{temporada}:{episodio}.json`, com
 `language=portuguese` vindo de `TORRENTS_TORRENTIO_IDIOMAS`.
@@ -168,6 +198,73 @@ Duas armadilhas custaram tempo aqui e valem o registro:
    `entrypoint.sh` também não a sincronizava no `.env`. Sem isso, o valor
    definido no `.env` da raiz nunca era visto pelo Laravel. As duas pontas foram
    corrigidas.
+
+#### O nome do release está no rótulo, não no `name` do stream
+
+O Torrentio devolve cada stream com três campos de texto e é fácil pegar o
+errado:
+
+- `name` — só o provedor e a qualidade (`"Torrentio\n720p"`);
+- `title` — o **rótulo completo**, com o nome do release na primeira linha, os
+  metadados na segunda (`👤 0 💾 1.62 GB ⚙️ ThePirateBay`) e as faixas de áudio e
+  bandeiras nas seguintes;
+- `behaviorHints.filename` — o nome do arquivo dentro do torrent, quando existe.
+
+O [`ProvedorTorrentio`](../backend/app/Services/Torrents/ProvedorTorrentio.php:160)
+usava o `name` como título da fonte. Como ele não traz a numeração nem as tags de
+idioma, **toda** fonte do Torrentio chegava ao catálogo como `"Torrentio 720p"`:
+a validação de episódio não tinha o que conferir e a classificação de idioma caía
+em `Idioma original`. Com `TORRENTS_APENAS_PT_BR=true`, o corte descartava as 23
+fontes e a série aparecia vazia mesmo com o Torrentio respondendo.
+
+A correção passou a extrair o nome da **primeira linha do rótulo**
+([`nomeDoRotulo()`](../backend/app/Services/Torrents/ProvedorTorrentio.php:210)),
+preferindo o `filename` quando ele vem. Assim a numeração (`S01E01`) e as tags
+(`PORTUGUÊS BR`, `DUAL`) voltam a chegar ao catálogo.
+
+Junto veio a segunda metade do problema: o Torrentio marca o áudio português com
+a bandeira de **Portugal** (🇵🇹), não a do Brasil. A classificação passou a
+aceitar 🇵🇹 e as grafias `português`/`portugues`/`portuguese` — mas foi
+exatamente esse reconhecimento que, mais tarde, abriu o defeito descrito a
+seguir.
+
+#### O rótulo do Torrentio é promessa, não prova
+
+A busca vai configurada com `language=portuguese` (veja a seção anterior), e isso
+tem um efeito colateral que custou uma reprodução inteira: o Torrentio **anota a
+resposta toda** com a bandeira de português. A
+[`normalizarStream()`](../backend/app/Services/Torrents/ProvedorTorrentio.php:160)
+repassava o rótulo completo (`$nome.' '.$rotulo`) para a classificação, e a
+bandeira fazia **todas** as fontes saírem como `Dublado` — inclusive um release
+americano do EZTV (`lanterns.2026.s01e01.1080p.web.h264-cakes[EZTVx.to].mkv`) e
+um WEB-DL `ENG/ITA`. Como o idioma do provedor tem precedência dentro do
+[`NormalizaFonte::montarFonte()`](../backend/app/Services/Torrents/NormalizaFonte.php:47),
+a tag do próprio nome do arquivo nunca era consultada. O resultado: o `usort` de
+[`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:202)
+empatava tudo na mesma prioridade e o desempate caía para os **seeds** — logo, o
+release com mais seeds (o EZTV) subia ao topo e tocava em inglês sob o rótulo
+"Dublado".
+
+A correção tem duas camadas, porque uma só não fecha o buraco:
+
+1. **Classificar pelo nome do release.** A
+   [`idiomaDoNome()`](../backend/app/Services/Torrents/ProvedorTorrentio.php:300)
+   lê apenas o nome do arquivo (o `behaviorHints.filename` ou a primeira linha do
+   rótulo), não o rótulo inteiro. O que o nome não provar, o
+   `IdiomaFonte::deduzirDoTitulo()` resolve pelas tags do próprio nome (`DUAL`,
+   `DUBLADO`, `PT-BR`, `NACIONAL`). Releases como o do EZTV passam a ser
+   `original` e saem no corte de `TORRENTS_APENAS_PT_BR`.
+2. **Porteiro de idioma em tempo real.** Mesmo com a ordenação corrigida, um
+   release ambíguo pode chegar ao player. A sondagem do arquivo
+   ([`temFaixaPortuguesa()`](../media-service/src/services/hls.js:301)) vira o
+   fato `tem_audio_pt` no status da sessão
+   ([`obterSessao()`](../media-service/src/services/sessoes.js:1343)). O frontend
+   ([`aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:1449))
+   compara a promessa da fonte (`idioma` = `pt-BR`/`dual`) com esse fato: se a
+   fonte prometia português e o arquivo só tem áudio original, a sessão é
+   descartada e o laço segue para a próxima — em vez de tocar em inglês. Quando
+   nenhuma fonte passa pelo porteiro, o overlay diz "Nenhuma fonte traz áudio em
+   português" em vez de um genérico "não conseguiu conectar".
 
 #### Os trackers PT-BR nativos saem do ar com frequência
 
@@ -198,9 +295,32 @@ YTS é o degrau 3 — a reserva do Prowlarr.
   automático do Prowlarr" abaixo.
 - Regras de negócio em [`TorznabService.php`](../backend/app/Services/TorznabService.php:1)
   e [`TorrentService.php`](../backend/app/Services/TorrentService.php:1).
-- A consulta usa `t=search` com a categoria de filmes (`TORRENTS_TORZNAB_CATEGORIA`,
-  padrão `2000`) e lê os atributos `seeders`/`peers`/`magneturl`/`infohash` e
-  `language` de cada item.
+- A consulta usa `t=search` e lê os atributos
+  `seeders`/`peers`/`magneturl`/`infohash` e `language` de cada item.
+- **A rota é do Prowlarr, não do Jackett.** O Prowlarr não expõe
+  `/api/v1/search` (essa é a rota do Jackett): a busca Torznab dele vive em
+  `/api/v1/indexer/{id}/search`, um endpoint por indexador. Chamar a rota do
+  Jackett devolve **404** e o provedor some da cascata sem erro visível — a lista
+  volta vazia e parece que "não há fonte". Como o backend não guarda os ids (eles
+  nascem no provisionamento), o [`TorznabService`](../backend/app/Services/TorznabService.php:98)
+  lista `/api/v1/indexer` e consulta cada um, agregando os resultados. Um
+  indexador fora do ar não derruba os outros.
+- **Não filtrar por `enable`.** Esse campo controla só se o indexador participa
+  das buscas automáticas do Prowlarr, não se o endpoint Torznab dele responde.
+  Como o provisionamento grava **desabilitado** quando o tracker está fora do ar
+  (fallback do Cloudflare/domínio sequestrado), filtrar por `enable` deixaria a
+  lista de ids vazia e o degrau 2 nunca seria consultado — exatamente o sintoma
+  de "nenhuma fonte" com os indexadores já cadastrados.
+- **A categoria muda com o tipo de mídia** — e isso não é detalhe. O Prowlarr
+  filtra por categoria, então pedir um episódio com `cat=2000` (filmes) devolve
+  **zero resultados**, por mais que o release esteja indexado. Filmes usam
+  `TORRENTS_TORZNAB_CATEGORIA` (padrão `2000`) e séries usam
+  `TORRENTS_TORZNAB_CATEGORIA_SERIE` (padrão `5000`). Era por isso que uma série
+  vinha vazia mesmo com o indexador saudável: a busca de episódio batia na
+  categoria de filme. A escolha fica em
+  [`ProvedorTorznab::buscar()`](../backend/app/Services/Torrents/ProvedorTorznab.php:75)
+  e o parâmetro é repassado por
+  [`TorznabService::consultar()`](../backend/app/Services/TorznabService.php:76).
 - São **duas consultas por filme**: uma com o termo normal (`título ano`) e outra
   com `título ano dublado`, montada por
   [`buscarDublado()`](../backend/app/Services/TorznabService.php:55). O termo base
@@ -237,12 +357,174 @@ depois de o Postgres responder:
 3. consulta `/api/v1/indexer` e cadastra apenas o que ainda não existe, o que
    torna o processo **idempotente**: subir de novo não duplica indexador nem
    reseta configuração;
-4. imprime a chave numa linha `PROWLARR_API_KEY=...`, que o entrypoint captura e
+4. para os trackers que recusam o teste de busca por causa do CloudFlare,
+   registra antes o FlareSolverr como *Indexer Proxy* e liga o indexador a ele
+   por tag (detalhes em *O 1337x vive atrás do CloudFlare*);
+5. imprime a chave numa linha `PROWLARR_API_KEY=...`, que o entrypoint captura e
    grava em `TORRENTS_TORZNAB_KEY` no `.env` (e exporta para o php-fpm).
 
 Tudo é tolerante a falha: os erros viram aviso no log e o backend sobe
 normalmente. Para refazer o provisionamento sem reiniciar nada, use
 `make prowlarr`.
+
+#### Duas armadilhas que faziam o cadastro falhar
+
+O provisionamento falhava com `Falha ao cadastrar o indexador "torrentdosfilmes"`
+por dois motivos independentes, ambos silenciosos:
+
+1. **O `PROWLARR_CONFIG_PATH` não chegava ao container.** O `ProwlarrService`
+   lê esse caminho via `env()`, mas o serviço `backend` do
+   [`docker-compose.yml`](../docker-compose.yml:56) não o declarava. Sem o
+   caminho, o `chave()` devolvia `null` e o fluxo parava antes de tentar
+   cadastrar qualquer coisa. Agora as três variáveis do Prowlarr
+   (`PROWLARR_URL`, `PROWLARR_CONFIG_PATH`, `PROWLARR_TEMPO_LIMITE`) são
+   repassadas explicitamente ao backend.
+
+2. **O corpo do POST levava campos somente-leitura.** O
+   [`modelosDoSchema()`](../backend/app/Services/ProwlarrService.php:363)
+   devolve o modelo do `/api/v1/indexer/schema`, que inclui campos que o
+   Prowlarr calcula sozinho (`infoLink`, `capabilities`, `indexerUrls`,
+   `description`, `language`, `encoding`, `protocol`, `privacy`,
+   `supportsRss`, `supportsSearch`, `definitionFile`…). Reenviá-los faz a API
+   responder **400**. O [`cadastrarIndexador()`](../backend/app/Services/ProwlarrService.php:464)
+   agora remove esses campos antes do POST e guarda o corpo da resposta de erro
+   em `ultimoErro`, que aparece na mensagem do comando — sem isso, um 400 virava
+   só "falha ao cadastrar", sem pista do campo recusado.
+
+#### O cadastro não pode depender do teste de busca
+
+O Prowlarr roda uma busca de validação ao cadastrar um indexador **habilitado** e
+**rejeita o cadastro** se ela voltar vazia, com a mensagem *"Query successful, but
+no results were returned from your indexer"*. Isso é fatal para trackers públicos,
+que caem com frequência: o indexador nunca é gravado e o degrau 2 fica
+permanentemente vazio.
+
+A primeira tentativa é o caminho normal: POST habilitado com `forceSave: true` no
+**corpo** do JSON. O detalhe que custou uma rodada de depuração é que `forceSave`
+como *query string* (`?forceSave=true`) é ignorado em silêncio — o Prowlarr roda a
+validação do mesmo jeito. O campo precisa ir no corpo.
+
+Como nem todo tracker honra o `forceSave`, o
+[`cadastrarIndexador()`](../backend/app/Services/ProwlarrService.php:464) tem uma
+segunda tentativa: grava o indexador **desabilitado** (`enable: false`). Sem
+`enable`, o Prowlarr não dispara o teste de busca e aceita a definição mesmo com o
+site fora do ar. Em seguida o
+[`habilitarIndexador()`](../backend/app/Services/ProwlarrService.php:542) faz um
+`PUT` com o objeto atual (buscado antes para não perder os campos que o Prowlarr
+preencheu sozinho) marcando `enable: true`. Se a habilitação falhar, o indexador
+continua cadastrado — só inativo —, o que ainda é melhor do que perder a
+definição. O cadastro sobrevive à queda e volta a funcionar sozinho quando o site
+retorna.
+
+Só que o `PUT` de habilitação **também** roda o teste de busca. Para um tracker
+atrás do CloudFlare, então, a segunda tentativa grava o indexador e a terceira o
+deixa exatamente onde estava: desabilitado. É o caso do 1337x, e é o assunto da
+subseção abaixo.
+
+#### O 1337x vive atrás do CloudFlare
+
+O painel do Prowlarr acusa `Unable to access 1337x.to, blocked by CloudFlare
+Protection`. Não é defeito de cadastro: o CloudFlare devolve ao Prowlarr a página
+do desafio (*"Just a moment…"*) em vez do HTML da busca, e qualquer teste de
+indexador morre ali. O `forceSave` não salva, porque não há resultado algum a
+forçar.
+
+A saída suportada é o **FlareSolverr**: um serviço que abre um navegador headless,
+resolve o desafio e devolve os cookies da sessão liberada. O Prowlarr o consome
+como *Indexer Proxy* e o associa aos indexadores por **tag** — todo indexador que
+carregue a mesma tag sai pelo proxy.
+
+O arranjo é automático, como o resto do provisionamento:
+
+- o [`docker-compose.yml`](../docker-compose.yml:248) sobe o serviço
+  `flaresolverr` na rede interna, sem porta publicada no host: só o Prowlarr fala
+  com ele;
+- antes de cadastrar os indexadores, o
+  [`provisionarProxy()`](../backend/app/Services/ProwlarrService.php:616) cria a
+  tag, lê o modelo do proxy em `/api/v1/indexerproxy/schema` e o registra
+  apontando para `FLARESOLVERR_URL`;
+- o Prowlarr **testa a conexão toda vez que grava o proxy**, inclusive num `PUT`.
+  Por isso o provisionamento não reenvia um proxy que já aponta para o mesmo
+  endereço: sem nada a mudar, o registro existente basta. Só quando
+  `FLARESOLVERR_URL` muda é que ele apaga o antigo e recria — reaproveitando o
+  caminho do primeiro cadastro, que é o que funciona. Sem esse cuidado, um
+  FlareSolverr que ainda estivesse subindo derrubava o provisionamento inteiro e
+  o proxy ficava "indisponível" sem que houvesse nada de errado;
+- o backend espera o FlareSolverr ficar **saudável** antes de subir
+  (`depends_on: condition: service_healthy`), para não tentar gravar o proxy
+  enquanto o Chromium ainda está abrindo;
+- os indexadores listados em `proxy_indexadores`
+  ([`config/services.php`](../backend/config/services.php:189) — hoje só o
+  `1337x`) recebem a tag já no corpo do cadastro, e aí o teste de busca passa
+  dentro do `forceSave`, com o indexador **nascendo ativo**;
+- quem já tem o 1337x gravado desabilitado (stack subido antes desta mudança) é
+  resgatado pelo
+  [`ajustarIndexadorComProxy()`](../backend/app/Services/ProwlarrService.php:885),
+  que reaplica a tag e religa o indexador. O provisionamento pula o que já existe
+  por definição, então sem esse passo ele nunca seria testado de novo. Já quando o
+  indexador carrega a tag do proxy e está habilitado, ele sai sem gravar: o `PUT`
+  reexecutaria o teste de busca inteiro — desafio do CloudFlare incluso — para não
+  mudar nada;
+- a tag do proxy é **vínculo, não rótulo**: o Prowlarr só encaminha pelo
+  FlareSolverr os indexadores que a carregam. E as tags de um indexador são
+  **cumulativas** — quem quiser marcar o 1337x com uma tag própria precisa
+  **somar** à existente, nunca trocá-la. Trocada, o proxy deixa de valer e o
+  `blocked by CloudFlare Protection` volta na hora, o que faz parecer que a
+  integração pifou. Por isso o provisionamento **mescla** as tags em vez de
+  substituir a lista: as do usuário continuam de pé, e a do proxy é reposta mesmo
+  que alguém a apague pelo painel;
+- essas tags não filtram idioma nenhum. "Só dublado" é decisão do backend
+  (`TORRENTS_APENAS_PT_BR` e `TermosBusca::paraDublado()`), não do Prowlarr:
+  marcar o 1337x com `dublado` não muda um único resultado;
+- salvar um indexador roda o teste de busca, e a primeira passada pelo FlareSolverr
+  ainda sobe um navegador: essas gravações usam um teto de 90s
+  (`TEMPO_LIMITE_TESTE`), em vez do tempo limite padrão de 20s. Sem essa folga o
+  `PUT` estourava por timeout, o indexador continuava inativo e nada aparecia no
+  log.
+- o primeiro acesso a um domínio protegido pode estourar o teto de 60s do próprio
+  FlareSolverr (`Timeout after 60.0 seconds`) sem que haja nada errado: o cookie
+  obtido fica em cache dentro dele, e o caminho de busca que o Prowlarr usa o
+  reaproveita. Um `POST` manual a `https://1337x.to/` costuma estourar no exato
+  momento em que o teste de busca do indexador passa.
+- o FlareSolverr é o segundo container a **resolver domínios por conta própria** —
+  quem consulta o DNS é o Chromium lá dentro. Por isso ele recebe o mesmo bloco
+  `dns:` do Prowlarr, e o `DNS_OVER_HTTPS` ligado
+  ([`docker-compose.yml`](../docker-compose.yml:257)): o resolver do operador
+  bloqueia o 1337x, e a falha chega disfarçada de duas formas. Numa, o Chromium
+  não resolve e o FlareSolverr devolve `500` com
+  `net::ERR_NAME_NOT_RESOLVED`, que o Prowlarr reporta como *"HTTP request
+  failed: [500:InternalServerError] ... /v1"*. Na outra, o resolver devolve uma
+  página de bloqueio: **não há desafio do CloudFlare**, o FlareSolverr responde
+  `200` com `Challenge not detected!` e sem cookies, e o Prowlarr recusa com
+  *"Empty cookies returned by FlareSolverr"* — mensagem que parece culpa do
+  proxy, mas era DNS. O `DNS_OVER_HTTPS` cobre o caso em que o provedor
+  intercepta até o UDP/53;
+- o Chromium embutido precisa de `/dev/shm` com folga: o padrão de 64 MB do
+  Docker o mata ao subir, e o FlareSolverr passa a devolver `500` em toda
+  requisição. Daí o `shm_size: "1gb"`
+  ([`docker-compose.yml`](../docker-compose.yml:263)).
+
+O `torrentdosfilmes` fica **fora** dessa lista de propósito: o problema dele não é
+desafio do CloudFlare, e sim o domínio sequestrado — não há proxy que resolva
+isso.
+
+Para desligar o proxy, basta `PROWLARR_PROXY_ATIVO=false` no `.env`: o 1337x volta
+a ser gravado desabilitado, sem erro fatal e sem derrubar o degrau 2.
+
+#### O domínio PT-BR foi sequestrado
+
+Em 2026-09, `torrentdosfilmes.tv` deixou de ser tracker: o domínio foi
+sequestrado e hoje serve um site de apostas (*"377bet Casino"*). O
+`torrentsfilmeshd.net` também não resolve mais. É o cenário previsto no próprio
+comentário da definição — e a razão de o cadastro usar `forceSave`.
+
+Como não há tracker PT-BR público ativo no momento, a lista `indexadores` em
+[`config/services.php`](../backend/config/services.php:172) soma o **1337x**, que
+é definição oficial do Prowlarr (não precisa de `.yml` próprio): tracker público
+estável, acervo amplo, entra como rede de segurança — e depende do proxy
+FlareSolverr descrito acima para sair de inativo. O `torrentdosfilmes` continua
+cadastrado para voltar a valer quando o domínio correto reaparecer; ele não usa
+proxy, porque o problema dele é o domínio, não o CloudFlare.
 
 ### Definição customizada de indexador público PT-BR
 
@@ -258,7 +540,7 @@ própria:
   versionada com o código e sobrevive a recriações.
 - É essa definição (id `torrentdosfilmes`) que o provisionamento cadastra como
   indexador, a partir da lista `indexadores` em
-  [`config/services.php`](../backend/config/services.php:126). Para somar outro
+  [`config/services.php`](../backend/config/services.php:172). Para somar outro
   tracker público, basta soltar o `.yml` na mesma pasta e incluir o id na lista.
 - O Prowlarr lê o arquivo no boot; para recarregar depois de editá-lo, use
   `docker compose restart prowlarr`.
@@ -324,6 +606,45 @@ agora reserva espaço para **todas** as fontes dubladas e em dual áudio antes d
 completar o restante com as demais. Se as dubladas já preencherem o limite, elas
 são a resposta e nenhuma original entra. Só quando não há dublada alguma é que a
 lista é preenchida apenas com originais/legendadas.
+
+#### O corte precisa acontecer dentro da cascata, não depois dela
+
+O critério de parada da cascata é `temDublado()`: assim que aparece uma fonte
+dublada ou em dual áudio, os degraus seguintes não são consultados. O problema é
+que esse critério rodava sobre a lista **crua**, antes de qualquer validação.
+
+Foi o que produziu a lista vazia em "American Horror Story" S01E01: o Torrentio
+devolveu um dual áudio de **S10E01** (ele mistura temporadas na resposta da
+série), o `temDublado()` viu "dual áudio" e encerrou a busca no degrau 1. Depois,
+na ordenação, aquele release foi descartado pela numeração errada — e não sobrou
+nada, sem que o Torznab ou o YTS fossem tentados.
+
+A correção move os dois cortes para dentro da cascata, em
+[`CatalogoProvedores::aproveitaveis()`](../backend/app/Services/Torrents/CatalogoProvedores.php:255),
+aplicado ao fim de cada grupo de provedores:
+
+1. **Numeração** — descarta releases que declaram temporada/episódio diferente
+   da pedida (os sem numeração passam, para não apagar packs legítimos).
+2. **Idioma** — com `apenas_pt_br` ligado, só dublado e dual áudio seguem.
+
+Assim o `temDublado()` só enxerga fontes que de fato servem, e a cascata desce
+para o próximo degrau quando o atual só trouxe release inútil.
+
+#### Enquanto só há áudio PT-BR, o resto é descartado
+
+A prioridade de idioma resolve a *ordem*, mas não o *desperdício*: com o player
+ainda restrito a áudio em português, uma fonte legendada ou em idioma original
+que entra na lista só faz o frontend tentar, falhar e passar para a próxima —
+cada tentativa custa uma sessão no media-service.
+
+Por isso [`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:180)
+agora descarta, antes de ordenar, tudo que não seja **dublado** ou **dual áudio**
+quando `TORRENTS_APENAS_PT_BR` está ligado (padrão `true`). A lista chega curta
+ao frontend e o teste fica rápido.
+
+O corte é reversível por configuração de propósito: no dia em que legendado e
+idioma original forem suportados, basta `TORRENTS_APENAS_PT_BR=false` para a
+lista voltar a trazer todas as faixas — sem tocar em código.
 
 ### De onde veio a fonte?
 
@@ -552,6 +873,94 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   o muxer HLS então corta os segmentos em pontos que não coincidem com os
   keyframes e os *parameter sets* (SPS/PPS) do H.264 acabam no segmento errado —
   o decodificador acusa `non-existing PPS 0` e nenhum frame sai.
+- **Mapeamento explícito da faixa de áudio**: as fontes dubladas são MKV de
+  *dual áudio* — trazem a dublagem PT-BR e o original na mesma caixa. Sem `-map`,
+  o FFmpeg leva **todas** as faixas de áudio para o mesmo programa do MPEG-TS, e
+  o `hls.js`/MSE não consegue decodificar um segmento com múltiplas faixas: o
+  `SourceBuffer` rejeita o pedaço e o player falha com "não foi possível exibir o
+  vídeo" — exatamente o sintoma relatado nas fontes dubladas. A conversão agora
+  mapeia só o vídeo e a faixa escolhida (`-map 0:v:0 -map 0:a:N?`; o `?` deixa o
+  mapeamento opcional, para não abortar quando a faixa some). A escolha fica em
+  [`escolherFaixaAudio()`](../media-service/src/services/hls.js:215), que prefere
+  o áudio em português (`por`/`pt`/`pt-*` via
+  [`normalizarIdioma`](../media-service/src/utils/idiomas.js:87)) e, na falta
+  dele, cai na faixa marcada como padrão ou na primeira. O índice escolhido sai
+  de [`analisarArquivo()`](../media-service/src/services/hls.js:94) em
+  `indiceAudio`, é guardado em `sessao.indiceAudio` e reaproveitado no
+  reposicionamento — sem isso um *seek* remontaria a conversão com o mapeamento
+  errado. O modo (`remux`/`audio`) também passou a olhar o codec **da faixa
+  escolhida**, não o da primeira do arquivo: num dual áudio a dublagem pode vir
+  em AC3 e o original em AAC, e decidir pelo codec errado levaria a um `remux`
+  que copia um áudio que o MSE não decodifica.
+- **A dublagem pode estar só no `title` da faixa**: a fonte rotulada "Torrentio ·
+  Dublado" do *Lanterns* tocou em inglês. O rótulo do provedor é uma **promessa
+  do indexador**, não um fato do arquivo — [`idiomaDoRotulo`](../backend/app/Services/Torrents/ProvedorTorrentio.php:279)
+  só o usa para ordenar e filtrar as fontes. Quem decide o áudio é a faixa lida
+  pelo ffprobe, e aí estava o furo: [`escolherFaixaAudio`](../media-service/src/services/hls.js:241)
+  procurava português **apenas** na tag `language` (`faixa.codigo`). Muitos
+  lançamentos *dual áudio* deixam a dublagem sem código de idioma e a identificam
+  só no `title` ("Português (BR)", "DUBLADO", "PT-BR") — e
+  [`descreverFaixaAudio`](../media-service/src/services/hls.js:206) já guardava
+  esse título em `faixa.rotulo`, mas ninguém o consultava. A faixa PT-BR era
+  descartada e o código caía no fallback (`padrao` ou a primeira), que num dual
+  costuma ser o original. A escolha agora passa por
+  [`descrevePortugues`](../media-service/src/services/hls.js:255), que aceita
+  tanto o código (`por`/`pt`/`pt-*`) quanto o título normalizado (contendo
+  "portug", "dublado", "dublagem", "pt-br" ou "ptbr"). O log da sessão ganhou uma
+  linha com **todas** as faixas (`#0[eng|English] #1[por|Português (BR)]`) para
+  separar os dois cenários: arquivo sem PT-BR nenhum (a fonte mentiu) de arquivo
+  com PT-BR não reconhecido (bug de escolha).
+- **Profundidade de cor decide o modo, não só o codec**: a causa raiz da série
+  *Lanterns* — que baixava, convertia e morria com "não foi possível carregar o
+  vídeo" — era o **H.264 10-bit**. O `codec_name` de um encode 10-bit
+  (`yuv420p10le`) é `h264`, idêntico ao de um 8-bit, então
+  [`decidirModo`](../media-service/src/services/hls.js:450) o classificava como
+  compatível e o vídeo era **copiado** (`remux`/`audio`). O `SourceBuffer` do
+  navegador aceita o `mimeCodec` (`avc1...`) mas **rejeita o `appendBuffer`** de
+  um stream 10-bit: o hls.js emite `bufferAppendingError` seguido de
+  `mediaSourceRequiresReset` em ciclo, e a reprodução nunca arranca. As séries
+  antigas são 8-bit e por isso funcionavam. A correção lê o `pix_fmt` no
+  [`analisarArquivo`](../media-service/src/services/hls.js:95) e o repassa a
+  `decidirModo`: só os formatos de `PIX_FMT_COMPATIVEIS` (`yuv420p`/`yuvj420p`)
+  são copiáveis; **qualquer outro — inclusive a ausência do dado — força o modo
+  `video`**. No modo `video`,
+  [`aplicarModo`](../media-service/src/services/hls.js:835) agora declara
+  `-pix_fmt yuv420p` — sem isso a transcodificação manteria a profundidade de
+  origem e o `SourceBuffer` voltaria a recusar o trecho. O `pix_fmt` aparece no
+  log da sessão (`pixFmt=yuv420p10le`) para diagnóstico.
+- **`pix_fmt` ausente também transcodifica**: a primeira correção de 10-bit não
+  bastou. O `bufferAppendingError` voltou numa sessão seguinte porque o
+  `codec_name` sai do cabeçalho do contêiner e chega **antes** dos dados,
+  enquanto o `pix_fmt` depende do SPS do H.264, que vive nos primeiros quadros do
+  stream. Um cabeçalho lido pela metade devolvia `codec_name='h264'` com
+  `pix_fmt` vazio: [`analisarComEspera`](../media-service/src/services/sessoes.js:1223)
+  aceitava a análise só com os codecs e `decidirModo` tratava a ausência como
+  "não é 10-bit", copiando o vídeo. Duas defesas fecham isso: (1) a análise só é
+  aceita quando o `pix_fmt` também veio, usando
+  [`profundidadeRelevante`](../media-service/src/services/hls.js:422) para exigir
+  o dado apenas quando o codec seria copiado — com o torrent completo a análise é
+  aceita mesmo sem ele, para não travar para sempre; (2) `decidirModo` inverteu a
+  regra: `pixelOk` exige **prova** de 8-bit, então a ausência do dado força
+  `video`. Copiar um vídeo de profundidade desconhecida nunca mais acontece.
+- **Nível H.264 derivado, nunca fixo**: o modo `video` declarava `-level 4.0` à
+  mão. O nível é uma **promessa** gravada no SPS/PPS, e o encoder a escreve mesmo
+  quando o conteúdo real a excede — um encode 1080p de bitrate alto (ou 2160p)
+  estoura o teto do Nível 4.0 (~20 Mbps) e o cabeçalho mentia. Removemos o
+  `-level 4.0`: sem ele, o FFmpeg deriva o nível correto de resolução, bitrate e
+  framerate. O perfil `main` permanece — descreve recursos que o encoder
+  realmente usa (B-frames, entropia), não um teto de banda. Esta correção é
+  preventiva; a falha do caso *Lanterns* era a profundidade de cor, acima.
+- **Recuperação de erro de mídia no player**: um `MEDIA_ERROR` fatal do `hls.js`
+  não é rede — o segmento chegou, mas o `SourceBuffer` o recusou. Antes, o handler
+  em [`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:713) só
+  tratava `NETWORK_ERROR`/`FRAG_LOAD_ERROR` como recuperável e mandava qualquer
+  outro erro fatal direto para a tela de falha. Agora um `MEDIA_ERROR` chama
+  `recoverMediaError()` (até `LIMITE_RECUPERACOES_DE_MIDIA` = 3 vezes), que
+  descarta o `SourceBuffer` e cria outro com o mesmo codec, retomando do ponto
+  onde parou. O contador zera a cada nova reprodução e a cada *seek* remoto,
+  porque a playlist nova é outro stream. É uma rede de segurança: no caso
+  *Lanterns* ela não salvava porque o stream inteiro era 10-bit — a correção real
+  é a profundidade de cor, acima.
 - **Janela de leitura deslizante**: `arquivo.select(1)` mandava o WebTorrent
   baixar o arquivo inteiro e espalhar os pedidos por todo o filme — como o
   WebTorrent escolhe pela raridade das peças, a região logo à frente de quem está
@@ -589,6 +998,50 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   publicada chegar perto da duração real (tolerância de `max(60s, 10%)`). Uma
   conversão interrompida por falta de dados continua `EVENT`, então o player
   espera em vez de anunciar um filme de 15 segundos.
+- **Duração infinita para a playlist `EVENT`**: como o `#EXT-X-ENDLIST` só
+  aparece no fim da conversão (item acima), durante o filme inteiro o hls.js lê a
+  playlist como **live** e conhece apenas os trechos já publicados — nos
+  primeiros segundos do *Lanterns*, 40 s de 3388. Com o padrão
+  `liveDurationInfinity: false`, o `getDurationAndRange()` do hls.js gravava essa
+  duração parcial no `mediaSource.duration`; o buffer podia então alcançar o fim
+  declarado, o `bufferEOS` chamava `mediaSource.endOfStream()` e o MediaSource
+  ficava em `readyState === "ended"`, de onde **todo** `appendBuffer` falha. É
+  uma armadilha latente de qualquer playlist que ainda está crescendo, e por isso
+  a configuração em
+  [`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:474) ficou
+  com `liveDurationInfinity: true`: nos níveis live a duração permanece
+  `Infinity` e não existe "fim" que o buffer possa alcançar. A barra de progresso
+  não perde nada — a duração exibida continua vindo de `aplicarDuracaoReal()`,
+  que existe justamente porque a playlist `EVENT` reporta `Infinity`. Fica o
+  registro de que **não foi esta** a falha do *Lanterns*: a sonda de erro do
+  player passou a imprimir a duração do elemento e o fim do buffer, e o primeiro
+  `bufferAppendingError` chegava com `duracao=Infinity` e `buffer=-` — ou seja, o
+  `readyState: "ended"` era consequência do primeiro append recusado, e não de um
+  EOS que tivéssemos provocado.
+- **AAC canônico na saída (`-ac 2` e `-ar 48000`)**: com a duração refutada, o
+  `ffprobe` de um segmento real da sessão entregou a causa de verdade. O vídeo do
+  trecho decodificava inteiro (`h264 High 1920x960 yuv420p level=40`), enquanto o
+  áudio saía como `aac, sample_rate=0, channels=0, channel_layout=unknown`, com
+  **todos** os quadros recusados pelo decodificador. Como o vídeo vinha de
+  `-c:v copy`, a entrada estava sã: o defeito nascia no reencode do áudio, o
+  caminho que [`decidirModo`](../media-service/src/services/hls.js:465) escolhe
+  (`audio`) sempre que a faixa não é copiável para o MSE — o caso do E-AC-3 5.1
+  dos lançamentos dublados. O encoder AAC do FFmpeg não tem configuração
+  equivalente para `5.1(side)`: sem equivalente ele grava
+  `channel_configuration = 0` no ADTS e descreve os canais num PCE (*Program
+  Config Element*) dentro dos quadros, um cabeçalho que navegador nenhum lê. O
+  Chromium responde `MediaError.code = 4` com
+  `PipelineStatus::CHUNK_DEMUXER_ERROR_APPEND_FAILED: RunSegmentParserLoop:
+  stream parsing failed`, encerra o MediaSource já no primeiro append inválido e
+  o resto vira cascata: `bufferAppendingError` → `mediaSourceRequiresReset`,
+  esgotando as `recoverMediaError()` até o erro fatal. A correção está em
+  [`fixarAacCanonico`](../media-service/src/services/hls.js:838), usada pelos
+  modos `audio` e `video`: `-ac 2` e `-ar 48000` produzem um AAC-LC estéreo com
+  `channel_configuration = 2` e taxa explícita no ADTS, o formato que qualquer
+  decodificador reconhece. O `remux` continua copiando o áudio da fonte sem
+  tocar nele — por ali só passam faixas que o navegador já decodifica. No log da
+  sessão a linha `[hls] ffmpeg: Stream #0:1: Audio: aac (LC), 48000 Hz, stereo,
+  fltp, 192 kb/s` confirma o cabeçalho canônico.
 - **Diagnóstico do FFmpeg no log**: o `stderr` do processo é filtrado por
   [`iniciarConversao()`](../media-service/src/services/hls.js:288) — só as linhas
   de `Input`/`Output`/`Duration`/`start`/`Stream` e os avisos de
