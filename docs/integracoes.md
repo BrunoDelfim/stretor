@@ -696,24 +696,43 @@ Cada fonte que passa pelo filtro de numeração é **etiquetada**, não descarta
 ganha `pt_br` (entra na pilha boa) ou vira reserva. Nada de aproveitável some por
 idioma; a decisão de ordem fica para o fim.
 
-#### A montagem final: PT-BR na frente, reserva completando
+#### A montagem final: idioma manda, pack desempata dentro do idioma
 
 A lista final sai de
-[`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:242):
-primeiro as fontes PT-BR — dublado, dual áudio e os packs que atravessam o corte
-de idioma —, depois a reserva preenchendo até o teto de `LIMITE_FONTES` (`20`). O
-`TORRENTS_MINIMO_FONTES` (padrão `15`) é um **piso**, não um teto: se o PT-BR
-sozinho alcança o piso, a lista é só ele, sem gastar espaço com reserva; se
-**não** alcança, a reserva completa **até o teto** — e não até o mínimo, como
-antes. Uma série com 17 fontes boas volta com 17; um filme só com release em
-inglês volta com a reserva cheia, para o player não ficar sem alternativa.
+[`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:241), que
+separa as fontes em duas pilhas — **pilha boa** e **reserva** — e ordena as duas
+pela mesma chave de mérito.
 
-Assim o corte para de descartar dubladas por falta de seed: como a pilha PT-BR tem
+A pilha boa é só áudio PT-BR **provado**: dublado e dual áudio. A reserva é todo o
+resto — legendado, original e os packs de idioma não provado. Se a pilha boa
+sozinha alcança o `TORRENTS_MINIMO_FONTES` (padrão `15`), a lista é só ela; se
+**não** alcança, a reserva completa **até o teto** de `LIMITE_FONTES` (`20`) — e
+não até o mínimo, como antes. O piso é piso, não teto: uma série com 17 fontes boas
+volta com 17; um filme só com release em inglês volta com a reserva cheia, para o
+player não ficar sem alternativa.
+
+A ordem dentro de cada pilha vem de uma chave única,
+[`chaveDeOrdem()`](../backend/app/Services/TorrentService.php:330):
+**`[idioma, pack, provedor, -seeds]`**. Ela diz a regra em uma linha:
+
+1. **Idioma manda.** Dublado (0), dual (1), legendado (2) e original (3) saem nessa
+   faixa, nunca intercalados. Como a reserva só entra depois da pilha boa,
+   **nenhum original aparece antes de um dublado ou dual**.
+2. **O pack desempata dentro do idioma.** Dentro da mesma faixa, episódio vem antes
+   de pack. Assim um pack dublado fica atrás dos episódios dublados, mas ainda à
+   frente de um episódio em inglês — e o pack do Torrentio deixa de encobrir os
+   episódios do Knaben, do TPB+ e do APIBay.
+3. **Provedor em bloco.** Dentro de `(idioma, pack)`, cada provedor fica junto, na
+   ordem em que a cascata o consulta
+   ([`ordemDeProvedores()`](../backend/app/Services/TorrentService.php:307)):
+   Torrentio, addon Stremio, nativos, Torznab e YTS.
+4. **Seeds fecham.** Dentro do bloco, mais seeds primeiro.
+
+O pack de idioma não provado **não conta** para o mínimo: ele sobrevive ao corte
+de idioma por causa de `TORRENTS_PACKS_QUALQUER_IDIOMA`, mas entra pela reserva e
+aparece no fim, depois dos episódios de qualquer idioma. Como a pilha boa tem
 prioridade absoluta, um dublado de 1 seed entra na frente de um WEB-DL de 70 seeds
-— sem que os originais mais "populares" empurrem a dublada para fora. O pack
-também conta nessa pilha: ele é o último recurso das séries antigas e quase nunca
-vem marcado como dublado, então atravessa o corte de idioma e fica atrás do
-dublado e do dual.
+— sem que os originais mais "populares" empurrem a dublada para fora.
 
 Quando o mesmo torrent chega por mais de um provedor, fica a leitura de **melhor
 áudio** — dublado antes de dual, dual antes de original —, não a do provedor que
@@ -909,10 +928,13 @@ jogavam fora — e a lista voltava vazia, o oposto do socorro pretendido. A corr
   [`aproveitaveis()`](../backend/app/Services/Torrents/CatalogoProvedores.php:414)
   e [`ordenar()`](../backend/app/Services/TorrentService.php:226). Episódio comum e
   filme continuam sob o corte normal.
-- O pack entra **atrás do dublado**: a ordenação por prioridade de idioma
-  ([`IdiomaFonte::prioridade()`](../backend/app/Enums/IdiomaFonte.php:39)) já coloca
-  dublado e dual antes de legendado/original, então o pack só é usado quando não há
-  áudio PT-BR melhor.
+- O pack de idioma não provado **não** entra na pilha boa: ele vai para a reserva e
+  aparece **depois dos episódios de qualquer idioma**. Dublado e dual continuam na
+  frente por [`IdiomaFonte::prioridade()`](../backend/app/Enums/IdiomaFonte.php:41);
+  dentro de cada idioma, a chave
+  [`chaveDeOrdem()`](../backend/app/Services/TorrentService.php:330) põe o episódio
+  antes do pack. É o que impede o pack do Torrentio de encobrir os episódios do
+  Knaben, do TPB+ e do APIBay.
 - A exceção é reversível por configuração: `TORRENTS_PACKS_QUALQUER_IDIOMA`
   (padrão `true`). Em `false`, o comportamento anterior volta — pack desmarcado
   volta a ser descartado pelo corte. Veja

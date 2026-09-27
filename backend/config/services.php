@@ -197,11 +197,12 @@ return [
         'cache_ttl' => (int) env('TORRENTS_CACHE_TTL', 1800),
 
         /*
-         * Com isto ligado, a montagem final entrega só a faixa PT-BR — dublado,
-         * dual áudio e os packs de temporada que atravessam o corte de idioma —
-         * quando ela sozinha já alcança o mínimo. Se o PT-BR não chega lá, a
-         * reserva completa a lista, para o player ter alternativa. Desligue
-         * quando o suporte a legendado/original passar a ser o padrão.
+         * Com isto ligado, a montagem final entrega só a pilha boa — dublado e
+         * dual áudio provados — quando ela sozinha já alcança o mínimo. Se o
+         * PT-BR não chega lá, a reserva completa a lista, para o player ter
+         * alternativa. Os packs de idioma não provado não contam para o mínimo:
+         * entram pela reserva, no fim da lista. Desligue quando o suporte a
+         * legendado/original passar a ser o padrão.
          */
         'apenas_pt_br' => (bool) env('TORRENTS_APENAS_PT_BR', true),
 
@@ -226,9 +227,11 @@ return [
          * esmagadora maioria deles não vem marcada como dublado. Sem a exceção, o
          * pack é encontrado e descartado, e a lista volta vazia (foi o caso de
          * American Horror Story). Com isto ligado, só a fonte **marcada como
-         * pack** atravessa o corte sem ser dublada; episódios e filmes continuam
-         * sujeitos ao corte normal. O pack entra no fim da lista, atrás do
-         * dublado, quando ele existe.
+         * pack** sobrevive ao corte sem ser dublada; episódios e filmes continuam
+         * sujeitos ao corte normal. O pack não é áudio PT-BR provado: ele não
+         * conta para o mínimo e vai para a reserva, depois dos episódios de
+         * qualquer idioma. É o que mantém o pack do Torrentio atrás dos episódios
+         * do Knaben, do TPB+ e do APIBay.
          */
         'packs_qualquer_idioma' => (bool) env('TORRENTS_PACKS_QUALQUER_IDIOMA', true),
 
@@ -247,14 +250,14 @@ return [
         'termos_serie_habilitados' => (bool) env('TORRENTS_TERMOS_SERIE_HABILITADO', true),
 
         /*
-         * Piso de fontes PT-BR que dispensa a reserva.
+         * Piso de fontes boas que dispensa a reserva.
          *
-         * A cascata junta o que acha em PT-BR e o resto vira reserva. Quando o
-         * PT-BR sozinho alcança este piso, a lista final é só ele. Quando não
-         * alcança, a reserva completa até o teto de fontes — é o caso de um
-         * filme que só tem release em inglês, em que a alternativa evita uma
-         * lista de um item só. O piso **não** é o tamanho máximo da lista: quem
-         * limita é o teto de vinte.
+         * A cascata junta o que acha em PT-BR provado (dublado e dual áudio) e o
+         * resto vira reserva. Quando o PT-BR sozinho alcança este piso, a lista
+         * final é só ele. Quando não alcança, a reserva completa até o teto de
+         * fontes — é o caso de um filme que só tem release em inglês, em que a
+         * alternativa evita uma lista de um item só. O piso **não** é o tamanho
+         * máximo da lista: quem limita é o teto de vinte.
          */
         'minimo_fontes' => (int) env('TORRENTS_MINIMO_FONTES', 15),
 

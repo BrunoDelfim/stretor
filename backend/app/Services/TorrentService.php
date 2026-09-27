@@ -221,37 +221,47 @@ class TorrentService
      * Filtra e monta a lista final.
      *
      * O filtro de seeds é a primeira barreira contra fontes mortas. Depois, a
-     * montagem é por mérito de idioma: as fontes PT-BR (dublado e dual áudio,
-     * mais os packs que a inspeção provou dublados) vêm primeiro, na frente de
-     * qualquer reserva.
+     * montagem é por mérito de áudio, em duas chaves: **o idioma manda** e, dentro
+     * do mesmo idioma, **o episódio vem antes do pack**. Assim o dublado de
+     * episódio é o primeiro tentado, o pack dublado vem logo atrás, e o pack nunca
+     * passa à frente de um episódio de áudio igual ou melhor — era o que fazia o
+     * pack do Torrentio encobrir os episódios do Knaben, do TPB+ e do APIBay. O
+     * pack segue sendo o último recurso: fica atrás do dublado, do dual e de todo
+     * episódio do mesmo idioma.
      *
-     * A regra do mínimo é o que resolve o problema das séries antigas. Quando há
-     * poucas fontes PT-BR, a lista não fica curta nem é preenchida de originais
-     * por acaso: ela completa **até o mínimo** com o que houver de reserva, e o
-     * PT-BR continua no topo. Um filme com 7 dubladas e 40 originais devolve as 7
-     * dubladas seguidas de 8 originais — nunca 20 originais com o dublado
-     * escondido no meio.
-     *
-     * Com `apenas_pt_br` ligado, a reserva entra só até o mínimo. Desligado, ela
-     * completa até o teto — o comportamento para o dia em que legendado e
-     * original forem reproduzíveis.
+     * A pilha boa é só o áudio PT-BR provado — dublado e dual. Se ela alcança o
+     * piso de `minimo_fontes`, a lista é só ela; senão, a reserva (legendado,
+     * original e os packs de idioma não provado) completa até o teto de fontes.
+     * Como a pilha boa só carrega as prioridades 0 e 1, a concatenação já sai em
+     * ordem de idioma: nenhum original antes de um dublado ou dual.
      *
      * @param  array<int, array<string, mixed>>  $fontes
      * @return array<int, array<string, mixed>>
      */
     private function ordenar(array $fontes): array
     {
-        $fontes = array_values(array_filter(
-            $fontes,
-            fn (array $fonte) => ($fonte['seeds'] ?? 0) > 0 && ($fonte['magnet'] ?? '') !== ''
-        ));
+        $ordemProvedores = $this->ordemDeProvedores();
 
-        $porPrioridade = function (array $a, array $b): int {
-            $prioridadeA = IdiomaFonte::tryFrom($a['idioma'] ?? '')?->prioridade() ?? 99;
-            $prioridadeB = IdiomaFonte::tryFrom($b['idioma'] ?? '')?->prioridade() ?? 99;
+        $fontes = array_values(array_filter($fontes, function (array $fonte): bool {
+            if (($fonte['seeds'] ?? 0) <= 0 || ($fonte['magnet'] ?? '') === '') {
+                return false;
+            }
 
-            return $prioridadeA <=> $prioridadeB ?: $b['seeds'] <=> $a['seeds'];
-        };
+            /*
+             * O pack de idioma não provado é o socorro da série antiga e quase
+             * nunca vem marcado como dublado. Ele só entra na lista pela exceção de
+             * `packs_qualquer_idioma`; desligada, vale o corte de idioma normal e
+             * ele é descartado. O pack com PT-BR provado não depende da exceção.
+             */
+            if (! empty($fonte['pack']) && ! $this->ePtBr($fonte)) {
+                return (bool) config('services.torrents.packs_qualquer_idioma', true);
+            }
+
+            return true;
+        }));
+
+        $porMerito = fn (array $a, array $b): int
+            => $this->chaveDeOrdem($a, $ordemProvedores) <=> $this->chaveDeOrdem($b, $ordemProvedores);
 
         $ptBr = [];
         $reserva = [];
@@ -264,42 +274,77 @@ class TorrentService
             }
         }
 
-        usort($ptBr, $porPrioridade);
-        usort($reserva, $porPrioridade);
+        usort($ptBr, $porMerito);
+        usort($reserva, $porMerito);
 
         $limite = MensagensTorrent::LIMITE_FONTES;
         $minimo = (int) config('services.torrents.minimo_fontes', 15);
         $apenasPtBr = (bool) config('services.torrents.apenas_pt_br', true);
 
         /*
-         * Com base PT-BR suficiente, a lista é só o que serve direto — dublado,
-         * dual e os packs que atravessam o corte de idioma. O mínimo é um piso,
-         * não um teto: alcançado ele, nada mais é limitado e a lista sobe até o
-         * teto de fontes com o que há de bom. Tratá-lo como teto foi o que
-         * encolheu a lista de "American Horror Story" de 17 para 15 e ainda a
-         * encheu de episódios em inglês.
+         * Com base PT-BR suficiente, a lista é só o que serve direto. O mínimo é
+         * um piso, não um teto: alcançado ele, a lista sobe até o teto de fontes
+         * com o que há de bom. Sem base suficiente, a reserva completa até o teto,
+         * para o player ter alternativa quando a fonte boa não responder.
          */
         if ($apenasPtBr && count($ptBr) >= $minimo) {
             return array_slice($ptBr, 0, $limite);
         }
 
-        /*
-         * Sem base PT-BR suficiente, a reserva completa a lista até o teto — não
-         * até o mínimo —, para o player ter alternativas quando a fonte boa não
-         * responder. É o caso do filme que só tem release em inglês.
-         */
         return array_slice(array_merge($ptBr, $reserva), 0, $limite);
     }
 
     /**
-     * Diz se a fonte serve para a faixa PT-BR da montagem.
+     * Ordem canônica dos provedores, do mais forte para o mais fraco.
+     *
+     * É a mesma ordem em que a cascata os consulta — os por identificador primeiro
+     * (Torrentio e o addon Stremio), depois os nativos, o indexador e o YTS. Como o
+     * idioma já decide a faixa principal, esta chave só desempata dentro da mesma
+     * faixa, mantendo cada provedor em bloco em vez de intercalá-los por seeds.
+     *
+     * @return array<string, int>
+     */
+    private function ordemDeProvedores(): array
+    {
+        return [
+            'torrentio' => 0,
+            'addon_stremio' => 1,
+            'trackers_br' => 2,
+            'apibay' => 3,
+            'knaben' => 4,
+            'bt4g' => 5,
+            'torznab' => 6,
+            'yts' => 7,
+        ];
+    }
+
+    /**
+     * Chave de ordenação de uma fonte: idioma, episódio antes de pack, provedor e
+     * seeds. Comparada em bloco, ela entrega a ordem final sem nenhuma regra
+     * escondida dentro do comparador.
+     *
+     * @param  array<string, mixed>  $fonte
+     * @param  array<string, int>  $ordemProvedores
+     * @return array<int, int>
+     */
+    private function chaveDeOrdem(array $fonte, array $ordemProvedores): array
+    {
+        $idioma = IdiomaFonte::tryFrom((string) ($fonte['idioma'] ?? ''))?->prioridade() ?? 99;
+        $pack = ! empty($fonte['pack']) ? 1 : 0;
+        $provedor = $ordemProvedores[$fonte['provedor'] ?? ''] ?? 99;
+
+        return [$idioma, $pack, $provedor, -(int) ($fonte['seeds'] ?? 0)];
+    }
+
+    /**
+     * Diz se a fonte serve para a pilha boa da montagem.
      *
      * A etiqueta `pt_br` da cascata vem primeiro — ela já embute a promoção dos
      * packs cujo conteúdo provou o dublado. O idioma cru cobre a chamada fora da
-     * cascata. Por último, o pack de temporada entra como fonte boa mesmo sem o
-     * nome provar PT-BR: ele é o último recurso de uma série antiga, quase nunca
-     * vem marcado como dublado e, sem esta exceção, caía na reserva e perdia
-     * para os episódios em inglês na hora de completar a lista.
+     * cascata. Ficam de fora os packs de idioma não provado: eles não são áudio
+     * PT-BR, são o socorro da série antiga. Vão para a reserva e, por serem pack,
+     * só aparecem depois dos episódios de qualquer idioma — é o que mantém o pack
+     * do Torrentio atrás dos episódios do Knaben, do TPB+ e do APIBay.
      *
      * @param  array<string, mixed>  $fonte
      */
@@ -309,16 +354,11 @@ class TorrentService
             return true;
         }
 
-        if (in_array(
+        return in_array(
             $fonte['idioma'] ?? '',
             [IdiomaFonte::DUBLADO->value, IdiomaFonte::DUAL_AUDIO->value],
             true
-        )) {
-            return true;
-        }
-
-        return (bool) config('services.torrents.packs_qualquer_idioma', true)
-            && ! empty($fonte['pack']);
+        );
     }
 
     /**
