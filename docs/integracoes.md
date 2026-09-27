@@ -896,18 +896,21 @@ passou a procurar o pacote quando os termos de episódio não acham fonte dublad
 
 Os packs entraram na busca, mas no primeiro teste real — *American Horror Story*,
 S01E01 — continuaram sem aparecer: a busca achava o pacote e o **descartava**
-depois. O corte de `apenas_pt_br` roda em **dois** pontos, e os dois reprovavam o
-pack:
+depois. Naquele momento o idioma **desclassificava** a fonte em **dois** pontos, e
+os dois reprovavam o pack:
 
-1. [`CatalogoProvedores::aproveitaveis()`](../backend/app/Services/Torrents/CatalogoProvedores.php:414),
+1. [`CatalogoProvedores::aproveitaveis()`](../backend/app/Services/Torrents/CatalogoProvedores.php:571),
    ainda dentro da cascata, para o `temDublado()` julgar cada degrau sobre fontes
    que de fato atendem ao pedido;
-2. [`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:209),
+2. [`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:241),
    antes de devolver a lista ao frontend.
 
-Como o pack de série antiga quase nunca vem marcado como dublado, os dois cortes o
-jogavam fora — e a lista voltava vazia, o oposto do socorro pretendido. A correção
-é cirúrgica e não afrouxa o corte para o resto:
+Como o pack de série antiga quase nunca vem marcado como dublado, os dois o
+jogavam fora — e a lista voltava vazia, o oposto do socorro pretendido. O desenho
+mudou depois: o idioma deixou de desclassificar a fonte e passou apenas a
+**etiquetá-la** (`pt_br`) e a definir a faixa em que ela aparece; quanto da reserva
+entra na lista é decisão da montagem final. Sobrou **um** ponto de filtro, e é nele
+que a exceção do pack vive hoje. A correção continua cirúrgica:
 
 - A fonte é **marcada como pack ainda na cascata**, em
   [`CatalogoProvedores::marcarPacks()`](../backend/app/Services/Torrents/CatalogoProvedores.php:361),
@@ -924,10 +927,9 @@ jogavam fora — e a lista voltava vazia, o oposto do socorro pretendido. A corr
   reconhece o termo exigindo **os dois** sinais: um marcador de pacote
   (`completa`/`completo`/`complete`/`superpack`) e uma numeração de temporada. Um
   filme de título *The Complete ...* que passe por aqui não é confundido.
-- Os dois cortes passam a isentar **apenas** a fonte marcada como pack:
-  [`aproveitaveis()`](../backend/app/Services/Torrents/CatalogoProvedores.php:414)
-  e [`ordenar()`](../backend/app/Services/TorrentService.php:226). Episódio comum e
-  filme continuam sob o corte normal.
+- A isenção vale **apenas** para a fonte marcada como pack, e num único ponto: o
+  filtro de [`ordenar()`](../backend/app/Services/TorrentService.php:256). Episódio
+  comum e filme seguem a regra normal.
 - O pack de idioma não provado **não** entra na pilha boa: ele vai para a reserva e
   aparece **depois dos episódios de qualquer idioma**. Dublado e dual continuam na
   frente por [`IdiomaFonte::prioridade()`](../backend/app/Enums/IdiomaFonte.php:41);
@@ -937,7 +939,7 @@ jogavam fora — e a lista voltava vazia, o oposto do socorro pretendido. A corr
   Knaben, do TPB+ e do APIBay.
 - A exceção é reversível por configuração: `TORRENTS_PACKS_QUALQUER_IDIOMA`
   (padrão `true`). Em `false`, o comportamento anterior volta — pack desmarcado
-  volta a ser descartado pelo corte. Veja
+  volta a ser descartado pelo filtro de idioma. Veja
   [Ambiente](ambiente.md#variáveis-de-ambiente).
 - A `VERSAO_CACHE` subiu para `10`: a mudança atinge entradas já cacheadas, e a
   chave precisa mudar para a reconsulta valer na próxima busca.
