@@ -69,6 +69,33 @@ class TorznabService
     private bool $avisouRotas = false;
 
     /**
+     * Teto de cada pedido ao Prowlarr, em segundos.
+     */
+    private const TEMPO_LIMITE_PEDIDO = 20;
+
+    /**
+     * Marca de tempo absoluta em que o degrau inteiro precisa parar.
+     *
+     * O total deste degrau é o produto de três variáveis que não paramos de
+     * aumentar: os termos do episódio, as duas consultas por termo e os
+     * indexadores cadastrados no Prowlarr. Como a varredura é sequencial e cada
+     * indexador pode gastar quatro tentativas só para descobrir a rota, o tempo
+     * crescia sem teto. Enquanto havia um indexador isso cabia no orçamento de
+     * paciência do navegador; ao entrarem o ThePirateBay e o TorrentGalaxy — este
+     * último atrás do CloudFlare, respondendo pelo FlareSolverr com vários
+     * segundos por consulta — o `/fontes` de um episódio passou a estourar o
+     * tempo e a requisição era cancelada antes de a interface receber a lista.
+     * O prazo devolve o controle: ao estourar, paramos de perguntar e
+     * entregamos o que já foi recolhido, em vez de não entregar nada.
+     */
+    private ?float $prazo = null;
+
+    /**
+     * Evita repetir o aviso de prazo estourado a cada indexador.
+     */
+    private bool $avisouPrazo = false;
+
+    /**
      * Indica se o indexador está configurado.
      *
      * Sem URL e chave o serviço não tem como consultar; o TorrentService usa
@@ -77,6 +104,56 @@ class TorznabService
     public function configurado(): bool
     {
         return $this->url() !== '' && $this->chave() !== '';
+    }
+
+    /**
+     * Marca de tempo em que o degrau precisa parar.
+     *
+     * O prazo é ancorado na primeira consulta, e não na construção do serviço:
+     * o Laravel resolve o container antes de qualquer trabalho, e medir a partir
+     * dali descontaria o tempo gasto na autenticação e na montagem da resposta.
+     */
+    private function prazo(): float
+    {
+        return $this->prazo ??= microtime(true)
+            + max(1, (int) config('services.torrents.torznab_orcamento', 12));
+    }
+
+    /** O tempo reservado para o degrau acabou? */
+    private function orcamentoEsgotado(): bool
+    {
+        return microtime(true) >= $this->prazo();
+    }
+
+    /**
+     * Quanto sobra do orçamento, em segundos, para limitar um pedido isolado.
+     *
+     * O piso é 1: `timeout(0)` no Laravel significa "sem limite", e disparar um
+     * pedido já vencido seria justamente o que o orçamento veio evitar.
+     */
+    private function tempoRestante(): int
+    {
+        return max(1, (int) ceil($this->prazo() - microtime(true)));
+    }
+
+    /**
+     * Registra por que a varredura parou, uma vez por requisição.
+     *
+     * Sem este aviso, um resultado menor que o esperado fica indistinguível de
+     * "o acervo não tinha o release" — que é o sintoma enganoso que este degrau
+     * já produziu antes.
+     */
+    private function avisarPrazo(): void
+    {
+        if ($this->avisouPrazo) {
+            return;
+        }
+
+        $this->avisouPrazo = true;
+
+        Log::warning('Orçamento do degrau Torznab esgotado; devolvendo o que foi recolhido.', [
+            'orcamento' => (int) config('services.torrents.torznab_orcamento', 12),
+        ]);
     }
 
     /**
@@ -137,6 +214,12 @@ class TorznabService
         $itens = [];
 
         foreach ($this->idsDosIndexadores() as $id) {
+            if ($this->orcamentoEsgotado()) {
+                $this->avisarPrazo();
+
+                break;
+            }
+
             $itens = array_merge($itens, $this->consultarIndexador($id, $termo, $categoria));
         }
 
@@ -166,6 +249,14 @@ class TorznabService
     private function consultarIndexador(int $id, string $termo, ?string $categoria): array
     {
         foreach ($this->rotas($id) as $rota) {
+            // Desistir da varredura de rotas deste indexador é preferível a
+            // gastar o resto do orçamento num caminho que talvez nem responda.
+            if ($this->orcamentoEsgotado()) {
+                $this->avisarPrazo();
+
+                break;
+            }
+
             $itens = $this->pedir($rota, $termo, $categoria);
 
             if ($itens !== []) {
@@ -254,7 +345,7 @@ class TorznabService
 
         try {
             $resposta = Http::baseUrl($this->url())
-                ->timeout(20)
+                ->timeout(min(self::TEMPO_LIMITE_PEDIDO, $this->tempoRestante()))
                 ->get($rota, $parametros);
         } catch (\Throwable $excecao) {
             // Um indexador indisponível não pode derrubar a busca inteira: o
@@ -437,7 +528,7 @@ class TorznabService
         try {
             $resposta = Http::baseUrl($this->url())
                 ->withHeaders(['X-Api-Key' => $this->chave()])
-                ->timeout(20)
+                ->timeout(min(self::TEMPO_LIMITE_PEDIDO, $this->tempoRestante()))
                 ->get('/api/v1/indexer');
         } catch (\Throwable) {
             return $this->idsEmCache = [];
@@ -462,9 +553,25 @@ class TorznabService
 
             $id = (int) ($indexador['id'] ?? 0);
 
-            if ($id > 0) {
-                $ids[] = $id;
+            if ($id <= 0) {
+                continue;
             }
+
+            /*
+             * Indexador desabilitado sai da varredura. O provisionamento grava
+             * como desabilitado justamente o que não passou no teste de busca —
+             * o caso dos protegidos pelo CloudFlare quando o FlareSolverr não
+             * está de pé. Consultá-los assim mesmo custava quatro tentativas de
+             * vinte segundos por termo para receber silêncio, e é boa parte do
+             * que fazia a busca de episódio estourar o tempo. A ausência do
+             * campo num Prowlarr antigo é tratada como habilitado, para não
+             * esvaziar a varredura por uma diferença de versão.
+             */
+            if (! ($indexador['enable'] ?? true)) {
+                continue;
+            }
+
+            $ids[] = $id;
         }
 
         return $this->idsEmCache = $ids;

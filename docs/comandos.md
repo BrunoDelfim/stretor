@@ -44,7 +44,8 @@ docker compose exec backend php artisan migrate
 # Rodar queue worker
 docker compose exec backend php artisan queue:work
 
-# Reprovisionar o Prowlarr (descobre a chave da API e cadastra os indexadores PT-BR)
+# Reprovisionar o Prowlarr (descobre a chave da API e cadastra os indexadores
+# públicos)
 docker compose exec backend php artisan prowlarr:provisionar
 ```
 

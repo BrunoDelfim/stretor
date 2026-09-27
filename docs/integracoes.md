@@ -506,9 +506,9 @@ O arranjo é automático, como o resto do provisionamento:
   (`depends_on: condition: service_healthy`), para não tentar gravar o proxy
   enquanto o Chromium ainda está abrindo;
 - os indexadores listados em `proxy_indexadores`
-  ([`config/services.php`](../backend/config/services.php:189) — hoje só o
-  `1337x`) recebem a tag já no corpo do cadastro, e aí o teste de busca passa
-  dentro do `forceSave`, com o indexador **nascendo ativo**;
+  ([`config/services.php`](../backend/config/services.php:189) — hoje o `1337x` e
+  o `torrentgalaxy`) recebem a tag já no corpo do cadastro, e aí o teste de busca
+  passa dentro do `forceSave`, com o indexador **nascendo ativo**;
 - quem já tem o 1337x gravado desabilitado (stack subido antes desta mudança) é
   resgatado pelo
   [`ajustarIndexadorComProxy()`](../backend/app/Services/ProwlarrService.php:885),
@@ -560,8 +560,9 @@ O `torrentdosfilmes` fica **fora** dessa lista de propósito: o problema dele n�
 desafio do CloudFlare, e sim o domínio sequestrado — não há proxy que resolva
 isso.
 
-Para desligar o proxy, basta `PROWLARR_PROXY_ATIVO=false` no `.env`: o 1337x volta
-a ser gravado desabilitado, sem erro fatal e sem derrubar o degrau 2.
+Para desligar o proxy, basta `PROWLARR_PROXY_ATIVO=false` no `.env`: os
+indexadores barrados voltam a ser gravados desabilitados, sem erro fatal e sem
+derrubar o degrau 2.
 
 #### O domínio PT-BR foi sequestrado
 
@@ -569,12 +570,14 @@ Em 2026-09, `torrentdosfilmes.tv` deixou de ser tracker: o domínio foi
 sequestrado e hoje serve um site de apostas (*"377bet Casino"*). O
 `torrentsfilmeshd.net` também não resolve mais.
 
-Sem tracker PT-BR público ativo, o degrau 2 passou a depender de **uma** definição:
-o `1337x`, que é oficial do Prowlarr (não precisa de `.yml` próprio) — tracker
-público estável, acervo amplo e o único que hoje entrega release marcado como
-dublado. Ele vive atrás do CloudFlare, e é o proxy FlareSolverr descrito acima
-que o tira de inativo. Ele não usa proxy por causa do domínio, e sim do
-CloudFlare.
+Sem tracker PT-BR público ativo, o degrau 2 passou a depender de definições
+oficiais do Prowlarr (que não precisam de `.yml` próprio). Hoje são três, em
+`PROWLARR_INDEXADORES`: o `1337x` (acervo amplo e de longa data), o
+`thepiratebay` e o `torrentgalaxy` — os dois últimos entraram porque também
+publicam release marcado como dublado/dual áudio e são de acesso livre, sem
+convite. O `1337x` e o `torrentgalaxy` vivem atrás do CloudFlare, e é o proxy
+FlareSolverr descrito acima que os tira de inativo; o `thepiratebay` vai direto.
+O proxy não é por causa do domínio, e sim do CloudFlare.
 
 O `torrentdosfilmes` saiu da lista `indexadores` em
 [`config/services.php`](../backend/config/services.php:176). Enquanto estava
@@ -598,9 +601,10 @@ própria:
 - **Ela está fora do provisionamento.** Ter o `.yml` na pasta só a deixa
   disponível no painel; quem manda no cadastro automático é a lista `indexadores`
   de [`config/services.php`](../backend/config/services.php:176). Hoje essa lista
-  tem só o `1337x`. Quando o domínio do tracker voltar, inclua `torrentdosfilmes`
-  nela — e só então o Prowlarr o cadastra. Para somar outro tracker público,
-  basta soltar o `.yml` na mesma pasta e incluir o id na lista.
+  traz o `1337x`, o `thepiratebay` e o `torrentgalaxy`. Quando o domínio do
+  tracker voltar, inclua `torrentdosfilmes` nela — e só então o Prowlarr o
+  cadastra. Para somar outro tracker público, basta soltar o `.yml` na mesma
+  pasta e incluir o id na lista.
 - O Prowlarr lê o arquivo no boot; para recarregar depois de editá-lo, use
   `docker compose restart prowlarr`.
 - A definição é do tipo `Cardigann` (raspagem de HTML) e devolve os resultados

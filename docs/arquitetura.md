@@ -21,14 +21,16 @@ rede interna do Docker.
 
 ## Componentes
 
-| Serviço         | Stack                          | Porta padrão |
-|-----------------|--------------------------------|--------------|
-| `frontend`      | Vue 3 + Vite + Pinia + Tailwind| 5173 (interna) |
-| `backend`       | Laravel 11 (PHP 8.3-FPM)       | 9000 (FPM)   |
-| `nginx`         | Nginx 1.27 Alpine              | **80**       |
-| `media-service` | Node.js 20 + FFmpeg            | 3000         |
-| `postgres`      | PostgreSQL 16                  | 5432         |
-| `redis`         | Redis 7 Alpine                 | 6379         |
+| Serviço            | Stack                          | Porta padrão |
+|--------------------|--------------------------------|--------------|
+| `frontend`         | Vue 3 + Vite + Pinia + Tailwind| 5173 (interna) |
+| `backend`          | Laravel 11 (PHP 8.3-FPM)       | 9000 (FPM)   |
+| `nginx`            | Nginx 1.27 Alpine              | **80**       |
+| `media-service`    | Node.js 20 + FFmpeg            | 3000         |
+| `postgres`         | PostgreSQL 16                  | 5432         |
+| `redis`            | Redis 7 Alpine                 | 6379         |
+| `prowlarr`         | Prowlarr                       | 9696         |
+| `flaresolverr`     | FlareSolverr                   | 8191 (interna) |
 
 > **Acesso principal:** http://localhost (Nginx na porta 80 faz proxy para o
 > frontend Vite e para a API Laravel).

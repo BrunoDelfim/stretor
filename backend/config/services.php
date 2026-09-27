@@ -1,5 +1,24 @@
 <?php
 
+/*
+ * Listas separadas por vírgula vindas do ambiente. Vivem aqui, e não dentro do
+ * serviço, porque as duas listas do Prowlarr (os indexadores e os que dependem
+ * do proxy) partilham a mesma leitura: espaços aparados e entradas vazias fora.
+ * O valor padrão entra quando a variável está ausente ou em branco.
+ */
+$lista = static function (?string $valor, array $padrao): array {
+    $texto = trim((string) $valor);
+
+    if ($texto === '') {
+        return $padrao;
+    }
+
+    return array_values(array_filter(
+        array_map('trim', explode(',', $texto)),
+        static fn (string $item): bool => $item !== ''
+    ));
+};
+
 return [
     'postmark' => [
         'token' => env('POSTMARK_TOKEN'),
@@ -119,6 +138,23 @@ return [
          */
         'torznab_categoria_serie' => env('TORRENTS_TORZNAB_CATEGORIA_SERIE', '5000'),
 
+        /*
+         * Orçamento de tempo, em segundos, para o degrau inteiro em uma busca.
+         *
+         * O custo deste degrau é um produto de três fatores que crescem sem
+         * combinar entre si: os termos do episódio, as duas consultas por termo e
+         * os indexadores cadastrados no Prowlarr. A varredura é sequencial, e
+         * cada indexador pode gastar quatro tentativas só para descobrir a rota
+         * certa — os que ficam atrás do CloudFlare ainda respondem pelo
+         * FlareSolverr, com vários segundos por consulta. Enquanto havia um
+         * indexador isso cabia; com o ThePirateBay e o TorrentGalaxy na lista, o
+         * `/fontes` de um episódio passou dos 60 s que o frontend espera
+         * (`TIMEOUT_REQUISICAO_MS`) e a requisição era cancelada antes de a lista
+         * chegar à tela. Ao estourar o orçamento, o degrau para e devolve o que
+         * já recolheu: perder um indexador é melhor do que perder a busca.
+         */
+        'torznab_orcamento' => (int) env('TORRENTS_TORZNAB_ORCAMENTO', 20),
+
         // --- Degrau 3: YTS (reserva em inglês) ---
 
         // O domínio principal do YTS (yts.mx) é bloqueado por DNS em vários
@@ -157,14 +193,22 @@ return [
         'rotulo_padrao' => env('PROWLARR_ROTULO_PADRAO', 'Índice público PT-BR'),
 
         /*
-         * Ids das definições Cardigann que viram indexador. A lista é curta de
-         * propósito: indexador morto não melhora a busca, só gasta uma consulta
-         * por termo — e a cascata pergunta quatro termos por episódio.
+         * Ids das definições Cardigann que viram indexador, separados por
+         * vírgula. O id é o `definitionFile` como o Prowlarr o expõe, sem a
+         * extensão `.yml`; a lista sai do ambiente para poder mudar sem tocar no
+         * código.
          *
          *   - `1337x`: definição oficial, embutida no Prowlarr. Tracker público
-         *     estável, acervo amplo e o único que hoje devolve release marcado
-         *     como dublado. Vive atrás do CloudFlare, então depende do proxy
-         *     configurado abaixo.
+         *     estável, acervo amplo e um dos que devolvem release marcado como
+         *     dublado. Vive atrás do CloudFlare, então depende do proxy abaixo.
+         *   - `thepiratebay`: cena PT-BR com "Dublado"/"Dual Áudio" e acesso
+         *     livre; não passa pelo CloudFlare, logo fica no caminho direto.
+         *   - `torrentgalaxy`: mesmo tipo de acervo dublado e de acesso livre,
+         *     porém atrás do CloudFlare — por isso entra também no proxy.
+         *
+         * A lista é curta de propósito: indexador morto não melhora a busca, só
+         * gasta uma consulta por termo — e a cascata pergunta quatro termos por
+         * episódio. Um id a mais só entra quando provar que traz fonte PT-BR.
          *
          * `torrentdosfilmes` saiu daqui depois que o domínio foi sequestrado. A
          * definição continua versionada em docker/prowlarr/Definitions/Custom
@@ -173,23 +217,30 @@ return [
          * site de apostas, nem ressuscitar no painel o que já foi removido à
          * mão. Para reativar, basta devolvê-la a esta lista.
          */
-        'indexadores' => ['1337x'],
+        'indexadores' => $lista(
+            env('PROWLARR_INDEXADORES'),
+            ['1337x', 'thepiratebay', 'torrentgalaxy']
+        ),
 
         /*
-         * Proxy para os trackers que o CloudFlare barra. O Prowlarr recusa o
-         * cadastro enquanto o teste de busca falha, e o 1337x responde
-         * justamente com "blocked by CloudFlare Protection". O FlareSolverr sobe
-         * junto com o stack, o backend o cadastra como proxy e associa os
-         * indexadores abaixo por tag — depois disso o teste passa e o indexador
-         * nasce ativo.
+         * Subconjunto de `indexadores` que o CloudFlare barra, separado por
+         * vírgula. O Prowlarr recusa o cadastro enquanto o teste de busca falha,
+         * e é justamente com "blocked by CloudFlare Protection" que o 1337x e o
+         * TorrentGalaxy respondem. O FlareSolverr sobe junto com o stack, o
+         * backend o cadastra como proxy e associa estes indexadores por tag —
+         * depois disso o teste passa e o indexador nasce ativo.
          *
-         * `proxy_ativo` em false volta ao comportamento antigo: o 1337x fica
-         * cadastrado, porém inativo.
+         * Os que não estão aqui (hoje, o ThePirateBay) são testados direto.
+         * `proxy_ativo` em false volta ao comportamento antigo: os protegidos
+         * ficam cadastrados, porém inativos.
          */
         'flaresolverr_url' => env('FLARESOLVERR_URL', 'http://flaresolverr:8191'),
         'proxy_ativo' => (bool) env('PROWLARR_PROXY_ATIVO', true),
         'proxy_nome' => env('PROWLARR_PROXY_NOME', 'FlareSolverr'),
         'proxy_tag' => env('PROWLARR_PROXY_TAG', 'flaresolverr'),
-        'proxy_indexadores' => ['1337x'],
+        'proxy_indexadores' => $lista(
+            env('PROWLARR_PROXY_INDEXADORES'),
+            ['1337x', 'torrentgalaxy']
+        ),
     ],
 ];

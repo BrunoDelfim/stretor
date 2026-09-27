@@ -88,8 +88,9 @@ PT-BR. **Não há nada para configurar à mão**: na primeira subida o backend r
    compartilhado (`prowlarr_config`) — você não copia nem cola chave;
 2. espera o Prowlarr responder (na primeira subida ele gasta alguns segundos
    criando o banco interno antes de aceitar requisições);
-3. cadastra os indexadores públicos PT-BR versionados no projeto, sem duplicar
-   o que já existe.
+3. cadastra os indexadores públicos versionados no projeto — o `1337x`, o
+   `thepiratebay` e o `torrentgalaxy`, definidos em `PROWLARR_INDEXADORES` —
+   sem duplicar o que já existe.
 
 A chave descoberta é gravada em `TORRENTS_TORZNAB_KEY` no `.env` do backend e
 exportada para o php-fpm, destravando o degrau 2 da busca. Para refazer o
@@ -101,9 +102,10 @@ provisionamento a qualquer momento, rode `make prowlarr`.
 
 > **Tags no painel do Prowlarr:** a tag criada pelo projeto (`flaresolverr`) não é
 > enfeite — é o **vínculo com o proxy**. O Prowlarr só encaminha pelo FlareSolverr
-> os indexadores que carregam essa tag, então quem quiser marcar o 1337x com uma
-> tag própria deve **somá-la** à que já existe, nunca substituí-la: trocada, o
-> `blocked by CloudFlare Protection` volta na hora. As tags do Prowlarr também
+> os indexadores que carregam essa tag, então quem quiser marcar o 1337x ou o
+> TorrentGalaxy com uma tag própria deve **somá-la** à que já existe, nunca
+> substituí-la: trocada, o `blocked by CloudFlare Protection` volta na hora. As
+> tags do Prowlarr também
 > **não filtram idioma** — "só dublado" é decisão do backend
 > (`TORRENTS_APENAS_PT_BR`). O provisionamento mescla as tags do indexador e
 > nunca apaga as suas.
@@ -118,10 +120,10 @@ montada em `/config/Definitions/Custom/` dentro do container pelo
 recriações do container e é versionada junto com o código.
 
 Essa definição está **fora do provisionamento**: o domínio do tracker foi
-sequestrado e o endereço hoje serve um site de apostas. O indexador cadastrado
-automaticamente é o `1337x`, que é definição oficial do Prowlarr. Ter o `.yml` na
-pasta apenas o deixa disponível no painel — quem decide o que é cadastrado é a
-lista `indexadores` de
+sequestrado e o endereço hoje serve um site de apostas. Os indexadores
+cadastrados automaticamente (`1337x`, `thepiratebay` e `torrentgalaxy`) são
+definições oficiais do Prowlarr. Ter o `.yml` na pasta apenas o deixa disponível
+no painel — quem decide o que é cadastrado é a lista `indexadores` de
 [`config/services.php`](../backend/config/services.php:176). Quando o site
 voltar, inclua o id `torrentdosfilmes` nessa lista.
 

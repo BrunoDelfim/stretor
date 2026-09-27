@@ -56,18 +56,27 @@ services:
       # Categoria Torznab de séries (5000 = TV). Sem ela, o Prowlarr filtraria
       # um episódio pela categoria de filme e devolveria zero resultados.
       - TORRENTS_TORZNAB_CATEGORIA_SERIE=${TORRENTS_TORZNAB_CATEGORIA_SERIE:-5000}
+      # Orçamento do degrau do indexador, em segundos. É o teto que impede a
+      # varredura sequencial dos indexadores de passar dos 60s de espera do
+      # frontend — sem ele, a busca de episódio era cancelada pelo navegador.
+      - TORRENTS_TORZNAB_ORCAMENTO=${TORRENTS_TORZNAB_ORCAMENTO:-20}
       # Usados pelo comando `prowlarr:provisionar` na subida do container.
       - PROWLARR_URL=${PROWLARR_URL:-http://prowlarr:9696}
       # Sem este caminho o provisionamento não acha o config.xml, não descobre a
       # chave da API e nunca chega a cadastrar o indexador.
       - PROWLARR_CONFIG_PATH=${PROWLARR_CONFIG_PATH:-/prowlarr-config/config.xml}
       - PROWLARR_TEMPO_LIMITE=${PROWLARR_TEMPO_LIMITE:-20}
-      # O 1337x vive atrás do CloudFlare e recusa o teste de busca do Prowlarr,
-      # que por isso nunca sai de inativo. O FlareSolverr resolve o desafio e o
-      # backend o registra como proxy do indexador na subida.
+      # Indexadores públicos que o provisionamento cadastra sozinho, por vírgula,
+      # pelos identificadores das definições Cardigann.
+      - PROWLARR_INDEXADORES=${PROWLARR_INDEXADORES:-1337x,thepiratebay,torrentgalaxy}
+      # Subconjunto que exige o FlareSolverr por estar atrás do CloudFlare.
+      - PROWLARR_PROXY_INDEXADORES=${PROWLARR_PROXY_INDEXADORES:-1337x,torrentgalaxy}
+      # O 1337x e o TorrentGalaxy vivem atrás do CloudFlare e recusam o teste de
+      # busca do Prowlarr, que por isso nunca os tira de inativo. O FlareSolverr
+      # resolve o desafio e o backend o registra como proxy dos indexadores.
       - FLARESOLVERR_URL=${FLARESOLVERR_URL:-http://flaresolverr:8191}
-      # false pula o registro do proxy: o indexador protegido volta a ficar
-      # apenas cadastrado, sem funcionar.
+      # false pula o registro do proxy: os indexadores protegidos voltam a ficar
+      # apenas cadastrados, sem funcionar.
       - PROWLARR_PROXY_ATIVO=${PROWLARR_PROXY_ATIVO:-true}
       # Reserva de torrents (YTS) usada quando o indexador não responde.
       - TORRENTS_BASE_URL=${TORRENTS_BASE_URL:-https://yts.gg}
