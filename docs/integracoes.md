@@ -700,15 +700,25 @@ idioma; a decisão de ordem fica para o fim.
 
 A lista final sai de
 [`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:242):
-primeiro as fontes PT-BR, depois a reserva preenchendo até o **mínimo fixo**
-(`TORRENTS_MINIMO_FONTES`, padrão `15`), sempre respeitando o teto de
-`LIMITE_FONTES` (20). Se só há 7 PT-BR, as seguintes vêm da reserva; se há 20
-PT-BR, a reserva nem é tocada.
+primeiro as fontes PT-BR — dublado, dual áudio e os packs que atravessam o corte
+de idioma —, depois a reserva preenchendo até o teto de `LIMITE_FONTES` (`20`). O
+`TORRENTS_MINIMO_FONTES` (padrão `15`) é um **piso**, não um teto: se o PT-BR
+sozinho alcança o piso, a lista é só ele, sem gastar espaço com reserva; se
+**não** alcança, a reserva completa **até o teto** — e não até o mínimo, como
+antes. Uma série com 17 fontes boas volta com 17; um filme só com release em
+inglês volta com a reserva cheia, para o player não ficar sem alternativa.
 
 Assim o corte para de descartar dubladas por falta de seed: como a pilha PT-BR tem
 prioridade absoluta, um dublado de 1 seed entra na frente de um WEB-DL de 70 seeds
-— sem que os originais mais "populares" empurrem a dublada para fora. A reserva só
-completa o que falta.
+— sem que os originais mais "populares" empurrem a dublada para fora. O pack
+também conta nessa pilha: ele é o último recurso das séries antigas e quase nunca
+vem marcado como dublado, então atravessa o corte de idioma e fica atrás do
+dublado e do dual.
+
+Quando o mesmo torrent chega por mais de um provedor, fica a leitura de **melhor
+áudio** — dublado antes de dual, dual antes de original —, não a do provedor que
+respondeu primeiro: quem classifica é o áudio do arquivo, não o provedor. A marca
+de pack, por ser propriedade do torrent e não da leitura, sobrevive à troca.
 
 Com `TORRENTS_APENAS_PT_BR=false`, a reserva inteira também pode entrar — sem tocar
 em código.

@@ -197,11 +197,11 @@ return [
         'cache_ttl' => (int) env('TORRENTS_CACHE_TTL', 1800),
 
         /*
-         * Enquanto o player só lida com áudio em PT-BR, manter releases em
-         * outros idiomas na lista só faz o frontend perder tempo tentando uma
-         * fonte que não vai servir. Com isto ligado, a ordenação descarta tudo
-         * que não seja dublado ou dual áudio — a lista fica curta e o teste,
-         * rápido. Desligue quando o suporte a legendado/original entrar.
+         * Com isto ligado, a montagem final entrega só a faixa PT-BR — dublado,
+         * dual áudio e os packs de temporada que atravessam o corte de idioma —
+         * quando ela sozinha já alcança o mínimo. Se o PT-BR não chega lá, a
+         * reserva completa a lista, para o player ter alternativa. Desligue
+         * quando o suporte a legendado/original passar a ser o padrão.
          */
         'apenas_pt_br' => (bool) env('TORRENTS_APENAS_PT_BR', true),
 
@@ -247,13 +247,14 @@ return [
         'termos_serie_habilitados' => (bool) env('TORRENTS_TERMOS_SERIE_HABILITADO', true),
 
         /*
-         * Mínimo de fontes que a lista final precisa ter antes de ir ao frontend.
+         * Piso de fontes PT-BR que dispensa a reserva.
          *
-         * A cascata junta o que acha em PT-BR e o resto vira reserva; quando o
-         * PT-BR não chega a este mínimo, a reserva completa a lista até aqui e
-         * só então ela é enviada. Sem este piso, uma busca que só achou o pack
-         * dublado devolvia uma lista de um item — e o player ficava sem
-         * alternativa quando aquela fonte não respondia.
+         * A cascata junta o que acha em PT-BR e o resto vira reserva. Quando o
+         * PT-BR sozinho alcança este piso, a lista final é só ele. Quando não
+         * alcança, a reserva completa até o teto de fontes — é o caso de um
+         * filme que só tem release em inglês, em que a alternativa evita uma
+         * lista de um item só. O piso **não** é o tamanho máximo da lista: quem
+         * limita é o teto de vinte.
          */
         'minimo_fontes' => (int) env('TORRENTS_MINIMO_FONTES', 15),
 

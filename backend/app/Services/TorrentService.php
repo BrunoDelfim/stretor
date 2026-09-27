@@ -271,38 +271,54 @@ class TorrentService
         $minimo = (int) config('services.torrents.minimo_fontes', 15);
         $apenasPtBr = (bool) config('services.torrents.apenas_pt_br', true);
 
-        // O alvo é o tamanho que a lista precisa ter: o mínimo quando só o áudio
-        // PT-BR interessa, o teto quando a reserva também serve para reproduzir.
-        $alvo = $apenasPtBr ? min($minimo, $limite) : $limite;
-
-        // Já há PT-BR suficiente: ele é a resposta, sem gastar espaço com reserva.
-        if (count($ptBr) >= $alvo) {
+        /*
+         * Com base PT-BR suficiente, a lista é só o que serve direto — dublado,
+         * dual e os packs que atravessam o corte de idioma. O mínimo é um piso,
+         * não um teto: alcançado ele, nada mais é limitado e a lista sobe até o
+         * teto de fontes com o que há de bom. Tratá-lo como teto foi o que
+         * encolheu a lista de "American Horror Story" de 17 para 15 e ainda a
+         * encheu de episódios em inglês.
+         */
+        if ($apenasPtBr && count($ptBr) >= $minimo) {
             return array_slice($ptBr, 0, $limite);
         }
 
-        return array_merge($ptBr, array_slice($reserva, 0, $alvo - count($ptBr)));
+        /*
+         * Sem base PT-BR suficiente, a reserva completa a lista até o teto — não
+         * até o mínimo —, para o player ter alternativas quando a fonte boa não
+         * responder. É o caso do filme que só tem release em inglês.
+         */
+        return array_slice(array_merge($ptBr, $reserva), 0, $limite);
     }
 
     /**
-     * Diz se a fonte é PT-BR para efeito de montagem.
+     * Diz se a fonte serve para a faixa PT-BR da montagem.
      *
-     * Prefere a etiqueta `pt_br` gravada na cascata — ela já embute a promoção
-     * dos packs cujo conteúdo provou o dublado. Sem a etiqueta (chamada fora da
-     * cascata), cai no idioma cru.
+     * A etiqueta `pt_br` da cascata vem primeiro — ela já embute a promoção dos
+     * packs cujo conteúdo provou o dublado. O idioma cru cobre a chamada fora da
+     * cascata. Por último, o pack de temporada entra como fonte boa mesmo sem o
+     * nome provar PT-BR: ele é o último recurso de uma série antiga, quase nunca
+     * vem marcado como dublado e, sem esta exceção, caía na reserva e perdia
+     * para os episódios em inglês na hora de completar a lista.
      *
      * @param  array<string, mixed>  $fonte
      */
     private function ePtBr(array $fonte): bool
     {
-        if (array_key_exists('pt_br', $fonte)) {
-            return (bool) $fonte['pt_br'];
+        if (($fonte['pt_br'] ?? null) === true) {
+            return true;
         }
 
-        return in_array(
+        if (in_array(
             $fonte['idioma'] ?? '',
             [IdiomaFonte::DUBLADO->value, IdiomaFonte::DUAL_AUDIO->value],
             true
-        );
+        )) {
+            return true;
+        }
+
+        return (bool) config('services.torrents.packs_qualquer_idioma', true)
+            && ! empty($fonte['pack']);
     }
 
     /**

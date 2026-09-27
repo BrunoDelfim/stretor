@@ -673,9 +673,13 @@ class CatalogoProvedores
     /**
      * Junta listas de fontes sem repetir a mesma release.
      *
-     * A primeira ocorrência vence. Como a ordem de chamada põe o tracker PT-BR na
-     * frente, um mesmo torrent que apareça depois em outro provedor mantém a
-     * classificação de idioma que veio da busca nacional.
+     * Quando o mesmo torrent aparece em mais de uma lista, fica a leitura cujo
+     * áudio é melhor — dublado antes de dual, dual antes de original —, e não a
+     * do provedor que chegou primeiro. É a leitura do arquivo que classifica a
+     * fonte, não o provedor: o identificador consultado no começo da cascata
+     * devolvia o release como "original" só porque o rótulo do addon não trazia
+     * a faixa, e essa leitura pior apagava o dublado que a busca por nome já
+     * tinha provado para o mesmo infohash.
      *
      * @param  array<int, array<string, mixed>>  ...$listas
      * @return array<int, array<string, mixed>>
@@ -683,21 +687,63 @@ class CatalogoProvedores
     private function mesclar(array ...$listas): array
     {
         $fontes = [];
-        $vistos = [];
+        $indices = [];
 
         foreach ($listas as $lista) {
             foreach ($lista as $fonte) {
                 $chave = (string) ($fonte['id'] ?? '');
 
-                if ($chave === '' || isset($vistos[$chave])) {
+                if ($chave === '') {
                     continue;
                 }
 
-                $vistos[$chave] = true;
-                $fontes[] = $fonte;
+                if (! isset($indices[$chave])) {
+                    $indices[$chave] = count($fontes);
+                    $fontes[] = $fonte;
+
+                    continue;
+                }
+
+                $atual = $fontes[$indices[$chave]];
+
+                if (! $this->audioMelhor($fonte, $atual)) {
+                    continue;
+                }
+
+                /*
+                 * A leitura vencedora substitui a antiga, mas a marca de pack é
+                 * uma propriedade do torrent — não da leitura — e não pode se
+                 * perder na troca, sob pena de o pack deixar de atravessar o
+                 * corte de idioma.
+                 */
+                if (! empty($atual['pack'])) {
+                    $fonte['pack'] = true;
+                }
+
+                $fontes[$indices[$chave]] = $fonte;
             }
         }
 
         return $fontes;
+    }
+
+    /**
+     * Diz se a nova leitura de uma fonte tem áudio melhor que a que já está na
+     * lista. Empate no idioma desempata pelos seeds, para a troca não rebaixar
+     * uma fonte mais saudável pela mesma classificação.
+     *
+     * @param  array<string, mixed>  $nova
+     * @param  array<string, mixed>  $atual
+     */
+    private function audioMelhor(array $nova, array $atual): bool
+    {
+        $prioridadeNova = IdiomaFonte::tryFrom($nova['idioma'] ?? '')?->prioridade() ?? 99;
+        $prioridadeAtual = IdiomaFonte::tryFrom($atual['idioma'] ?? '')?->prioridade() ?? 99;
+
+        if ($prioridadeNova !== $prioridadeAtual) {
+            return $prioridadeNova < $prioridadeAtual;
+        }
+
+        return (int) ($nova['seeds'] ?? 0) > (int) ($atual['seeds'] ?? 0);
     }
 }
