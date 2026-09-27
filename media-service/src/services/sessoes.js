@@ -56,6 +56,17 @@ const EXTENSOES_VIDEO = ['.mkv', '.mp4', '.avi', '.mov', '.m4v', '.webm']
 const TIMEOUT_DADOS_MS = 30000
 
 /**
+ * Tempo máximo aguardando os metadados do magnet, em ms.
+ *
+ * É aqui que a fonte praticamente morta trava: o `cliente.add` só emite `ready`
+ * quando algum peer entrega o `info` do torrent, e um lançamento com um único
+ * seed offline nunca chega lá. Os 45 s anteriores consumiam metade da paciência
+ * do overlay (90 s) sem gerar um byte. Vinte segundos cobrem a entrada no DHT e
+ * nos trackers e devolvem o resto da espera a quem tem chance real de andar.
+ */
+const TIMEOUT_METADADOS_MS = 20000
+
+/**
  * Quantidade de bytes do começo do filme que precisa estar em disco antes de
  * uma conversão ler direto do arquivo.
  *
@@ -130,6 +141,23 @@ function conferirSessao(sessao) {
 }
 
 /**
+ * Erro de fonte rotulado com o motivo da desistência.
+ *
+ * O overlay decide o que dizer com base neste rótulo, não no texto: "sem peers"
+ * pede outro lançamento, "sem vídeo" denuncia um pacote que não serve. Carregar
+ * o motivo junto do erro evita que o frontend volte a interpretar mensagens por
+ * comparação de string.
+ *
+ * Motivos usados aqui: `sem_metadados`, `sem_peers`, `sem_dados`, `sem_video`.
+ */
+function erroDaFonte(motivo, mensagem) {
+  const erro = new Error(mensagem)
+  erro.motivo = motivo
+
+  return erro
+}
+
+/**
  * Cria uma sessão e começa a preparar a reprodução.
  *
  * A função devolve o id imediatamente: a conexão do torrent e a conversão
@@ -156,6 +184,9 @@ export function criarSessao({ magnet, filmeId }) {
     fluxo: null,
     playlist: null,
     erro: null,
+    // Motivo rotulado da desistência (`sem_peers`, `sem_metadados`, ...), para o
+    // overlay explicar a falha em vez de só tentar a próxima fonte em silêncio.
+    motivo: null,
     progresso: null,
     download: null,
     duracao: null,
@@ -191,6 +222,7 @@ export function criarSessao({ magnet, filmeId }) {
     logger.error(`[sessao ${id}] falha ao preparar:`, erro.message)
     sessao.status = 'erro'
     sessao.erro = erro.message
+    sessao.motivo = erro.motivo ?? null
   })
 
   return { sessao_id: id, status: sessao.status }
@@ -460,7 +492,7 @@ async function prepararSessao(sessao) {
   const arquivo = escolherArquivoDeVideo(torrent)
 
   if (!arquivo) {
-    throw new Error('A fonte não contém um arquivo de vídeo reconhecido.')
+    throw erroDaFonte('sem_video', 'A fonte não contém um arquivo de vídeo reconhecido.')
   }
 
   // `arquivo.path` é relativo à pasta do torrent (ex.: "Filme (1999)/filme.mp4"),
@@ -1091,28 +1123,72 @@ async function adicionarTorrent(magnet) {
       return existente
     }
 
-    return new Promise((resolve, reject) => {
-      existente.once('ready', () => resolve(existente))
-      existente.once('error', reject)
-    })
+    return esperarMetadados(existente)
+  }
+
+  return esperarMetadados(cliente.add(magnet, { path: os.tmpdir() }))
+}
+
+/**
+ * Espera o torrent publicar os metadados, com prazo.
+ *
+ * O evento `ready` só chega quando algum peer entrega o `info` do torrent — é o
+ * único ponto do preparo em que uma fonte morta trava sem erro. Antes, o ramo de
+ * reuso (`cliente.get` de um magnet já adicionado) esperava sem limite nenhum:
+ * bastava a primeira tentativa falhar para a segunda pendurar o overlay para
+ * sempre. Agora os dois caminhos passam por aqui e ambos têm prazo.
+ *
+ * O `numPeers` no instante da falha separa as duas leituras: zero peers é fonte
+ * morta — trocar de lançamento —, peers presentes mas calados é rede ruim, que
+ * ainda vale uma nova tentativa.
+ *
+ * @param {import('webtorrent').Torrent} torrent
+ * @returns {Promise<import('webtorrent').Torrent>}
+ */
+function esperarMetadados(torrent) {
+  if (torrent.ready) {
+    return Promise.resolve(torrent)
   }
 
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error('Tempo esgotado ao conectar na fonte.'))
-    }, 45000)
+    const finalizar = () => {
+      clearTimeout(temporizador)
+      torrent.off('ready', aoFicarPronto)
+      torrent.off('error', aoFalhar)
+    }
 
-    const torrent = cliente.add(magnet, { path: os.tmpdir() })
-
-    torrent.on('ready', () => {
-      clearTimeout(timeout)
+    const aoFicarPronto = () => {
+      finalizar()
       resolve(torrent)
-    })
+    }
 
-    torrent.on('error', (erro) => {
-      clearTimeout(timeout)
-      reject(erro)
-    })
+    const aoFalhar = (erro) => {
+      finalizar()
+      reject(erro.motivo ? erro : erroDaFonte('sem_metadados', erro.message))
+    }
+
+    const temporizador = setTimeout(() => {
+      const peers = torrent.numPeers ?? 0
+
+      finalizar()
+
+      reject(
+        erroDaFonte(
+          peers === 0 ? 'sem_peers' : 'sem_metadados',
+          `A fonte não entregou os metadados em ${TIMEOUT_METADADOS_MS / 1000}s (peers: ${peers}).`
+        )
+      )
+    }, TIMEOUT_METADADOS_MS)
+
+    torrent.once('ready', aoFicarPronto)
+    torrent.once('error', aoFalhar)
+
+    // O torrent pode ter ficado pronto entre o teste acima e o registro dos
+    // listeners; sem esta conferência o `ready` já emitido se perderia e só
+    // restaria esperar o prazo por um dado que já está disponível.
+    if (torrent.ready) {
+      aoFicarPronto()
+    }
   })
 }
 
@@ -1226,9 +1302,18 @@ function aguardarDados(sessao, torrent) {
       concluido = true
       torrent.off('download', aoBaixar)
 
+      const peers = torrent.numPeers ?? 0
+
+      /*
+       * Sem nenhum peer é a mesma leitura do magnet sem metadados: a fonte não
+       * existe mais na malha. Com peers, mas sem tráfego, o problema é outro —
+       * a fonte conversa e não entrega —, e essa diferença muda o conselho que
+       * o overlay dá ao usuário.
+       */
       reject(
-        new Error(
-          `A fonte não enviou dados em ${TIMEOUT_DADOS_MS / 1000}s (peers: ${torrent.numPeers ?? 0}).`
+        erroDaFonte(
+          peers === 0 ? 'sem_peers' : 'sem_dados',
+          `A fonte não enviou dados em ${TIMEOUT_DADOS_MS / 1000}s (peers: ${peers}).`
         )
       )
     }, TIMEOUT_DADOS_MS)
@@ -1335,6 +1420,12 @@ export function obterSessao(id) {
     status: sessao.status,
     mensagem: sessao.mensagem,
     erro: sessao.erro,
+    /*
+     * Motivo rotulado da desistência (`sem_metadados`, `sem_peers`,
+     * `sem_dados`, `sem_video`). O overlay usa o rótulo para explicar o que
+     * aconteceu; sem ele só restava dizer "não conectou".
+     */
+    motivo: sessao.motivo ?? null,
     progresso: sessao.progresso ?? null,
     /*
      * O download corre em paralelo à conversão. Além do percentual, expomos a

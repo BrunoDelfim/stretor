@@ -1472,11 +1472,22 @@ function aguardarReposicionamento(sessao, minhaGeracao) {
  */
 async function tentarFontes(fontes, minhaGeracao) {
   /*
-   * Quantas fontes foram descartadas por não trazerem áudio em português. Se a
-   * lista inteira cair por esse motivo, a mensagem final precisa dizer isso —
-   * "nenhuma fonte conseguiu conectar" esconderia que o problema é de idioma.
+   * Quantas fontes caíram por não trazerem áudio em português e o placar dos
+   * demais motivos. Sem esse placar a mensagem final era um "não conseguiu
+   * conectar" genérico, que escondia tanto o problema de idioma quanto a fonte
+   * sem peers — justamente as duas informações que dizem ao usuário o que fazer
+   * depois.
    */
   let recusadasPorIdioma = 0
+  const desistencias = {
+    sem_peers: 0,
+    sem_dados: 0,
+    sem_metadados: 0,
+    sem_video: 0,
+    lento: 0,
+    inexistente: 0,
+    erro: 0,
+  }
 
   for (let indice = 0; indice < fontes.length; indice += 1) {
     if (cancelado || minhaGeracao !== geracao) return
@@ -1502,25 +1513,71 @@ async function tentarFontes(fontes, minhaGeracao) {
       // falhar, o loop segue para a próxima fonte.
       const resultado = await aguardarFonte(minhaGeracao, fonte)
 
-      if (resultado === 'pronto') {
+      if (resultado.desfecho === 'pronto') {
         return
       }
 
-      if (resultado === 'sem_audio_pt') {
+      if (resultado.desfecho === 'sem_audio_pt') {
         recusadasPorIdioma += 1
+      } else {
+        registrarDesistencia(desistencias, resultado.motivo)
       }
     } catch {
       // Fonte indisponível: seguimos para a próxima.
+      registrarDesistencia(desistencias, 'erro')
     }
   }
 
   if (!cancelado && minhaGeracao === geracao) {
-    erro.value =
-      recusadasPorIdioma > 0 && recusadasPorIdioma === fontes.length
-        ? 'Nenhuma fonte traz áudio em português.'
-        : 'Nenhuma fonte conseguiu conectar. Tente novamente mais tarde.'
+    erro.value = mensagemDeFalha(desistencias, fontes.length, recusadasPorIdioma)
     estado.value = 'erro'
   }
+}
+
+/** Soma um motivo ao placar, tratando rótulo desconhecido como falha genérica. */
+function registrarDesistencia(desistencias, motivo) {
+  const chave = motivo in desistencias ? motivo : 'erro'
+
+  desistencias[chave] += 1
+}
+
+/**
+ * Explica por que nenhuma fonte sobrou.
+ *
+ * A ordem reflete o que é mais provável e mais acionável: idioma unânime é uma
+ * conclusão firme (o dublado não existe naquele lançamento), a fonte sem peers
+ * manda procurar outro release e o resto é, em geral, transitório.
+ */
+function mensagemDeFalha(desistencias, total, recusadasPorIdioma) {
+  if (recusadasPorIdioma > 0 && recusadasPorIdioma === total) {
+    return 'Nenhuma fonte traz áudio em português.'
+  }
+
+  if (desistencias.sem_peers > 0) {
+    return 'Nenhuma fonte tem peers disponíveis. Tente outro lançamento.'
+  }
+
+  if (desistencias.sem_dados > 0) {
+    return 'As fontes conectaram, mas não enviaram dados. Tente novamente mais tarde.'
+  }
+
+  if (desistencias.sem_metadados > 0) {
+    return 'Não foi possível ler os dados das fontes. Tente novamente mais tarde.'
+  }
+
+  if (desistencias.sem_video > 0) {
+    return 'As fontes não têm um arquivo de vídeo reconhecido.'
+  }
+
+  if (desistencias.inexistente > 0) {
+    return 'A sessão de reprodução expirou. Tente novamente.'
+  }
+
+  if (desistencias.lento > 0) {
+    return 'As fontes estão lentas demais. Tente novamente mais tarde.'
+  }
+
+  return 'Nenhuma fonte conseguiu conectar. Tente novamente mais tarde.'
 }
 
 /**
@@ -1566,12 +1623,19 @@ function prometePortugues(fonte) {
 /**
  * Aguarda o desfecho de uma única fonte.
  *
- * Devolve `pronto` quando a playlist ficou disponível no servidor, `falhou` para
- * o chamador seguir para a próxima fonte, ou `sem_audio_pt` quando a fonte
- * conectou mas o arquivo não tem áudio em português — caso em que ela é
- * descartada em vez de tocar em inglês sob um rótulo de dublagem. A montagem do
- * player não entra nessa decisão: uma vez que a playlist existe e o áudio
- * confere, a fonte é válida.
+ * Devolve `{ desfecho }` com `pronto` quando a playlist ficou disponível no
+ * servidor, `falhou` para o chamador seguir para a próxima fonte, `sem_audio_pt`
+ * quando a fonte conectou mas o arquivo não tem áudio em português — caso em que
+ * ela é descartada em vez de tocar em inglês sob um rótulo de dublagem — ou
+ * `cancelado` quando o overlay já pertence a outra geração.
+ *
+ * Em `falhou` vem também o `motivo` rotulado pelo media-service (`sem_peers`,
+ * `sem_metadados`, `sem_dados`, `sem_video`) ou um rótulo local quando a
+ * desistência foi do próprio frontend (`lento`, `inexistente`). É esse motivo
+ * que permite ao fim da fila dizer por que nada tocou.
+ *
+ * A montagem do player não entra nessa decisão: uma vez que a playlist existe e
+ * o áudio confere, a fonte é válida.
  *
  * A sessão desta fonte é capturada de uma vez, em vez de lida da variável
  * compartilhada a cada consulta: assim uma troca de filme no meio do caminho
@@ -1592,17 +1656,23 @@ function aguardarFonte(minhaGeracao, fonte) {
 
   return new Promise((resolve) => {
     const consultar = async () => {
-      if (cancelado || minhaGeracao !== geracao) return resolve('cancelado')
+      if (cancelado || minhaGeracao !== geracao) return resolve({ desfecho: 'cancelado' })
 
+      /*
+       * O prazo do frontend é o último recurso: a fonte não chegou a `pronto`
+       * nem a erro dentro da janela. Rotulamos como lentidão porque é o que
+       * sobra — as desistências rápidas (magnet sem metadados, estagnação) já
+       * teriam acontecido antes deste ponto.
+       */
       if (Date.now() - inicio > TIMEOUT_FONTE_MS) {
         await limparSessaoAtual()
-        return resolve('falhou')
+        return resolve({ desfecho: 'falhou', motivo: 'lento' })
       }
 
       try {
         const status = await streamingService.statusSessao(sessaoDaFonte)
 
-        if (cancelado || minhaGeracao !== geracao) return resolve('cancelado')
+        if (cancelado || minhaGeracao !== geracao) return resolve({ desfecho: 'cancelado' })
 
         /*
          * Sessão inexistente é terminal, não transitória. O media-service
@@ -1612,12 +1682,17 @@ function aguardarFonte(minhaGeracao, fonte) {
          */
         if (status.status === 'inexistente') {
           await limparSessaoAtual()
-          return resolve('falhou')
+          return resolve({ desfecho: 'falhou', motivo: 'inexistente' })
         }
 
         if (status.status === 'erro') {
+          /*
+           * O motivo vem do media-service: ele sabe se faltaram metadados, se a
+           * fonte não tem peer ou se nenhum dado chegou. Sem esse rótulo a única
+           * saída era tentar a próxima fonte em silêncio.
+           */
           await limparSessaoAtual()
-          return resolve('falhou')
+          return resolve({ desfecho: 'falhou', motivo: status.motivo ?? 'erro' })
         }
 
         if (status.status === 'pronto' && status.playlist) {
@@ -1631,7 +1706,7 @@ function aguardarFonte(minhaGeracao, fonte) {
            */
           if (prometePortugues(fonte) && status.tem_audio_pt === false) {
             await limparSessaoAtual()
-            return resolve('sem_audio_pt')
+            return resolve({ desfecho: 'sem_audio_pt' })
           }
 
           const url = streamingService.urlPlaylist(status.playlist)
@@ -1658,7 +1733,7 @@ function aguardarFonte(minhaGeracao, fonte) {
            */
           iniciarPlayer(url, minhaGeracao).catch(() => {})
 
-          return resolve('pronto')
+          return resolve({ desfecho: 'pronto' })
         }
 
         estado.value = 'preparando'
@@ -1686,8 +1761,15 @@ function aguardarFonte(minhaGeracao, fonte) {
           estagnadaDesde ??= Date.now()
 
           if (Date.now() - estagnadaDesde > ESTAGNACAO_FONTE_MS) {
+            /*
+             * Parada sem um byte: o motivo depende de haver com quem falar. Sem
+             * peers é fonte morta; com peers é uma fonte que não entrega, e o
+             * overlay diferencia os dois conselhos.
+             */
+            const motivo = (status.download?.peers ?? 0) === 0 ? 'sem_peers' : 'sem_dados'
+
             await limparSessaoAtual()
-            return resolve('falhou')
+            return resolve({ desfecho: 'falhou', motivo })
           }
         } else {
           estagnadaDesde = null

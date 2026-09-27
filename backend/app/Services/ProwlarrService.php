@@ -18,8 +18,8 @@ use Throwable;
  *      no volume compartilhado (nada de copiar e colar chave);
  *   2. espera o Prowlarr responder, porque na primeira subida ele passa alguns
  *      segundos criando o banco interno antes de aceitar requisições;
- *   3. cadastra os indexadores PT-BR versionados em
- *      docker/prowlarr/Definitions/Custom, sem duplicar o que já existe;
+ *   3. cadastra os indexadores da lista `prowlarr.indexadores`, sem duplicar o
+ *      que já existe e sem recriar o que foi removido no painel;
  *   4. para os trackers que o CloudFlare barra, cadastra o FlareSolverr como
  *      proxy e liga os indexadores a ele por tag — sem isso o teste de busca
  *      falha, o cadastro é recusado e o indexador nunca sai de inativo.
@@ -31,8 +31,7 @@ class ProwlarrService
 {
     /**
      * Campo do schema da API que identifica a definição Cardigann por trás de
-     * um indexador. É por ele que sabemos se o torrentdosfilmes já foi
-     * cadastrado ou não.
+     * um indexador. É por ele que sabemos se o 1337x já foi cadastrado ou não.
      */
     private const CAMPO_DEFINICAO = 'definitionFile';
 
@@ -70,8 +69,8 @@ class ProwlarrService
     }
 
     /**
-     * Definições Cardigann (ids dos arquivos .yml customizados) que devem
-     * existir como indexadores no Prowlarr.
+     * Definições Cardigann (ids das definições do Prowlarr) que devem existir
+     * como indexadores.
      *
      * @return list<string>
      */
@@ -79,10 +78,13 @@ class ProwlarrService
     {
         $definicoes = config('services.prowlarr.indexadores', []);
 
-        // Sem definições (cache de config antigo), usamos a definição PT-BR
-        // versionada no projeto. Isso evita um provisionamento que não faz nada.
+        // Sem lista (cache de config antigo), caímos no 1337x: é a definição
+        // oficial que sustenta a busca hoje. Devolver aqui a definição PT-BR
+        // customizada ressuscitaria um indexador de domínio sequestrado — e o
+        // provisionamento não pode desfazer, pelas costas, o que foi removido no
+        // painel.
         if (! is_array($definicoes) || $definicoes === []) {
-            return ['torrentdosfilmes'];
+            return ['1337x'];
         }
 
         return array_values(array_filter(array_map(

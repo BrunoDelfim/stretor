@@ -31,6 +31,14 @@ exibição e o timeout das requisições vivem em `constants/`:
 | [`ui.js`](../frontend/src/constants/ui.js:1) | Tempos do carrossel, debounce da busca, scroll da navbar e sentinela. |
 | [`api.js`](../frontend/src/constants/api.js:1) | Timeout das requisições e prefixo dos endpoints. |
 
+O `TIMEOUT_REQUISICAO_MS` do [`api.js`](../frontend/src/constants/api.js:1) é de
+**60 s**, não dos 20 s de uma requisição comum. A busca de fontes a frio percorre
+três degraus — nativos, Torznab e YTS — e cada provedor paga o próprio tempo de
+rede; medido no episódio que originou a investigação, o primeiro pedido levou
+45 s antes de a rota Torznab ser corrigida e 14 s depois. Os 20 s originais
+abortavam exatamente a busca que ainda ia responder, e o usuário via
+"cancelado" no lugar de "nenhuma fonte".
+
 ### Composables
 
 No Vue 3 os mixins foram descontinuados em favor dos **composables**: funções

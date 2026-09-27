@@ -50,13 +50,13 @@ return [
         // --- Degrau 1: busca nativa no backend ---
 
         /*
-         * Trackers públicos PT-BR lidos direto por HTTP. São a razão de existir
-         * da busca nativa: só eles publicam release com áudio nacional. Lista
-         * separada por vírgula, tentada na ordem.
+         * Trackers públicos PT-BR lidos direto por HTTP. Nasce vazia porque os
+         * dois domínios que a ocupavam morreram — veja docs/integracoes.md. Um
+         * endereço morto só paga erro a cada termo; preencha para reativar.
          */
         'trackers_br_urls' => env(
             'TORRENTS_TRACKERS_BR_URLS',
-            'https://torrentdosfilmes.tv,https://torrentsfilmeshd.net'
+            ''
         ),
         // Caminho da página de busca dentro desses trackers.
         'trackers_br_busca' => env('TORRENTS_TRACKERS_BR_BUSCA', 'index.php'),
@@ -157,19 +157,23 @@ return [
         'rotulo_padrao' => env('PROWLARR_ROTULO_PADRAO', 'Índice público PT-BR'),
 
         /*
-         * Ids das definições Cardigann que viram indexador. A lista mistura dois
-         * tipos:
+         * Ids das definições Cardigann que viram indexador. A lista é curta de
+         * propósito: indexador morto não melhora a busca, só gasta uma consulta
+         * por termo — e a cascata pergunta quatro termos por episódio.
          *
-         *   - `torrentdosfilmes`: definição própria, versionada em
-         *     docker/prowlarr/Definitions/Custom. É a única fonte PT-BR, mas o
-         *     domínio público vive caindo (hoje está sequestrado por um site de
-         *     apostas). O cadastro usa `forceSave` para sobreviver a isso.
-         *   - `1337x`: definição oficial que já vem embutida no Prowlarr. É um
-         *     tracker público estável e com acervo amplo; entra como rede de
-         *     segurança quando o tracker PT-BR está fora do ar. Vive atrás do
-         *     CloudFlare, então depende do proxy configurado abaixo.
+         *   - `1337x`: definição oficial, embutida no Prowlarr. Tracker público
+         *     estável, acervo amplo e o único que hoje devolve release marcado
+         *     como dublado. Vive atrás do CloudFlare, então depende do proxy
+         *     configurado abaixo.
+         *
+         * `torrentdosfilmes` saiu daqui depois que o domínio foi sequestrado. A
+         * definição continua versionada em docker/prowlarr/Definitions/Custom
+         * para o dia em que o site voltar, mas **fora do provisionamento**: não
+         * faz sentido pagar uma consulta por termo num endereço que hoje serve
+         * site de apostas, nem ressuscitar no painel o que já foi removido à
+         * mão. Para reativar, basta devolvê-la a esta lista.
          */
-        'indexadores' => ['torrentdosfilmes', '1337x'],
+        'indexadores' => ['1337x'],
 
         /*
          * Proxy para os trackers que o CloudFlare barra. O Prowlarr recusa o

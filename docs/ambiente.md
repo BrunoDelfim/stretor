@@ -108,7 +108,7 @@ provisionamento a qualquer momento, rode `make prowlarr`.
 > (`TORRENTS_APENAS_PT_BR`). O provisionamento mescla as tags do indexador e
 > nunca apaga as suas.
 
-#### Definição customizada de indexador público PT-BR
+#### Definição customizada de indexador público PT-BR (arquivada)
 
 O Prowlarr só traz, de fábrica, trackers brasileiros **privados** (que exigem
 conta e convite). Para um indexador público, o projeto versiona uma definição
@@ -117,12 +117,19 @@ montada em `/config/Definitions/Custom/` dentro do container pelo
 [`docker-compose.yml`](../docker-compose.yml:204). Assim a definição sobrevive a
 recriações do container e é versionada junto com o código.
 
+Essa definição está **fora do provisionamento**: o domínio do tracker foi
+sequestrado e o endereço hoje serve um site de apostas. O indexador cadastrado
+automaticamente é o `1337x`, que é definição oficial do Prowlarr. Ter o `.yml` na
+pasta apenas o deixa disponível no painel — quem decide o que é cadastrado é a
+lista `indexadores` de
+[`config/services.php`](../backend/config/services.php:176). Quando o site
+voltar, inclua o id `torrentdosfilmes` nessa lista.
+
 > **Domínio instável**: os trackers públicos brasileiros trocam de endereço com
 > frequência (bloqueio judicial, expiração de domínio, sequestro por sites de
-> aposta). Se o Prowlarr passar a devolver `Name does not resolve` ou
-> `Unable to connect`, atualize a lista `links` do arquivo `.yml` com o endereço
-> atual do site. O restante da definição (seletores, categorias, filtros)
-> continua válido.
+> aposta). Se o Prowlarr devolver `Name does not resolve` ou `Unable to connect`,
+> atualize a lista `links` do arquivo `.yml` com o endereço atual do site. O
+> restante da definição (seletores, categorias, filtros) continua válido.
 
 ### 4. Acessar os serviços
 

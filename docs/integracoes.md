@@ -266,18 +266,25 @@ A correção tem duas camadas, porque uma só não fecha o buraco:
    nenhuma fonte passa pelo porteiro, o overlay diz "Nenhuma fonte traz áudio em
    português" em vez de um genérico "não conseguiu conectar".
 
-#### Os trackers PT-BR nativos saem do ar com frequência
+#### Os trackers PT-BR nativos saem do ar com frequência — e hoje não sobrou nenhum
 
 Vale registrar o diagnóstico que motivou a mudança acima: os dois trackers
-públicos configurados por padrão estavam **inutilizáveis** —
-`torrentdosfilmes.tv` passou a servir uma página de erro do Laravel (o domínio
-mudou de dono) e `torrentsfilmeshd.net` não resolvia mais. O BT4G respondia
-`403` com o desafio do Cloudflare, e o APIBay simplesmente não tem episódios de
-série (é catálogo mundial em inglês). Ou seja: **nenhum provedor por nome estava
+públicos que vinham por padrão estavam **inutilizáveis** —
+`torrentdosfilmes.tv` passou a servir um site de apostas (o domínio mudou de
+dono) e `torrentsfilmeshd.net` não resolvia mais. O BT4G respondia `403` com o
+desafio do Cloudflare, e o APIBay simplesmente não tem episódios de série (é
+catálogo mundial em inglês). Ou seja: **nenhum provedor por nome estava
 entregando release dublado**, e o Torrentio — único que respondia — trazia só
 inglês. A lição é que a lista de trackers nativos precisa ser tratada como
 volátil e revisada de tempos em tempos; o Torrentio, por ser um agregador
 mantido por terceiros, é o caminho mais estável para o dublado.
+
+Por isso [`trackers_br_urls`](../backend/config/services.php:57) nasce **vazia**:
+manter um endereço morto só gasta duas requisições fadadas ao erro por termo
+perguntado — são quatro por episódio. Com a lista vazia o provedor se declara
+indisponível por [`disponivel()`](../backend/app/Services/Torrents/ProvedorTrackersBr.php:63)
+e é pulado de forma limpa; o degrau 1 segue com APIBay, Torrentio e BT4G. Para
+reativar, basta preencher `TORRENTS_TRACKERS_BR_URLS` com um domínio vivo.
 
 ### Indexador Torznab (Prowlarr) — degrau 2 da busca
 
@@ -295,16 +302,61 @@ YTS é o degrau 3 — a reserva do Prowlarr.
   automático do Prowlarr" abaixo.
 - Regras de negócio em [`TorznabService.php`](../backend/app/Services/TorznabService.php:1)
   e [`TorrentService.php`](../backend/app/Services/TorrentService.php:1).
-- A consulta usa `t=search` e lê os atributos
-  `seeders`/`peers`/`magneturl`/`infohash` e `language` de cada item.
-- **A rota é do Prowlarr, não do Jackett.** O Prowlarr não expõe
-  `/api/v1/search` (essa é a rota do Jackett): a busca Torznab dele vive em
-  `/api/v1/indexer/{id}/search`, um endpoint por indexador. Chamar a rota do
-  Jackett devolve **404** e o provedor some da cascata sem erro visível — a lista
-  volta vazia e parece que "não há fonte". Como o backend não guarda os ids (eles
-  nascem no provisionamento), o [`TorznabService`](../backend/app/Services/TorznabService.php:98)
-  lista `/api/v1/indexer` e consulta cada um, agregando os resultados. Um
-  indexador fora do ar não derruba os outros.
+- A consulta usa `t=search` e lê `seeders`/`peers`/`magneturl`/`infohash` e
+  `language` de cada item; o termo vai nos dois nomes que o protocolo usa (`q` e
+  `query`), porque o caminho JSON procura em `query`.
+- **A rota do Prowlarr muda entre versões e não avisa quando erra.** O Prowlarr
+  publica o *mesmo* acervo por caminhos diferentes — o proxy Torznab por
+  indexador (`/{id}/api`), a variação Newznab
+  (`/api/v1/indexer/{id}/newznab`) e a API interna
+  (`/api/v1/indexer/{id}/search`, que responde **JSON**, não RSS) — além da rota
+  agregada (`/api`), que busca em todos os indexadores de uma vez. Errar a rota
+  **não** gera erro: a resposta volta vazia e o degrau 2 fica zerado em silêncio,
+  com o release aparecendo normalmente no painel do Prowlarr. Foi assim que um
+  episódio dublado passou a devolver zero mesmo com o indexador saudável. Por
+  isso o
+  [`TorznabService::consultarIndexador()`](../backend/app/Services/TorznabService.php:166)
+  tenta as rotas em ordem e memoriza a que respondeu
+  ([`rotas()`](../backend/app/Services/TorznabService.php:214)); as que respondem
+  erro saem da lista pelo resto da requisição, para não custar uma ida e volta
+  por termo.
+- **A rota memorizada é por indexador.** O caminho carrega o id dentro dele
+  (`/3/api`), então guardar uma só para todos fazia o indexador 1 ser consultado
+  pelo caminho do indexador 3 e receber o **acervo errado**. O mapa é `id => rota`
+  e o `Log::debug` `Rota Torznab vencedora.` diz qual caminho venceu cada consulta.
+- **A primeira rota que responde 200 encerra a busca daquele indexador, mesmo
+  vazia.** As candidatas são caminhos para o *mesmo* acervo: se uma respondeu sem
+  falha, um corpo vazio significa "este indexador não tem o release", não "tentei
+  o caminho errado". Sem essa parada, cada termo de episódio virava seis idas e
+  voltas e a busca a frio passava dos 40 s; com ela são duas por termo e a mesma
+  busca fecha em ~14 s.
+- **O 1337x responde ora com o acervo, ora com zero.** Atrás do FlareSolverr o
+  mesmo termo devolve 7 itens numa chamada e nenhum na seguinte, sem erro. Zero
+  ali **não** é sinal de rota errada: é a instabilidade do tracker. Foi medido com
+  o termo `American Horror Story S01E01`, que ora traz os releases gringos, ora
+  nada.
+- **O formato do corpo decide o leitor**, não a rota: XML é lido como Torznab e
+  JSON como o `ReleaseResource` do Prowlarr
+  (`seeders`/`leechers`/`magnetUrl`/`infoHash`), em
+  [`itensDoCorpo()`](../backend/app/Services/TorznabService.php:316). Item que
+  chega só com infohash ganha magnet montado com os anunciadores do projeto por
+  [`magnetDoInfohash()`](../backend/app/Services/TorznabService.php:383).
+- **Erro do protocolo vem com HTTP 200.** O Newznab devolve um `<error>` no corpo
+  (chave recusada, indexador bloqueado); como o status engana, o
+  [`pedir()`](../backend/app/Services/TorznabService.php:245) lê o corpo e marca a
+  rota como ruim, liberando as demais — sem isso a recusa encerraria a busca
+  por aquele indexador. O registro do código e da descrição fica em
+  [`interpretarXml()`](../backend/app/Services/TorznabService.php:481). E quando
+  **nenhuma** rota responde com sucesso sai um `Log::warning` com as rotas
+  tentadas
+  ([`avisarRotasEsgotadas()`](../backend/app/Services/TorznabService.php:401));
+  rota viva com lista vazia é resposta legítima do indexador e não gera aviso —
+  só um `Log::debug` com o começo do corpo, para distinguir corpo vazio, XML sem
+  itens e formato inesperado.
+- Como o backend não guarda os ids (eles nascem no provisionamento), o
+  [`TorznabService`](../backend/app/Services/TorznabService.php:431) lista
+  `/api/v1/indexer` e consulta cada um, agregando os resultados. Um indexador
+  fora do ar não derruba os outros.
 - **Não filtrar por `enable`.** Esse campo controla só se o indexador participa
   das buscas automáticas do Prowlarr, não se o endpoint Torznab dele responde.
   Como o provisionamento grava **desabilitado** quando o tracker está fora do ar
@@ -323,9 +375,9 @@ YTS é o degrau 3 — a reserva do Prowlarr.
   [`TorznabService::consultar()`](../backend/app/Services/TorznabService.php:76).
 - São **duas consultas por filme**: uma com o termo normal (`título ano`) e outra
   com `título ano dublado`, montada por
-  [`buscarDublado()`](../backend/app/Services/TorznabService.php:55). O termo base
-  fica em [`termoBase()`](../backend/app/Services/TorznabService.php:66) e o
-  pedido HTTP em [`consultar()`](../backend/app/Services/TorznabService.php:76).
+  [`buscarDublado()`](../backend/app/Services/TorznabService.php:101). O termo base
+  fica em [`termoBase()`](../backend/app/Services/TorznabService.php:112) e o
+  pedido HTTP em [`consultar()`](../backend/app/Services/TorznabService.php:126).
   Sem esse segundo termo, o nome do filme sozinho quase nunca devolvia o release
   nacional.
 - Quem marca cada resultado com a origem (`provedor`/`provedor_rotulo`) é o
@@ -515,18 +567,23 @@ a ser gravado desabilitado, sem erro fatal e sem derrubar o degrau 2.
 
 Em 2026-09, `torrentdosfilmes.tv` deixou de ser tracker: o domínio foi
 sequestrado e hoje serve um site de apostas (*"377bet Casino"*). O
-`torrentsfilmeshd.net` também não resolve mais. É o cenário previsto no próprio
-comentário da definição — e a razão de o cadastro usar `forceSave`.
+`torrentsfilmeshd.net` também não resolve mais.
 
-Como não há tracker PT-BR público ativo no momento, a lista `indexadores` em
-[`config/services.php`](../backend/config/services.php:172) soma o **1337x**, que
-é definição oficial do Prowlarr (não precisa de `.yml` próprio): tracker público
-estável, acervo amplo, entra como rede de segurança — e depende do proxy
-FlareSolverr descrito acima para sair de inativo. O `torrentdosfilmes` continua
-cadastrado para voltar a valer quando o domínio correto reaparecer; ele não usa
-proxy, porque o problema dele é o domínio, não o CloudFlare.
+Sem tracker PT-BR público ativo, o degrau 2 passou a depender de **uma** definição:
+o `1337x`, que é oficial do Prowlarr (não precisa de `.yml` próprio) — tracker
+público estável, acervo amplo e o único que hoje entrega release marcado como
+dublado. Ele vive atrás do CloudFlare, e é o proxy FlareSolverr descrito acima
+que o tira de inativo. Ele não usa proxy por causa do domínio, e sim do
+CloudFlare.
 
-### Definição customizada de indexador público PT-BR
+O `torrentdosfilmes` saiu da lista `indexadores` em
+[`config/services.php`](../backend/config/services.php:176). Enquanto estava
+nela, o provisionamento o recadastrava a cada subida — inclusive depois de
+alguém removê-lo no painel, porque o comando só sabe **somar** indexador, nunca
+podar. Manter um endereço sequestrado na lista custava consulta em vão a cada
+termo perguntado (são quatro por episódio).
+
+### Definição customizada de indexador público PT-BR (arquivada)
 
 O Prowlarr não traz nenhum tracker brasileiro **público** de fábrica — os que
 vêm embutidos (`amigosshare`, `bjshare`, `brasiltracker`, `capybarabr`,
@@ -538,10 +595,12 @@ própria:
 - O [`docker-compose.yml`](../docker-compose.yml:204) monta essa pasta em
   `/config/Definitions/Custom/` dentro do container, então a definição é
   versionada com o código e sobrevive a recriações.
-- É essa definição (id `torrentdosfilmes`) que o provisionamento cadastra como
-  indexador, a partir da lista `indexadores` em
-  [`config/services.php`](../backend/config/services.php:172). Para somar outro
-  tracker público, basta soltar o `.yml` na mesma pasta e incluir o id na lista.
+- **Ela está fora do provisionamento.** Ter o `.yml` na pasta só a deixa
+  disponível no painel; quem manda no cadastro automático é a lista `indexadores`
+  de [`config/services.php`](../backend/config/services.php:176). Hoje essa lista
+  tem só o `1337x`. Quando o domínio do tracker voltar, inclua `torrentdosfilmes`
+  nela — e só então o Prowlarr o cadastra. Para somar outro tracker público,
+  basta soltar o `.yml` na mesma pasta e incluir o id na lista.
 - O Prowlarr lê o arquivo no boot; para recarregar depois de editá-lo, use
   `docker compose restart prowlarr`.
 - A definição é do tipo `Cardigann` (raspagem de HTML) e devolve os resultados
@@ -630,6 +689,47 @@ aplicado ao fim de cada grupo de provedores:
 Assim o `temDublado()` só enxerga fontes que de fato servem, e a cascata desce
 para o próximo degrau quando o atual só trouxe release inútil.
 
+#### A parada é julgada pelo degrau, não pela lista acumulada
+
+O `temDublado()` continua sendo o critério de parada, mas agora sobre **o que
+cada etapa devolveu**, e não sobre a lista acumulada. A diferença apareceu em
+"American Horror Story" S01E01, com o dado exato vindo da tela: o sistema
+oferecia **uma fonte só**, rotulada `Torrentio · Dublado`.
+
+O grupo por identificador (Torrentio) é consultado uma única vez, com o termo
+puro, e entrava na lista **antes** do laço de termos. Como o `temDublado()` olhava
+o acumulado, ele enxergava aquele release dublado já no primeiro termo — que é o
+termo puro, sem a tag — e encerrava a cascata ali. As três variações dubladas
+montadas por `TorrentService::titulosDeEpisodio()` (`dublado`, `dublada`, `dual
+áudio`) e o degrau 2 inteiro nunca eram perguntados.
+
+A correção, em
+[`CatalogoProvedores::buscar()`](../backend/app/Services/Torrents/CatalogoProvedores.php:87),
+captura o resultado de cada etapa numa variável própria (`$desteTermo`) e julga
+esse recorte:
+
+1. O grupo por identificador continua entrando na lista, mas **não decide** a
+   parada.
+2. Cada termo do degrau nativo é perguntado; a busca só encerra se **aquela
+   etapa** trouxe dublado ou dual áudio.
+3. O degrau 2 percorre os mesmos termos com o mesmo julgamento.
+
+Uma fonte promissora de um degrau anterior não pode calar a etapa que existe
+justamente para achar o dublado — era isso que produzia "uma fonte só" com o
+indexador cheio de lançamentos nacionais disponível logo abaixo.
+
+Cada etapa deixa uma linha em
+[`CatalogoProvedores::registrarEtapa()`](../backend/app/Services/Torrents/CatalogoProvedores.php:220):
+
+```text
+Etapa da cascata de torrents concluída. {"degrau":"indexador","titulo":"American Horror Story S01E01 dublado","fontes":2,"dubladas":2,"encerra":true}
+```
+
+`degrau`, `titulo`, `fontes`, `dubladas` e `encerra` contam a história da busca
+sem instrumentar nada depois: se o rastro parou em `nativos` com `dubladas: 0`, o
+suspeito é o `temDublado()`; se o `indexador` nunca aparece, o degrau 2 não foi
+alcançado.
+
 #### Enquanto só há áudio PT-BR, o resto é descartado
 
 A prioridade de idioma resolve a *ordem*, mas não o *desperdício*: com o player
@@ -653,8 +753,11 @@ identificam a origem:
 
 | Campo | Valores | Significado |
 | --- | --- | --- |
-| `provedor` | `torznab` \| `yts` | identificador estável, para lógica |
-| `provedor_rotulo` | `Indexador (Torznab)` \| `YTS` | rótulo para exibição |
+| `provedor` | `trackers_br` \| `apibay` \| `bt4g` \| `torrentio` \| `torznab` \| `yts` | identificador estável, para lógica |
+| `provedor_rotulo` | `Tracker PT-BR` \| `APIBay` \| `BT4G` \| `Torrentio` \| `Indexador (Torznab)` \| `YTS` | rótulo para exibição |
+
+Os três primeiros formam o degrau 1 (busca por nome), o `torrentio` entra pelo
+`imdb_id` e o `torznab` é o degrau 2; o `yts` é a reserva em inglês.
 
 O [`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:560) junta
 esse rótulo com o idioma detectado e mostra, abaixo do contador "Fonte X de Y"
@@ -691,13 +794,38 @@ reprodução — o mesmo raciocínio que já valia para o rótulo sem contagem a
 ### Fontes sem peers são descartadas
 
 Uma fonte sem peers conecta mas nunca envia dados — era a causa das sessões
-presas em `aguardando` com `percentual: 0`. Duas defesas:
+presas em `aguardando` com `percentual: 0`. Hoje a defesa é em camadas:
 
 - O backend **filtra** qualquer fonte com `seeds === 0` ou magnet vazio antes de
-  devolver a lista.
-- O media-service expõe `POST /verificar`, que adiciona o magnet, espera alguns
-  segundos e responde `{ ok, peers, seeds, velocidade }` — o backend pode testar
-  a fonte antes de entregá-la ao micro-serviço.
+  devolver a lista. O piso de 1 do Torrentio (acima) evita que uma dublada
+  legítima caia aqui por um "0 não medido".
+- O media-service **falha rápido** e diz por quê. O motivo sobe no status da
+  sessão, no campo `motivo`:
+
+| Rótulo | Quando acontece | O que significa |
+| --- | --- | --- |
+| `sem_peers` | o magnet não publicou metadados e não há peer algum | fonte morta: trocar de lançamento |
+| `sem_metadados` | havia peers, mas o `info` do torrent não chegou | rede ruim: vale tentar de novo |
+| `sem_dados` | o torrent ficou pronto e nenhum byte desceu | a fonte negocia e não entrega |
+| `sem_video` | o torrent não traz arquivo de vídeo reconhecido | o lançamento não serve |
+
+- O overlay converte o **placar das tentativas** na mensagem final, em vez do
+  "nenhuma fonte conseguiu conectar" genérico: `Nenhuma fonte tem peers
+  disponíveis. Tente outro lançamento.` diz o que fazer, enquanto `Nenhuma fonte
+  traz áudio em português.` continua sendo uma conclusão firme — todas as
+  tentativas foram reprovadas pelo porteiro de idioma.
+
+O prazo dos metadados caiu de 45 s para 20 s
+([`TIMEOUT_METADADOS_MS`](../media-service/src/services/sessoes.js:67)): os 45 s
+anteriores consumiam metade da paciência do overlay (90 s) sem gerar um byte. O
+ramo de reuso — `cliente.get` de um magnet já adicionado — **não tinha prazo
+nenhum**, então bastava a primeira tentativa falhar para a segunda pendurar o
+overlay para sempre; agora os dois caminhos passam por
+[`esperarMetadados()`](../media-service/src/services/sessoes.js:1148).
+
+O `POST /verificar` continua disponível para testar a fonte antes de abrir a
+sessão, mas deixou de ser o caminho principal: quem mede os peers de verdade
+agora é a própria sessão, que já precisa esperar os dados de qualquer forma.
 
 ### Demais regras
 

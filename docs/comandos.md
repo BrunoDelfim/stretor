@@ -15,7 +15,7 @@ encapsula as operações mais comuns do Docker.
 | `make ps` | Lista o estado dos containers. |
 | `make build` | Apenas constrói as imagens. |
 | `make cache-clear` | Limpa o cache do Laravel (`php artisan cache:clear`). As listas de fontes ficam em cache por 30 min, então rode isto depois de mexer na busca do Torznab — senão você testa com a resposta antiga. |
-| `make prowlarr` | Reexecuta o provisionamento do Prowlarr: descobre a chave da API e cadastra os indexadores públicos PT-BR. Útil depois de `make fresh` ou ao adicionar uma definição nova. |
+| `make prowlarr` | Reexecuta o provisionamento do Prowlarr: descobre a chave da API e cadastra os indexadores da lista `indexadores` de `config/services.php` (hoje só o `1337x`). Útil depois de `make fresh` ou ao adicionar uma definição nova. O comando só soma indexador — não remove nem recria o que foi excluído no painel. |
 | `make fresh` | Remove a sentinela, apaga os volumes e sobe tudo do zero. |
 | `make reset-init` | Remove a sentinela, forçando o bootstrap na próxima subida. |
 

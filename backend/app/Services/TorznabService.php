@@ -2,8 +2,10 @@
 
 namespace App\Services;
 
+use App\Services\Torrents\TrackersPublicos;
 use App\Support\MensagensTorrent;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use RuntimeException;
 use SimpleXMLElement;
 
@@ -16,8 +18,10 @@ use SimpleXMLElement;
  * já normalizados no contrato do sistema.
  *
  * O Torznab responde em RSS/XML: cada `<item>` traz `title`, `size`, os
- * atributos `seeders`/`peers` e o `magneturl` (ou `link`). A normalização para o
- * contrato do frontend fica no TorrentService — aqui só traduzimos o XML.
+ * atributos `seeders`/`peers` e o `magneturl` (ou `link`). A API interna do
+ * Prowlarr responde o mesmo acervo em JSON (`seeders`/`leechers`/`magnetUrl`).
+ * A normalização para o contrato do frontend fica no TorrentService — aqui só
+ * traduzimos o retorno, seja XML ou JSON.
  */
 class TorznabService
 {
@@ -28,6 +32,41 @@ class TorznabService
      * @var list<int>|null
      */
     private ?array $idsEmCache = null;
+
+    /**
+     * Rota preferida de cada indexador nesta requisição.
+     *
+     * Descobrir a rota certa custa uma ida e volta; descoberta uma vez, ela vai
+     * na frente das demais consultas da mesma requisição. O mapa é por id
+     * porque a rota carrega o id no próprio caminho (`/3/api`): guardar uma só
+     * para todos fazia o indexador 1 ser consultado pelo caminho do indexador 3
+     * e receber o acervo errado.
+     *
+     * @var array<int, string>
+     */
+    private array $rotaPreferida = [];
+
+    /**
+     * Rotas que responderam erro nesta requisição.
+     *
+     * @var array<string, true>
+     */
+    private array $rotasMortas = [];
+
+    /**
+     * Rotas que responderam com sucesso nesta requisição, ainda que vazias.
+     *
+     * Separa "rota errada" de "acervo sem o release": só o primeiro caso merece
+     * aviso no log, senão todo título sem resultado viraria alarme.
+     *
+     * @var array<string, true>
+     */
+    private array $rotasVivas = [];
+
+    /**
+     * Evita repetir o aviso de rotas esgotadas a cada termo consultado.
+     */
+    private bool $avisouRotas = false;
 
     /**
      * Indica se o indexador está configurado.
@@ -81,13 +120,7 @@ class TorznabService
     }
 
     /**
-     * Executa a consulta ao indexador e traduz o XML.
-     *
-     * A rota importa e já custou uma depuração inteira: o Prowlarr **não** expõe
-     * `/api/v1/search` como o Jackett. A busca Torznab dele vive em
-     * `/api/v1/indexer/{id}/search`, um endpoint por indexador. Chamar a rota do
-     * Jackett devolve 404 e o provedor some da cascata sem erro visível — a lista
-     * volta vazia e parece que "não há fonte".
+     * Executa a consulta ao indexador e traduz o retorno.
      *
      * Como o backend não guarda os ids dos indexadores (eles nascem no
      * provisionamento), descobrimos a lista uma vez e consultamos cada um,
@@ -111,36 +144,273 @@ class TorznabService
     }
 
     /**
-     * Consulta um indexador específico pela rota Torznab do Prowlarr.
+     * Consulta um indexador pelas rotas conhecidas do Prowlarr.
+     *
+     * A rota é a parte frágil desta integração. O Prowlarr publica o **mesmo**
+     * acervo por caminhos diferentes — o proxy Torznab por indexador
+     * (`/{id}/api`, o mesmo que o painel usa), a variação Newznab de algumas
+     * versões (`/api/v1/indexer/{id}/newznab`) e a API interna
+     * (`/api/v1/indexer/{id}/search`, que responde **JSON**, não RSS).
+     *
+     * Errar a rota não gera erro visível: a resposta volta vazia e o sintoma é
+     * "não há fonte", mesmo com o release aparecendo no painel. Foi assim que
+     * este degrau passou a devolver zero para um título que o painel encontra.
+     *
+     * Por isso tentamos as rotas até uma responder sem falha. A que respondeu
+     * fica memorizada para o seu indexador e passa a ser a primeira das
+     * consultas seguintes; as que responderam erro saem da lista, para não
+     * custar uma ida e volta por termo.
      *
      * @return array<int, array<string, mixed>>
      */
     private function consultarIndexador(int $id, string $termo, ?string $categoria): array
+    {
+        foreach ($this->rotas($id) as $rota) {
+            $itens = $this->pedir($rota, $termo, $categoria);
+
+            if ($itens !== []) {
+                $this->rotaPreferida[$id] = $rota;
+
+                Log::debug('Rota Torznab vencedora.', [
+                    'indexador' => $id,
+                    'rota' => $rota,
+                    'termo' => $termo,
+                    'itens' => count($itens),
+                ]);
+
+                return $itens;
+            }
+
+            /*
+             * A rota respondeu sem falha, ainda que vazia: ela é a via legítima
+             * deste indexador e as outras candidatas publicam o mesmo acervo por
+             * outro caminho. Um corpo vazio aqui significa "este indexador não
+             * tem o release", não "tentei o caminho errado" — insistir nas
+             * demais repetiria a mesma pergunta. Era assim que um único termo de
+             * episódio virava seis idas e voltas e a busca a frio passava dos
+             * 40 s.
+             */
+            if (isset($this->rotasVivas[$rota])) {
+                $this->rotaPreferida[$id] = $rota;
+
+                return [];
+            }
+        }
+
+        $this->avisarRotasEsgotadas($id, $termo);
+
+        return [];
+    }
+
+    /**
+     * Rotas candidatas do Prowlarr, da mais provável para a mais improvável.
+     *
+     * A lista termina na rota agregada (`/api`), que busca em todos os
+     * indexadores de uma vez: se o caminho por indexador não servir, ela ainda
+     * pode trazer o release.
+     *
+     * @return list<string>
+     */
+    private function rotas(int $id): array
+    {
+        $candidatas = [
+            sprintf('/%d/api', $id),
+            sprintf('/api/v1/indexer/%d/newznab', $id),
+            sprintf('/api/v1/indexer/%d/search', $id),
+            '/api',
+        ];
+
+        $preferida = $this->rotaPreferida[$id] ?? null;
+
+        if ($preferida !== null) {
+            $candidatas = array_values(array_diff($candidatas, [$preferida]));
+            array_unshift($candidatas, $preferida);
+        }
+
+        return array_values(array_filter(
+            $candidatas,
+            fn (string $rota) => ! isset($this->rotasMortas[$rota]),
+        ));
+    }
+
+    /**
+     * Faz o pedido de uma rota e devolve os itens no contrato interno.
+     *
+     * O mesmo termo vai com dois nomes (`q` e `query`) porque cada caminho usa
+     * um: o Torznab procura em `q`, a API JSON em `query`. Mandar os dois é
+     * inofensivo e evita repetir a tentativa só para trocar o nome do campo.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function pedir(string $rota, string $termo, ?string $categoria): array
     {
         $parametros = [
             'apikey' => $this->chave(),
             't' => 'search',
             'cat' => $categoria ?? (string) config('services.torrents.torznab_categoria', '2000'),
             'q' => $termo,
+            'query' => $termo,
         ];
 
         try {
             $resposta = Http::baseUrl($this->url())
                 ->timeout(20)
-                ->get(sprintf('/api/v1/indexer/%d/search', $id), $parametros);
+                ->get($rota, $parametros);
         } catch (\Throwable $excecao) {
             // Um indexador indisponível não pode derrubar a busca inteira: o
             // outro pode ter o release. Só registramos e seguimos.
             report($excecao);
+            $this->rotasMortas[$rota] = true;
 
             return [];
         }
 
         if ($resposta->failed()) {
+            $this->rotasMortas[$rota] = true;
+
             return [];
         }
 
-        return $this->interpretarXml($resposta->body());
+        $corpo = (string) $resposta->body();
+        $itens = $this->itensDoCorpo($corpo);
+
+        /*
+         * O Newznab recusa a consulta com HTTP 200 e um `<error>` no corpo
+         * (chave inválida, indexador bloqueado). Isso não é "acervo sem o
+         * release": o caminho está errado e as outras rotas ainda podem servir.
+         * O aviso com código e descrição sai do parser, que é quem lê o corpo.
+         */
+        if (str_contains($corpo, '<error')) {
+            $this->rotasMortas[$rota] = true;
+
+            return [];
+        }
+
+        $this->rotasVivas[$rota] = true;
+
+        if ($itens === []) {
+            // Rota viva devolvendo zero é o sintoma mais enganoso desta
+            // integração: não há exceção nem erro HTTP para seguir, e o vazio se
+            // confunde com "não existe fonte". Guardamos o começo do corpo para
+            // distinguir corpo vazio, XML sem itens e formato inesperado.
+            Log::debug('Rota Torznab respondeu sem itens.', [
+                'rota' => $rota,
+                'termo' => $termo,
+                'status' => $resposta->status(),
+                'corpo' => mb_substr($corpo, 0, 600),
+            ]);
+        }
+
+        return $itens;
+    }
+
+    /**
+     * Decide entre XML e JSON pelo próprio corpo da resposta.
+     *
+     * Ler o formato em vez de confiar na rota deixa o serviço de pé quando o
+     * Prowlarr muda o caminho de uma versão para outra — que é justamente o que
+     * aconteceu aqui.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function itensDoCorpo(string $corpo): array
+    {
+        $inicio = ltrim($corpo);
+
+        if (str_starts_with($inicio, '[') || str_starts_with($inicio, '{')) {
+            return $this->itensDoJson($corpo);
+        }
+
+        return $this->interpretarXml($corpo);
+    }
+
+    /**
+     * Traduz a resposta JSON do Prowlarr.
+     *
+     * É o `ReleaseResource` da API interna: `title`, `size`, `seeders`,
+     * `leechers`, `magnetUrl` e `infoHash`. Os `leechers` ocupam o lugar dos
+     * `peers` do Torznab — são os mesmos números com outro nome.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function itensDoJson(string $corpo): array
+    {
+        $lista = json_decode($corpo, true);
+
+        if (! is_array($lista)) {
+            return [];
+        }
+
+        $itens = [];
+
+        foreach ($lista as $item) {
+            if (! is_array($item)) {
+                continue;
+            }
+
+            $titulo = trim((string) ($item['title'] ?? ''));
+
+            if ($titulo === '') {
+                continue;
+            }
+
+            $hash = strtolower(trim((string) ($item['infoHash'] ?? '')));
+            $magnet = trim((string) ($item['magnetUrl'] ?? ''));
+
+            // Alguns itens chegam só com o infohash. Sem magnet não há como
+            // reproduzir, então completamos com os anunciadores do projeto.
+            if ($magnet === '' && $hash !== '') {
+                $magnet = $this->magnetDoInfohash($hash, $titulo);
+            }
+
+            $itens[] = [
+                'titulo' => $titulo,
+                'tamanho_bytes' => (int) ($item['size'] ?? 0),
+                'seeds' => (int) ($item['seeders'] ?? 0),
+                'peers' => (int) ($item['leechers'] ?? 0),
+                'magnet' => $magnet,
+                'infohash' => $hash,
+                'idioma' => trim((string) ($item['language'] ?? '')),
+            ];
+        }
+
+        return $itens;
+    }
+
+    /**
+     * Monta um magnet a partir do infohash, com os anunciadores do projeto.
+     */
+    private function magnetDoInfohash(string $hash, string $titulo): string
+    {
+        $anunciadores = implode('', array_map(
+            fn (string $anunciador) => '&tr='.rawurlencode($anunciador),
+            TrackersPublicos::LISTA,
+        ));
+
+        return 'magnet:?xt=urn:btih:'.$hash.'&dn='.rawurlencode($titulo).$anunciadores;
+    }
+
+    /**
+     * Denuncia, uma vez por requisição, que nenhuma rota respondeu com sucesso.
+     *
+     * Erro de rota e acervo sem o release produzem a mesma lista vazia, mas só o
+     * primeiro é defeito. Rota viva com lista vazia é resposta legítima do
+     * indexador e não gera aviso; sem essa separação, ou o log ficaria mudo no
+     * caso que importa, ou viraria alarme a cada título sem resultado.
+     */
+    private function avisarRotasEsgotadas(int $id, string $termo): void
+    {
+        if ($this->avisouRotas || $this->rotasVivas !== []) {
+            return;
+        }
+
+        $this->avisouRotas = true;
+
+        Log::warning('Nenhuma rota Torznab do Prowlarr respondeu com sucesso.', [
+            'indexador' => $id,
+            'termo' => $termo,
+            'rotas_tentadas' => array_keys($this->rotasMortas),
+        ]);
     }
 
     /**
@@ -223,6 +493,22 @@ class TorznabService
             $xml = simplexml_load_string($corpo);
 
             if ($xml === false) {
+                return [];
+            }
+
+            /*
+             * O protocolo Newznab devolve erro com HTTP 200 e um `<error>` no
+             * corpo (chave recusada, indexador bloqueado). Sem ler o corpo, isso
+             * vira "nenhuma fonte" silencioso — o mesmo sintoma de rota errada.
+             */
+            $erro = $xml->error ?? null;
+
+            if ($erro !== null) {
+                Log::warning('Indexador Torznab recusou a consulta.', [
+                    'codigo' => (string) ($erro['code'] ?? ''),
+                    'descricao' => (string) ($erro['description'] ?? ''),
+                ]);
+
                 return [];
             }
 

@@ -36,6 +36,18 @@ use Illuminate\Support\Facades\Log;
 class CatalogoProvedores
 {
     /**
+     * Sal de versão da chave de cache dos provedores.
+     *
+     * Sem ele, "corrigi o código" e "não fiz nada" ficam indistinguíveis por até
+     * um TTL inteiro: a chave é a mesma antes e depois da correção, então o
+     * resultado antigo — inclusive os zeros falsos que a rota errada do Torznab
+     * produzia — continua sendo servido. Suba este número junto com qualquer
+     * mudança de comportamento de um provedor para a reconsulta valer já na
+     * próxima busca, sem depender de limpar o Redis à mão.
+     */
+    private const VERSAO_CACHE = 4;
+
+    /**
      * Provedores do primeiro degrau que buscam **por nome**.
      *
      * A ordem dentro do degrau é a ordem de consulta: o tracker PT-BR vem
@@ -98,6 +110,14 @@ class CatalogoProvedores
          * vez, com o termo puro. O termo não muda a resposta deles — só o
          * `imdb_id` importa —, então repetir a chamada para cada variação dublada
          * seria gastar o provedor mais lento da cascata à toa.
+         *
+         * O que ele devolve entra na lista, mas **não** decide a parada. Antes,
+         * esta fonte era mesclada ao acumulado e o `temDublado()` do laço de
+         * termos a enxergava: o Torrentio respondia uma única fonte rotulada
+         * "Dublado" (S01E01 720p PORTUGUÊS BR) e a cascata retornava logo no
+         * primeiro termo — que é o termo puro, sem a tag. As variações dubladas
+         * montadas pelo TorrentService e o degrau 2 inteiro nunca rodavam, e a
+         * busca de episódio terminava com uma fonte só, mesmo havendo mais.
          */
         $fontes = $this->mesclar(
             $fontes,
@@ -112,27 +132,30 @@ class CatalogoProvedores
          *
          * Cada título já chega com as variações dubladas montadas pelo
          * TorrentService, então o `temDublado()` encerra a cascata assim que o
-         * release nacional aparece.
+         * release nacional aparece. O julgamento é sobre o que **esta etapa**
+         * devolveu, não sobre a lista acumulada: uma fonte promissora do degrau
+         * anterior (ou do grupo por identificador) não pode calar a busca que
+         * existe justamente para achar o dublado.
          */
         foreach ($titulos as $titulo) {
-            $fontes = $this->mesclar(
-                $fontes,
-                $this->buscarGrupo($this->primarios, $titulo, $ano, $imdbId, $temporada, $episodio)
-            );
+            $desteTermo = $this->buscarGrupo($this->primarios, $titulo, $ano, $imdbId, $temporada, $episodio);
+            $fontes = $this->mesclar($fontes, $desteTermo);
 
-            if ($this->temDublado($fontes)) {
+            $this->registrarEtapa('nativos', $titulo, $desteTermo);
+
+            if ($this->temDublado($desteTermo)) {
                 return $fontes;
             }
         }
 
         // Degrau 2: indexador. Só é consultado se a busca nativa não achou dublado.
         foreach ($titulos as $titulo) {
-            $fontes = $this->mesclar(
-                $fontes,
-                $this->buscarGrupo([$this->torznab], $titulo, $ano, $imdbId, $temporada, $episodio)
-            );
+            $desteTermo = $this->buscarGrupo([$this->torznab], $titulo, $ano, $imdbId, $temporada, $episodio);
+            $fontes = $this->mesclar($fontes, $desteTermo);
 
-            if ($this->temDublado($fontes)) {
+            $this->registrarEtapa('indexador', $titulo, $desteTermo);
+
+            if ($this->temDublado($desteTermo)) {
                 return $fontes;
             }
         }
@@ -173,6 +196,11 @@ class CatalogoProvedores
      * brasileiro, então qualquer um dos dois encerra a busca pelos degraus
      * seguintes.
      *
+     * Quem decide a parada entrega **o que a própria etapa devolveu**, nunca a
+     * lista acumulada. A diferença não é cosmética: julgada sobre o acumulado, a
+     * fonte do Torrentio (que abre o degrau 1) encerrava o laço no primeiro termo
+     * e as variações dubladas ficavam sem ser perguntadas.
+     *
      * @param  array<int, array<string, mixed>>  $fontes
      */
     public function temDublado(array $fontes): bool
@@ -186,6 +214,37 @@ class CatalogoProvedores
         }
 
         return false;
+    }
+
+    /**
+     * Registra o que cada etapa da cascata devolveu, com quantas dubladas.
+     *
+     * Sem este retrato, "só veio uma fonte" fica indistinguível de "a etapa não
+     * rodou". Foi o que a busca de episódio escondeu: o degrau nativo retornava no
+     * primeiro termo por causa da fonte do Torrentio, e nada no log dizia que os
+     * termos dublados e o indexador tinham ficado por executar.
+     *
+     * O `encerra` aqui é telemetria; quem para a cascata é o laço, com este
+     * mesmo conjunto.
+     *
+     * @param  array<int, array<string, mixed>>  $fontes
+     */
+    private function registrarEtapa(string $degrau, string $titulo, array $fontes): void
+    {
+        Log::info('Etapa da cascata de torrents concluída.', [
+            'degrau' => $degrau,
+            'titulo' => $titulo,
+            'fontes' => count($fontes),
+            'dubladas' => count(array_filter(
+                $fontes,
+                fn (array $fonte) => in_array(
+                    $fonte['idioma'] ?? '',
+                    [IdiomaFonte::DUBLADO->value, IdiomaFonte::DUAL_AUDIO->value],
+                    true
+                )
+            )),
+            'encerra' => $this->temDublado($fontes),
+        ]);
     }
 
     /**
@@ -288,6 +347,10 @@ class CatalogoProvedores
      * coisas diferentes para cada episódio da série: sem ela, o resultado do
      * S01E01 seria servido para o S01E02 durante todo o TTL.
      *
+     * A [`VERSAO_CACHE`] encabeça a chave para isolar as entradas gravadas pelo
+     * código antigo: assim uma correção de comportamento passa a valer na próxima
+     * busca, em vez de ficar presa atrás do resultado velho.
+     *
      * @return array<int, array<string, mixed>>
      */
     private function buscarComCache(
@@ -298,7 +361,7 @@ class CatalogoProvedores
         ?int $temporada = null,
         ?int $episodio = null,
     ): array {
-        $chave = 'torrent:provedor:'.$provedor->identificador().':'
+        $chave = 'torrent:provedor:'.self::VERSAO_CACHE.':'.$provedor->identificador().':'
             .md5(mb_strtolower($titulo).'|'.$ano.'|'.$imdbId.'|'.$temporada.'|'.$episodio);
 
         $ttl = (int) config('services.torrents.cache_ttl', 1800);
