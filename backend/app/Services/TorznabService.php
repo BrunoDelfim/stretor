@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Services\Torrents\OrcamentoBusca;
 use App\Services\Torrents\TrackersPublicos;
 use App\Support\MensagensTorrent;
 use Illuminate\Support\Facades\Http;
@@ -25,6 +26,20 @@ use SimpleXMLElement;
  */
 class TorznabService
 {
+    /**
+     * Orçamento compartilhado da busca em curso.
+     *
+     * O degrau Torznab tem o próprio teto, mas ele não sabe quanto já foi gasto
+     * pelos degraus anteriores. Sem enxergar o relógio global, um degrau iniciado
+     * a poucos segundos do fim ainda rodaria os seus 12 s inteiros — e é essa soma
+     * que estoura o tempo do frontend. Com o orçamento em mãos, o prazo do degrau
+     * passa a ser o menor entre o próprio e o que resta da busca.
+     */
+    public function __construct(
+        private readonly OrcamentoBusca $orcamento,
+    ) {
+    }
+
     /**
      * Cache em memória dos ids de indexador habilitados, para não repetir a
      * listagem a cada consulta dentro da mesma requisição.
@@ -115,8 +130,25 @@ class TorznabService
      */
     private function prazo(): float
     {
-        return $this->prazo ??= microtime(true)
-            + max(1, (int) config('services.torrents.torznab_orcamento', 12));
+        if ($this->prazo !== null) {
+            return $this->prazo;
+        }
+
+        $proprio = max(1, (int) config('services.torrents.torznab_orcamento', 12));
+
+        /*
+         * O degrau não pode durar mais do que resta da busca inteira. O orçamento
+         * global é a soma dos três degraus; se ele já tem menos que o teto próprio
+         * do Torznab, é esse restante que manda — senão o degrau começaria uma
+         * varredura que o frontend não espera.
+         */
+        $restante = $this->orcamento->restante();
+
+        if ($restante !== null) {
+            $proprio = min($proprio, max(1, $restante));
+        }
+
+        return $this->prazo = microtime(true) + $proprio;
     }
 
     /** O tempo reservado para o degrau acabou? */

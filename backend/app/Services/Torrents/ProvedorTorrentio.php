@@ -26,8 +26,13 @@ use Illuminate\Support\Facades\Log;
  */
 class ProvedorTorrentio implements ProvedorTorrents
 {
+    use ConsultaComOrcamento;
     use NormalizaFonte;
     use LeituraStreamStremio;
+
+    public function __construct(
+        private readonly OrcamentoBusca $orcamento,
+    ) {}
 
     public function identificador(): string
     {
@@ -59,7 +64,19 @@ class ProvedorTorrentio implements ProvedorTorrents
         }
 
         $base = rtrim((string) config('services.torrents.torrentio_url', 'https://torrentio.strem.fun'), '/');
-        $timeout = (int) config('services.torrents.tempo_limite', 15);
+
+        /*
+         * O teto é o que sobra do orçamento global. O Torrentio abre a cascata,
+         * então normalmente tem o orçamento inteiro à disposição — mas quando ele
+         * é reconsultado (outro termo, outra abertura) o prazo pode já estar no
+         * fim, e insistir com os 15 s cheios só gastaria o tempo que a montagem
+         * final não espera.
+         */
+        $timeout = $this->tempoDeConsulta((int) config('services.torrents.tempo_limite', 15));
+
+        if ($timeout <= 0) {
+            return [];
+        }
 
         /*
          * O Torrentio aceita uma configuração embutida na própria URL, no
@@ -95,7 +112,14 @@ class ProvedorTorrentio implements ProvedorTorrents
              * (`language=portuguese/`) é justamente parte do caminho. Montando a
              * URL completa garantimos que o filtro de idioma chegue ao Torrentio.
              */
+            /*
+             * O `connectTimeout` corta a fase de conexão, que o `timeout()` não
+             * cobre: com o host bloqueado, o TCP fica pendurado no handshake e o
+             * Guzzle espera muito além do teto. Com o corte, um host morto falha
+             * rápido e a vez volta para quem ainda tem tempo.
+             */
             $resposta = Http::acceptJson()
+                ->connectTimeout(max(1, min(3, $timeout)))
                 ->timeout($timeout)
                 ->get($base.'/'.$caminho);
         } catch (\Throwable) {

@@ -33,6 +33,10 @@ class ProvedorTrackersBr implements ProvedorTorrents
 {
     use NormalizaFonte;
 
+    public function __construct(
+        private readonly ClienteHttp $cliente,
+    ) {}
+
     /**
      * Quantas páginas de lançamento abrir por site.
      *
@@ -329,25 +333,30 @@ class ProvedorTrackersBr implements ProvedorTorrents
         return $site.'/'.ltrim($href, '/');
     }
 
-    /** Baixa o HTML da página, ou `null` quando o site não responde. */
+    /**
+     * Baixa o HTML da página, ou `null` quando o site não responde.
+     *
+     * A requisição sai pelo [`ClienteHttp`], que tenta direto e cai para o
+     * FlareSolverr quando o tracker responde bloqueio do Cloudflare. Os trackers
+     * PT-BR vivem atrás dele com frequência — sem o socorro, um desafio vira
+     * "site fora do ar" e a busca nacional fica sem essa frente.
+     */
     private function baixar(string $url): ?string
     {
         $timeout = (int) config('services.torrents.tempo_limite', 15);
 
-        try {
-            $resposta = Http::withUserAgent($this->navegador())
-                ->timeout($timeout)
-                ->get($url);
-        } catch (\Throwable $excecao) {
+        $resposta = $this->cliente->get($url, [], $this->navegador(), $timeout);
+
+        if ($resposta === null || $resposta->failed()) {
             Log::info('Tracker PT-BR indisponível na busca nativa.', [
                 'url' => $url,
-                'motivo' => $excecao->getMessage(),
+                'status' => $resposta?->status(),
             ]);
 
             return null;
         }
 
-        return $resposta->failed() ? null : $resposta->body();
+        return $resposta->body();
     }
 
     /** @return array<int, string> */

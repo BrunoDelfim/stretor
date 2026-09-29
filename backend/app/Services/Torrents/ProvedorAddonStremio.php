@@ -30,8 +30,13 @@ use Illuminate\Support\Facades\Http;
  */
 class ProvedorAddonStremio implements ProvedorTorrents
 {
+    use ConsultaComOrcamento;
     use NormalizaFonte;
     use LeituraStreamStremio;
+
+    public function __construct(
+        private readonly OrcamentoBusca $orcamento,
+    ) {}
 
     public function identificador(): string
     {
@@ -68,7 +73,17 @@ class ProvedorAddonStremio implements ProvedorTorrents
             return [];
         }
 
-        $timeout = (int) config('services.torrents.tempo_limite', 15);
+        /*
+         * O teto do pool é o que sobra do orçamento global. Sem esta leitura, os
+         * addons abriam todas as conexões com os 15 s cheios mesmo a segundos do
+         * fim da busca — gastavam o que restava e voltavam para uma rodada já
+         * encerrada. Encolhido, eles devolvem o que der dentro do prazo real.
+         */
+        $timeout = $this->tempoDeConsulta((int) config('services.torrents.tempo_limite', 15));
+
+        if ($timeout <= 0) {
+            return [];
+        }
 
         // Série pede a numeração no caminho; filme pede só o identificador.
         $caminho = ($temporada !== null && $episodio !== null)
@@ -81,9 +96,18 @@ class ProvedorAddonStremio implements ProvedorTorrents
          * dos outros. A falha de um é absorvida no lugar: só seguimos com as
          * respostas HTTP de fato.
          */
+        /*
+         * O `connectTimeout` corta a fase de conexão, que o `timeout()` não
+         * cobre: com um addon fora do ar, o TCP fica pendurado no handshake e o
+         * Guzzle espera muito além do teto. Com o corte, um addon morto falha
+         * rápido e não segura os demais.
+         */
+        $conexao = max(1, min(3, $timeout));
+
         $respostas = Http::pool(fn ($pool) => array_map(
             fn (string $base) => $pool->as(md5($base))
                 ->acceptJson()
+                ->connectTimeout($conexao)
                 ->timeout($timeout)
                 ->get($base.'/'.$caminho),
             $enderecos

@@ -31,6 +31,13 @@ final class MensagensTorrent
      */
     public const AVISO_SEM_CATALOGO = 'Não foi possível obter os dados do filme no catálogo. Verifique a chave TMDB_API_KEY.';
 
-    /** Quantidade máxima de fontes devolvidas ao frontend. */
-    public const LIMITE_FONTES = 20;
+    /**
+     * Quantidade máxima de fontes devolvidas ao frontend.
+     *
+     * O teto é curto de propósito: a lista final é só áudio PT-BR provado e o
+     * usuário quer poucas opções boas, não um catálogo. Quatro dá margem para o
+     * player pular uma fonte morta e ainda ter alternativa, sem encher a tela de
+     * releases que ele não vai tentar.
+     */
+    public const LIMITE_FONTES = 4;
 }

@@ -72,6 +72,133 @@ class InspecaoPack
     }
 
     /**
+     * Apura vários packs numa única rodada, em paralelo.
+     *
+     * A inspeção sequencial era o gargalo real da busca de episódio: cada pack
+     * custa uma conexão e uma espera no media-service, e o teto de packs
+     * (`inspecao_packs_limite`) multiplicava esse custo. Com seis packs e o
+     * `inspecao_timeout` de 12 s, o pior caso passava de 70 s só nesta etapa —
+     * muito acima do orçamento da busca inteira, e era isso que estourava o
+     * tempo do frontend mesmo com todos os provedores vindo do cache.
+     *
+     * Aqui os packs são abertos **ao mesmo tempo**, com o mesmo `Http::pool` que
+     * os provedores já usam. O tempo de parede passa a ser o do pack mais lento,
+     * não a soma de todos. O teto de cada requisição é o menor entre o
+     * `inspecao_timeout` e o que resta do orçamento global: quando o prazo já
+     * acabou, o pool nem é aberto e todos ficam sem veredito — o que é correto,
+     * porque a busca está encerrando e não há mais tempo para provar idioma.
+     *
+     * O cache é consultado antes de montar o pool: um pack já julgado não gasta
+     * conexão. Só os que ainda não têm veredito entram na rodada.
+     *
+     * @param  array<string, string>  $magnetPorId  infohash => magnet
+     * @param  OrcamentoBusca  $orcamento  Relógio da busca, para encolher o teto
+     * @return array<string, bool>  infohash => veredito (só os definitivos)
+     */
+    public function apurarVarios(array $magnetPorId, OrcamentoBusca $orcamento): array
+    {
+        $vereditos = [];
+        $pendentes = [];
+
+        foreach ($magnetPorId as $id => $magnet) {
+            if (trim((string) $magnet) === '') {
+                continue;
+            }
+
+            $chave = 'torrent:pack:'.self::VERSAO_CACHE.':'.$id;
+            $cacheado = Cache::get($chave);
+
+            if ($cacheado !== null) {
+                $vereditos[$id] = (bool) $cacheado;
+
+                continue;
+            }
+
+            $pendentes[$id] = (string) $magnet;
+        }
+
+        if ($pendentes === []) {
+            return $vereditos;
+        }
+
+        $base = rtrim((string) config('services.media_service.url', ''), '/');
+
+        if ($base === '') {
+            return $vereditos;
+        }
+
+        $teto = (int) config('services.torrents.inspecao_timeout', 12);
+        $restante = $orcamento->restante();
+
+        // Sem orçamento em curso, vale o teto próprio. Com orçamento, o teto é o
+        // menor entre ele e o que sobra — e zero significa "não abra o pool".
+        $tempoLimite = $restante === null ? $teto : min($teto, $restante);
+
+        if ($tempoLimite <= 0) {
+            return $vereditos;
+        }
+
+        // A espera pedida ao media-service fica abaixo do tempo limite do HTTP
+        // para que ele responda primeiro: assim recebemos o veredito ou uma falha
+        // tratada, em vez de estourar o timeout com a conexão aberta.
+        $esperaMs = max(1, $tempoLimite - 2) * 1000;
+
+        /*
+         * O `connectTimeout` corta a fase de conexão, que o `timeout()` não
+         * cobre: se o media-service estiver ocupado, o TCP fica pendurado no
+         * handshake e o pool espera muito além do teto. Com o corte, uma conexão
+         * travada falha rápido e não segura os demais packs da rodada.
+         */
+        $conexao = max(1, min(3, $tempoLimite));
+
+        $respostas = Http::pool(fn ($pool) => array_map(
+            fn (string $id) => $pool->as($id)
+                ->connectTimeout($conexao)
+                ->timeout($tempoLimite)
+                ->acceptJson()
+                ->post($base.'/api/media/metadados', [
+                    'magnet' => $pendentes[$id],
+                    'espera_ms' => $esperaMs,
+                ]),
+            array_keys($pendentes)
+        ));
+
+        $ttl = (int) config('services.torrents.inspecao_cache_ttl', 86400);
+
+        foreach ($pendentes as $id => $magnet) {
+            $resposta = $respostas[$id] ?? null;
+
+            // Falha de rede no pool chega como exceção dentro do array; qualquer
+            // coisa que não seja uma resposta bem-sucedida é "não sei", e não é
+            // cacheada — a próxima busca tenta de novo.
+            if (! $resposta instanceof \Illuminate\Http\Client\Response || ! $resposta->successful()) {
+                continue;
+            }
+
+            $dados = $resposta->json();
+
+            if (! is_array($dados) || ($dados['ok'] ?? false) !== true) {
+                continue;
+            }
+
+            $indicio = (bool) ($dados['indicio_pt_br'] ?? false);
+
+            Log::debug('Inspeção de pack concluída.', [
+                'nome' => $dados['nome'] ?? '',
+                'arquivos' => $dados['arquivos'] ?? 0,
+                'indicio_pt_br' => $indicio,
+                'prova' => $dados['prova'] ?? null,
+            ]);
+
+            Cache::put('torrent:pack:'.self::VERSAO_CACHE.':'.$id, $indicio, $ttl);
+
+            $vereditos[$id] = $indicio;
+        }
+
+        return $vereditos;
+    }
+
+    /**
      * Chama o endpoint de metadados do media-service e traduz a resposta.
      *
      * A espera pedida ao media-service fica **abaixo** do tempo limite do HTTP

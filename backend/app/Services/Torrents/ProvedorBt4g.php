@@ -3,6 +3,7 @@
 namespace App\Services\Torrents;
 
 use App\Contracts\ProvedorTorrents;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 
 /**
@@ -23,7 +24,13 @@ use Illuminate\Support\Facades\Http;
  */
 class ProvedorBt4g implements ProvedorTorrents
 {
+    use ConsultaComOrcamento;
     use NormalizaFonte;
+
+    public function __construct(
+        private readonly ClienteHttp $cliente,
+        private readonly OrcamentoBusca $orcamento,
+    ) {}
 
     public function identificador(): string
     {
@@ -75,16 +82,16 @@ class ProvedorBt4g implements ProvedorTorrents
         }
 
         foreach ($this->espelhos() as $espelho) {
+            $htmls = $this->baixar($espelho, $termos);
+
+            // Espelho fora do ar: nenhum termo respondeu. Tenta o próximo.
+            if ($htmls === []) {
+                continue;
+            }
+
             $fontes = [];
 
-            foreach ($termos as $termo) {
-                $html = $this->baixar($espelho, $termo);
-
-                if ($html === null) {
-                    // Espelho fora do ar: tenta o próximo endereço da lista.
-                    continue 2;
-                }
-
+            foreach ($htmls as $html) {
                 $fontes = array_merge($fontes, $this->extrair($html, $temporada, $episodio));
             }
 
@@ -97,25 +104,116 @@ class ProvedorBt4g implements ProvedorTorrents
     }
 
     /**
-     * Busca o HTML do termo, ou `null` quando o espelho não responde.
+     * Baixa o HTML de todos os termos do espelho em paralelo.
+     *
+     * Antes isto era um `foreach` com uma requisição por vez: com os termos de
+     * episódio, pack e série somando mais de uma dezena, a espera era a soma de
+     * todas as respostas — foi o que fez a busca de uma série nova passar de um
+     * minuto e o navegador abortar. O pool dispara tudo junto e a espera passa a
+     * ser a da resposta mais lenta. Termo que falha simplesmente não entra; o
+     * espelho só é considerado fora do ar quando nenhum respondeu.
+     *
+     * @param  array<int, string>  $termos
+     * @return array<int, string>
      */
-    private function baixar(string $base, string $termo): ?string
+    private function baixar(string $base, array $termos): array
     {
-        $timeout = (int) config('services.torrents.tempo_limite', 15);
+        /*
+         * O teto do pool é o que sobra do orçamento global, limitado ao teto
+         * curto do acervo mundial. Sem a leitura do orçamento, o BT4G abria todas
+         * as conexões com os 15 s cheios mesmo a segundos do fim da busca —
+         * gastava o que restava e voltava para uma rodada já encerrada. E sem o
+         * teto curto, ele segurava a rodada de abertura sozinho: nos testes foram
+         * 30 s (dois espelhos) para devolver zero fontes PT-BR, o que empurrava
+         * os provedores por identificador para fora do orçamento.
+         */
+        $timeout = $this->tempoDeConsulta(
+            (int) config('services.torrents.acervo_mundial_tempo_limite', 8)
+        );
 
-        try {
-            $resposta = Http::baseUrl($base)
+        if ($timeout <= 0) {
+            return [];
+        }
+
+        /*
+         * O `connectTimeout` é o que faz o teto valer de verdade. O `timeout()`
+         * sozinho limita a resposta, mas não a fase de conexão: quando o espelho
+         * está bloqueado, o TCP fica pendurado no handshake e o Guzzle espera
+         * muito além do teto — foi assim que o BT4G gastou 36 s com o teto em
+         * 8 s. Com o corte na conexão, um espelho morto falha rápido e a vez
+         * volta para quem ainda tem tempo.
+         */
+        $conexao = max(1, min(3, $timeout));
+
+        $respostas = Http::pool(fn ($pool) => array_map(
+            fn (string $termo) => $pool->as(md5($termo))
+                ->baseUrl($base)
                 ->withUserAgent($this->navegador())
+                ->connectTimeout($conexao)
                 ->timeout($timeout)
                 ->get('/search', [
                     'q' => TermosBusca::limpar($termo),
                     'orderby' => 'seeders',
-                ]);
-        } catch (\Throwable) {
-            return null;
+                ]),
+            $termos
+        ));
+
+        $htmls = [];
+        $respondeu = false;
+
+        foreach ($termos as $termo) {
+            $resposta = $respostas[md5($termo)] ?? null;
+
+            // O pool devolve a exceção no lugar da resposta quando a conexão
+            // falha; só seguimos com respostas HTTP de fato.
+            if (! $resposta instanceof Response) {
+                continue;
+            }
+
+            /*
+             * Qualquer resposta HTTP — inclusive o 403 do Cloudflare — conta como
+             * "o espelho está de pé". É essa distinção que decide se vale abrir o
+             * navegador do FlareSolverr: um 403 prova que o Cloudflare barrou o
+             * acesso direto, e o FlareSolverr **também** não passa por ele (nos
+             * testes ele devolveu 500 depois de ~12 s). Já a ausência total de
+             * resposta aponta para um bloqueio de rede, que o navegador pode
+             * contornar.
+             */
+            $respondeu = true;
+
+            if ($resposta->failed()) {
+                continue;
+            }
+
+            $htmls[] = $resposta->body();
         }
 
-        return $resposta->failed() ? null : $resposta->body();
+        /*
+         * O socorro pelo FlareSolverr só entra quando **nenhuma** resposta HTTP
+         * chegou — sinal de bloqueio de rede, não de Cloudflare. Quando o pool
+         * devolveu 403, o navegador não ajudaria: ele esbarra no mesmo desafio e
+         * ainda gasta ~12 s do orçamento para devolver 500. Era esse o custo que
+         * fazia o BT4G segurar a busca inteira sem entregar nada.
+         *
+         * O socorro é de **um termo só**, e não termo a termo: cada chamada abre
+         * um navegador, e o primeiro termo (o título puro, sem a tag de idioma) é
+         * o mais promissor. Se o espelho estiver bloqueado, os termos seguintes
+         * também estariam — insistir só repetiria a espera.
+         */
+        if ($htmls === [] && ! $respondeu && $this->cliente->proxyDisponivel()) {
+            $resposta = $this->cliente->get(
+                $base.'/search',
+                ['q' => TermosBusca::limpar($termos[0]), 'orderby' => 'seeders'],
+                $this->navegador(),
+                $timeout,
+            );
+
+            if ($resposta !== null && ! $resposta->failed()) {
+                $htmls[] = $resposta->body();
+            }
+        }
+
+        return $htmls;
     }
 
     /**
