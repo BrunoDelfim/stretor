@@ -286,6 +286,57 @@ indisponível por [`disponivel()`](../backend/app/Services/Torrents/ProvedorTrac
 e é pulado de forma limpa; o degrau 1 segue com APIBay, Torrentio e BT4G. Para
 reativar, basta preencher `TORRENTS_TRACKERS_BR_URLS` com um domínio vivo.
 
+#### O FlareSolverr agora socorre também a busca nativa (degrau 1)
+
+O diagnóstico acima tem uma causa que passou batido por muito tempo: **o
+FlareSolverr só servia ao Prowlarr**. O backend o cadastrava como proxy dos
+indexadores do degrau 2 e pronto — os provedores nativos do degrau 1 falavam
+HTTP direto. Quando o Cloudflare bloqueia, o `Http::get()` do Laravel recebe o
+desafio e o provedor simplesmente devolve vazio. Foi assim que o BT4G passou a
+responder `403` e os trackers PT-BR sumiram: não era o site que estava fora do
+ar, era o nosso cliente que não atravessava a barreira.
+
+A correção é o [`ClienteHttp`](../backend/app/Services/Torrents/ClienteHttp.php:1),
+um cliente compartilhado que faz o que o Stremio faz por baixo dos panos — quando
+a porta da frente fecha, entra-se pela dos fundos:
+
+1. **Direto.** A requisição normal, rápida e sem custo. É o que resolve a maioria
+   dos casos (APIBay e Knaben, por exemplo, quase nunca precisam de proxy).
+2. **Pelo FlareSolverr.** Só quando a direta falha de um jeito que cheira a
+   bloqueio: status `403`/`429`/`503` ou corpo com a marca do desafio ("Just a
+   moment...", "cf-chl", "checking your browser"). O FlareSolverr abre um
+   Chromium, resolve o desafio e devolve o HTML já liberado — que o cliente
+   reconstrói como uma `Response` do Laravel, para o provedor continuar lendo
+   `->body()` e `->json()` sem um caminho paralelo.
+
+O socorro é **silencioso e opcional**: sem `FLARESOLVERR_URL` configurada, o
+cliente se comporta exatamente como o `Http` direto de antes. Nenhuma
+configuração ausente derruba a busca — no pior caso, ela volta ao comportamento
+antigo. A chave liga/desliga é `TORRENTS_PROXY_NATIVO` (padrão `true`) e o teto
+da chamada ao navegador é `TORRENTS_PROXY_NATIVO_TIMEOUT` (padrão `70`s, acima
+do `maxTimeout` enviado ao FlareSolverr, para que o erro venha dele com
+diagnóstico).
+
+Os quatro provedores nativos por nome foram ligados ao cliente:
+
+- [`ProvedorBt4g`](../backend/app/Services/Torrents/ProvedorBt4g.php:25) — o caso
+  mais crítico: o pool direto voltava vazio com o `403` do Cloudflare e o acervo
+  de DHT ficava inacessível. Agora, quando o pool inteiro falha, o socorro é
+  termo a termo pelo FlareSolverr.
+- [`ProvedorTrackersBr`](../backend/app/Services/Torrents/ProvedorTrackersBr.php:32)
+  — os trackers PT-BR vivem atrás do Cloudflare com frequência; sem o socorro,
+  um desafio virava "site fora do ar".
+- [`ProvedorApibay`](../backend/app/Services/Torrents/ProvedorApibay.php:26) — o
+  APIBay costuma responder direto, então o navegador só entra quando o pool
+  inteiro volta vazio.
+- [`ProvedorKnaben`](../backend/app/Services/Torrents/ProvedorKnaben.php:32) — o
+  caminho isolado passa pelo cliente; no lote, o socorro entra quando nenhum
+  termo respondeu pelo caminho direto.
+
+O custo do socorro é o de abrir um navegador (segundos por chamada), por isso ele
+é sempre a **segunda** tentativa e só dispara diante de bloqueio real — o caminho
+comum continua sendo o HTTP direto.
+
 ### Indexador Torznab (Prowlarr) — degrau 2 da busca
 
 Os sites generalistas de torrent não oferecem uma API limpa como o YTS, e o
@@ -636,10 +687,11 @@ não há mais canais de séries confiáveis e não há perspectiva de voltarem.
 
 ### Prioridade de idioma
 
-O usuário quer o filme **dublado em PT-BR**. O desenho atual não descarta nada de
-saída: a busca **coleta** fontes em duas pilhas — as que provam áudio PT-BR e as de
-reserva (idioma original ou legendado) — e só no fim monta a lista, com as PT-BR na
-frente e a reserva completando até um mínimo fixo.
+O usuário quer o filme **dublado em PT-BR**. A busca **coleta** fontes em duas
+pilhas — as que provam áudio PT-BR e as de reserva (idioma original ou legendado) —
+e só no fim monta a lista. Com o corte duro ligado (o padrão), a lista final é só a
+pilha PT-BR, cortada no teto de `LIMITE_FONTES`; a reserva só entra quando não há
+nenhuma fonte PT-BR.
 
 O idioma é deduzido por **dois caminhos**, em ordem de confiança:
 
@@ -682,6 +734,48 @@ as legendas é que são PT-BR. Ele **não** entra na pilha PT-BR boa: cai na res
 É o que separa `Clube da Luta 1999 Bluray 720p Legendado pt BR` das fontes que o
 usuário de fato quer ouvir.
 
+#### O corte duro de idioma: só áudio PT-BR provado
+
+O `apenas_pt_br` decide *quanto* da reserva entra para completar o mínimo — mas a
+reserva ainda carrega original e legendado, e a lista acabava cheia de releases que
+o usuário brasileiro não aproveita. A chave
+[`somente_pt_br_ou_legendado`](../backend/config/services.php:249) fecha essa porta:
+com ela ligada, a montagem final entrega só o **áudio PT-BR provado**. Sobram
+dublado e dual áudio; o original em inglês e o legendado (áudio original com legenda
+PT-BR) somem.
+
+O legendado cai junto com o original de propósito: o usuário quer **ouvir** em
+português, não ler. Um release `Legendado pt BR` tem áudio original e legenda
+PT-BR — serve para quem aceita ler, mas não é o que a lista deve oferecer quando o
+critério é áudio nacional.
+
+**O corte só vale se sobrar fonte PT-BR.** A montagem primeiro separa as pilhas e
+só então decide: se a pilha PT-BR tem ao menos uma fonte, a lista é só ela; se está
+**vazia**, o corte é revertido e a reserva volta. Uma lista vazia não é "só PT-BR",
+é o player sem nada para tentar — e aí o sistema se comporta como antes, entregando
+o que existe, mesmo que seja legendado ou original. É a diferença entre *preferir*
+áudio nacional e *exigir* o que talvez não exista.
+
+**Não há preenchimento com reserva.** Quando as PT-BR acabam, a lista para — mesmo
+que o teto de `LIMITE_FONTES` (`4`) não tenha sido alcançado. A reserva não completa
+a lista até o teto: ela só entra quando a pilha PT-BR está vazia. Uma série com duas
+dubladas volta com duas fontes, não com duas dubladas mais duas legendadas.
+
+A diferença entre as duas chaves é de natureza, não de grau:
+
+- `apenas_pt_br` é sobre **quanto** de reserva entra. Ele não descarta nada: só
+  decide se a reserva completa a lista quando a pilha boa não alcança o piso.
+- `somente_pt_br_ou_legendado` é sobre **se** a reserva entra. Ele é um corte
+  duro, aplicado no [`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:271)
+  depois da separação das pilhas e antes da exceção de pack — um pack em inglês não
+  escapa pela porta do `packs_qualquer_idioma`, que existe para o pack nacional sem
+  marca de dublagem, não para ressuscitar o original.
+
+O corte é por **prova de áudio PT-BR**: dublado e dual passam; o que não prova —
+original, legendado, idioma vazio ou desconhecido — cai. A leitura é pelo
+[`ePtBr()`](../backend/app/Services/TorrentService.php:410). Desligue a chave para
+trazer a reserva de volta ao fim da lista mesmo quando há fonte PT-BR.
+
 #### A cascata coleta com orçamento, não para no primeiro acerto
 
 O critério de parada antigo (`temDublado()`) encerrava a busca assim que o primeiro
@@ -696,23 +790,239 @@ Cada fonte que passa pelo filtro de numeração é **etiquetada**, não descarta
 ganha `pt_br` (entra na pilha boa) ou vira reserva. Nada de aproveitável some por
 idioma; a decisão de ordem fica para o fim.
 
+#### O orçamento da busca inteira: um relógio só para os três degraus
+
+O orçamento de coleta acima decide **quando parar de procurar**; este decide
+**quanto tempo a busca pode durar**. São coisas diferentes, e a falta da segunda
+foi o que fez o `/fontes` de um episódio estourar o tempo do frontend.
+
+Cada degrau já tinha o seu teto — `TORRENTS_TEMPO_LIMITE` por requisição,
+`TORRENTS_PROXY_NATIVO_TIMEOUT` para o socorro pelo FlareSolverr e
+`TORRENTS_TORZNAB_ORCAMENTO` para o indexador —, mas os tetos não conversavam
+entre si. Um provedor bloqueado custa a tentativa direta (até 15 s) **mais** o
+socorro pelo FlareSolverr (até 70 s), e isso se repete a cada termo do episódio.
+Como a cascata é sequencial, o pior caso é a **soma** de tudo — e essa soma não
+tinha limite nenhum. Com os termos de episódio passando de dez e quatro provedores
+por nome, o `/fontes` ultrapassava os 60 s de `TIMEOUT_REQUISICAO_MS` e a
+requisição era cancelada antes de a lista chegar à tela.
+
+O [`OrcamentoBusca`](../backend/app/Services/Torrents/OrcamentoBusca.php:1) é o
+relógio único que a busca inteira enxerga. Ele é registrado como **singleton** no
+[`AppServiceProvider`](../backend/app/Providers/AppServiceProvider.php:13) de
+propósito: o catálogo e o cliente HTTP precisam ver o **mesmo** prazo, senão o
+socorro pelo FlareSolverr começaria uma espera de 70 s a poucos segundos do fim.
+
+O ciclo é curto:
+
+1. [`CatalogoProvedores::buscar()`](../backend/app/Services/Torrents/CatalogoProvedores.php:196)
+   abre o orçamento com `TORRENTS_ORCAMENTO_BUSCA` (padrão `45`).
+2. Antes de cada termo, antes de cada degrau **e antes de cada provedor dentro de
+   uma rodada**, a cascata consulta
+   [`orcamentoEsgotado()`](../backend/app/Services/Torrents/CatalogoProvedores.php:365);
+   ao estourar, para onde está e devolve o que já recolheu. A checagem dentro da
+   rodada é o que fecha a última brecha: sem ela, uma rodada iniciada a segundos do
+   fim ainda percorria todos os provedores restantes, e a soma deles estourava o
+   tempo do frontend mesmo com o orçamento global em 45 s.
+3. O [`ClienteHttp`](../backend/app/Services/Torrents/ClienteHttp.php:250) limita o
+   socorro pelo FlareSolverr ao que resta do orçamento — um `maxTimeout` de 70 s
+   não pode começar quando faltam 3 s. O mesmo corte vale para a **tentativa
+   direta**: [`tempoDisponivel()`](../backend/app/Services/Torrents/ClienteHttp.php:165)
+   encolhe o `tempo_limite` de cada requisição ao que sobra, e uma requisição que
+   já nasce fora do prazo nem começa.
+4. O [`TorznabService`](../backend/app/Services/TorznabService.php:116) também
+   enxerga o relógio: o prazo do degrau passa a ser o menor entre o próprio
+   (`TORRENTS_TORZNAB_ORCAMENTO`) e o que resta da busca inteira.
+5. [`encerrar()`](../backend/app/Services/Torrents/CatalogoProvedores.php:549)
+   fecha o orçamento. É o único ponto por onde todos os desfechos passam; deixá-lo
+   de pé faria a próxima busca herdar um relógio já vencido.
+
+##### O orçamento precisa alcançar também os provedores de pool
+
+O relógio só vale se **todos** os provedores o enxergarem. O `ClienteHttp` cobre
+quem faz requisição por ele — o [`ProvedorTrackersBr`](../backend/app/Services/Torrents/ProvedorTrackersBr.php:344)
+é o caso —, mas os provedores que disparam vários termos de uma vez com
+`Http::pool` montavam o próprio `PendingRequest` e nunca liam o prazo. Eram eles:
+[`ProvedorKnaben`](../backend/app/Services/Torrents/ProvedorKnaben.php:103),
+[`ProvedorApibay`](../backend/app/Services/Torrents/ProvedorApibay.php:148),
+[`ProvedorBt4g`](../backend/app/Services/Torrents/ProvedorBt4g.php:119),
+[`ProvedorTorrentio`](../backend/app/Services/Torrents/ProvedorTorrentio.php:53) e
+[`ProvedorAddonStremio`](../backend/app/Services/Torrents/ProvedorAddonStremio.php:57).
+O sintoma era o pior possível: a cascata achava que o prazo tinha acabado e
+encerrava, enquanto um pool aberto segundos antes ainda esperava os 15 s cheios
+por termo — o tempo gasto não voltava e a lista saía curta.
+
+A ponte é a trait [`ConsultaComOrcamento`](../backend/app/Services/Torrents/ConsultaComOrcamento.php:1),
+que dá a esses provedores duas leituras do mesmo relógio:
+
+- [`tempoDeConsulta()`](../backend/app/Services/Torrents/ConsultaComOrcamento.php:22)
+  devolve o **menor** entre o teto do provedor e o que resta do orçamento. É esse
+  número que vira o `timeout` do pool. Um provedor que já nasce fora do prazo
+  devolve `0` e nem abre a conexão.
+- [`temOrcamento()`](../backend/app/Services/Torrents/ConsultaComOrcamento.php:40)
+  responde se ainda cabe tentar — usado no socorro termo a termo do Knaben pelo
+  FlareSolverr, que é caro e não pode começar a segundos do fim.
+
+O `OrcamentoBusca` é injetado no construtor de cada um desses provedores. Como é
+singleton, todos leem o **mesmo** relógio que o `CatalogoProvedores` abriu.
+
+##### A rodada de abertura: os primários por nome correm junto com os por identificador
+
+Fechar o orçamento não bastava. A cascata consultava os provedores **por
+identificador** (Torrentio, addons Stremio) sozinhos no primeiro termo e só
+depois checava `coletaSuficiente()`. Como o Torrentio responde rápido e costuma
+trazer PT-BR, a meta batia e a busca encerrava **antes** de perguntar aos
+primários por nome — e o Knaben, que é justamente quem enxerga os packs nacionais
+das séries antigas, nunca era consultado. O sintoma que o usuário relatou foi
+exato: "achou 3 fontes, dubladas, mas todas do Torrentio; antes vinha do Knaben
+também".
+
+A correção tem duas partes, em
+[`buscar()`](../backend/app/Services/Torrents/CatalogoProvedores.php:196):
+
+1. O primeiro termo virou uma **rodada de abertura** que consulta os dois grupos
+   antes de qualquer corte. Os primários por nome vêm **primeiro**, e não por
+   acaso: o [`jaTemEpisodioAproveitado()`](../backend/app/Services/Torrents/CatalogoProvedores.php:690)
+   lê o censo **inteiro**, então se o Torrentio rodasse antes e marcasse uma
+   fonte, os termos de pack/série dos primários seriam pulados na mesma rodada.
+   Rodando os primários primeiro, o Knaben recebe o degrau completo antes de
+   qualquer contagem.
+2. O [`buscarGrupo()`](../backend/app/Services/Torrents/CatalogoProvedores.php:789)
+   ganhou o parâmetro `$dispensarSocorro`. Na abertura ele vai `true` para os
+   primários: mesmo que um deles já tenha achado episódio, os demais ainda
+   recebem os termos de pack/série, porque é a **única** chance que têm de achar
+   o pack. Nos termos seguintes o parâmetro fica `false` e o corte de economia
+   volta a valer — quem tem episódio vivo não precisa do pack.
+
+O laço de termos começa em `array_slice($titulos, 1)`: o primeiro já foi coberto
+pela abertura. Depois do laço, um `coletaSuficiente()` decide se vale descer ao
+indexador — o corte que antes acontecia dentro do laço passa a valer só depois de
+todos os primários terem respondido.
+
+Ao estourar, sai uma linha de aviso com o degrau onde a busca parou:
+
+```text
+Orçamento da busca de torrents esgotado; devolvendo o que foi recolhido. {"degrau":"nativos","orcamento":45}
+```
+
+O valor é o teto que manda: os orçamentos por degrau (`TORRENTS_TORZNAB_ORCAMENTO`,
+por exemplo) só apertam **dentro** dele. Ajuste `TORRENTS_ORCAMENTO_BUSCA` para
+baixo se o frontend reclamar de lentidão, ou para cima se a lista vier curta demais
+por corte de tempo — mas mantenha-o abaixo de `TIMEOUT_REQUISICAO_MS` (`60000` no
+frontend), senão o corte acontece do lado de lá e a lista se perde.
+
+##### O socorro do FlareSolverr não pode ser termo a termo
+
+O orçamento explicava o corte, mas não o **tamanho** da espera. A requisição de
+`/fontes` ainda levava ~47 s mesmo com o relógio em 45 s, e a cobertura mostrava
+onde o tempo morria:
+
+```text
+bt4g: sem_resultado, 1 consulta, ms=30501
+knaben: com_fonte, 1 consulta, ms=15030
+```
+
+Os dois provedores que usam `Http::pool` gastavam, sozinhos, mais que o orçamento
+inteiro. A causa não estava no pool — um teste direto devolvia `403` em 0,26 s —,
+mas no **socorro pelo FlareSolverr**, que rodava **termo a termo**. Cada chamada
+ao navegador custa de 12 a 17 s, e o BT4G multiplicava isso por três termos.
+
+Pior: o socorro era inútil. O `403` do BT4G é o Cloudflare barrando o acesso
+direto, e o navegador do FlareSolverr esbarra no **mesmo** desafio — nos testes
+ele devolveu `500` depois de ~12 s. Ou seja, pagava-se o preço do navegador para
+colher exatamente o mesmo bloqueio.
+
+A correção separa dois cenários que antes eram tratados como um só, em
+[`ProvedorBt4g::baixar()`](../backend/app/Services/Torrents/ProvedorBt4g.php:119)
+e [`ProvedorKnaben::buscarVarios()`](../backend/app/Services/Torrents/ProvedorKnaben.php:103):
+
+- **Chegou resposta HTTP** — inclusive um `403` — significa que o espelho está de
+  pé e quem barrou foi o Cloudflare. O FlareSolverr não passa por ele, então o
+  socorro é **pulado**. É o que a flag `$respondeu` registra.
+- **Nenhuma resposta chegou** aponta para bloqueio de rede, que o navegador
+  **pode** contornar. Só aí o FlareSolverr entra — e com **um único termo**
+  (`$termos[0]`), não com a lista inteira.
+
+```php
+$respondeu = true; // qualquer resposta HTTP prova que o espelho está de pé
+
+if ($htmls === [] && ! $respondeu && $this->cliente->proxyDisponivel()) {
+    // só aqui vale abrir o navegador — e só para o primeiro termo
+}
+```
+
+O resultado da mudança foi imediato: a mesma busca caiu de **46,7 s para 23,1 s**,
+com o BT4G respondendo em 696 ms (quatro consultas) e o Knaben em 2,2 s — e as
+fontes continuaram chegando. O tempo que sobra agora é do Torznab (8,8 s), que é
+o degrau caro por natureza e já respeita o orçamento.
+
+##### A busca percorre todos os provedores, e não para na primeira meta
+
+O corte por meta tinha um efeito colateral que só apareceu no uso real: assim que
+a cascata juntava `meta_pt_br_coleta` fontes PT-BR, ela **encerrava** — e os
+provedores que ainda não tinham sido perguntados ficavam de fora. O sintoma era
+uma lista inteira vinda de um provedor só, quando outros tinham material que
+nunca chegou a ser consultado.
+
+O comportamento padrão passou a ser o de **percorrer o registro inteiro**. A
+chave é [`buscar_todos`](../backend/config/services.php:353)
+(`TORRENTS_BUSCAR_TODOS`, ligada por padrão), lida pelo helper
+[`buscarTodos()`](../backend/app/Services/Torrents/CatalogoProvedores.php:700).
+Com ela ligada, a meta PT-BR deixa de encerrar a busca: ela só marca o ponto em
+que não vale mais insistir nos termos restantes do degrau atual. Quem decide
+quando parar é o orçamento.
+
+O que faz a busca **avançar** de um provedor para o outro é o
+[`suficientePorProvedor()`](../backend/app/Services/Torrents/CatalogoProvedores.php:753):
+um provedor que já rendeu `fontes_suficientes_por_provedor` fontes (padrão 4) é
+deixado de lado — não por ter falhado, mas por já ter dado o que tinha —, e a vez
+passa ao próximo. Quem não tem fonte ou está indisponível é pulado na hora, sem
+consumir o orçamento.
+
+O efeito prático, medido na busca de AHS S01E02:
+
+```text
+torrentio      : com_fonte         | 1 consulta  |  333 ms
+addon_stremio  : barrado_no_filtro | 1 consulta  |  563 ms
+trackers_br    : sem_credencial    | 0 consultas |    0 ms
+apibay         : com_fonte         | 1 consulta  | 3588 ms
+knaben         : com_fonte         | 1 consulta  | 1569 ms
+bt4g           : sem_resultado     | 4 consultas | 1606 ms
+torznab        : sem_resultado     | 4 consultas | 8094 ms
+yts            : sem_resultado     | 1 consulta  |    0 ms
+```
+
+Nenhum provedor ficou `nao_consultado`: os oito foram visitados. O preço é a
+latência — a busca fria leva ~27 s em vez de encerrar cedo —, e por isso o
+orçamento global continua sendo o freio. Se precisar do comportamento antigo, de
+resposta rápida com o primeiro acerto, basta desligar `TORRENTS_BUSCAR_TODOS`.
+
 #### A montagem final: idioma manda, pack desempata dentro do idioma
 
 A lista final sai de
-[`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:241), que
+[`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:271), que
 separa as fontes em duas pilhas — **pilha boa** e **reserva** — e ordena as duas
 pela mesma chave de mérito.
 
 A pilha boa é só áudio PT-BR **provado**: dublado e dual áudio. A reserva é todo o
-resto — legendado, original e os packs de idioma não provado. Se a pilha boa
-sozinha alcança o `TORRENTS_MINIMO_FONTES` (padrão `15`), a lista é só ela; se
-**não** alcança, a reserva completa **até o teto** de `LIMITE_FONTES` (`20`) — e
-não até o mínimo, como antes. O piso é piso, não teto: uma série com 17 fontes boas
-volta com 17; um filme só com release em inglês volta com a reserva cheia, para o
-player não ficar sem alternativa.
+resto — legendado, original e os packs de idioma não provado.
+
+Com `TORRENTS_APENAS_PT_BR` ligado (o padrão), a lista final é **só a pilha boa**,
+cortada no teto de `LIMITE_FONTES` (`4`). Não há preenchimento com reserva: quando
+as PT-BR acabam, a lista para. O teto é curto de propósito — o usuário quer poucas
+opções boas, não um catálogo — e pode voltar com menos de quatro, ou até vazia, se
+o provedor não tiver áudio PT-BR provado. A reserva só entra quando **não existe
+nenhuma** fonte PT-BR: aí a lista devolve o que houver, para o player não ficar sem
+alternativa nenhuma.
+
+Esse corte é o que faz o censo bater com a realidade. Antes, o APIBay aparecia como
+`com_fonte` porque a cascata contava as fontes *antes* da montagem; a montagem
+descartava todas (só original, sem PT-BR) e o relatório mentia. Agora o censo é
+reconciliado com a lista que de fato saiu — ver
+[`reconciliarCenso()`](../backend/app/Services/Torrents/CatalogoProvedores.php:544)
+e a situação `descartado_na_montagem` mais abaixo.
 
 A ordem dentro de cada pilha vem de uma chave única,
-[`chaveDeOrdem()`](../backend/app/Services/TorrentService.php:330):
+[`chaveDeOrdem()`](../backend/app/Services/TorrentService.php:389):
 **`[idioma, pack, provedor, -seeds]`**. Ela diz a regra em uma linha:
 
 1. **Idioma manda.** Dublado (0), dual (1), legendado (2) e original (3) saem nessa
@@ -724,7 +1034,7 @@ A ordem dentro de cada pilha vem de uma chave única,
    episódios do Knaben, do TPB+ e do APIBay.
 3. **Provedor em bloco.** Dentro de `(idioma, pack)`, cada provedor fica junto, na
    ordem em que a cascata o consulta
-   ([`ordemDeProvedores()`](../backend/app/Services/TorrentService.php:307)):
+   ([`ordemDeProvedores()`](../backend/app/Services/TorrentService.php:366)):
    Torrentio, addon Stremio, nativos, Torznab e YTS.
 4. **Seeds fecham.** Dentro do bloco, mais seeds primeiro.
 
@@ -788,6 +1098,34 @@ a transição:
   É o log que separa "não existe fonte em PT-BR" de "a ordenação falhou".
 - `Torznab não configurado; a busca usará apenas o YTS (inglês).` — falta a
   `TORRENTS_TORZNAB_KEY` no `.env`.
+
+#### O censo não pode mentir: `descartado_na_montagem`
+
+A cobertura de provedores (`GET /api/filmes/{id}/fontes/cobertura`) conta, por
+provedor, quantas fontes passaram pelo gate da cascata (`aproveitadas`) e quantas
+de fato chegaram à lista final (`na_lista`). A situação de cada provedor sai de
+[`situacaoDoCenso()`](../backend/app/Services/Torrents/CatalogoProvedores.php:637):
+
+| Situação | Quando acontece |
+| --- | --- |
+| `com_fonte` | passou pelo gate **e** tem pelo menos uma fonte na lista final |
+| `descartado_na_montagem` | passou pelo gate, mas a montagem descartou todas |
+| `barrado_no_filtro` | nada passou pelo gate da cascata |
+| `sem_resultado` | o provedor respondeu, mas sem resultado para o título |
+| `nao_consultado` | o orçamento acabou antes de visitá-lo |
+
+O caso `descartado_na_montagem` é o que fecha o furo do APIBay. Ele trazia 15
+fontes para "American Horror Story" S01E01 — todas originais em inglês, com seeds
+reais — e o censo antigo o marcava como `com_fonte`, porque contava as fontes
+*antes* da montagem. A montagem, que só aceita áudio PT-BR provado, descartava
+todas, e o relatório dizia que havia fonte onde a lista estava vazia.
+
+A correção é
+[`reconciliarCenso()`](../backend/app/Services/Torrents/CatalogoProvedores.php:544),
+chamada por [`TorrentService::fontes()`](../backend/app/Services/TorrentService.php:45)
+depois de `ordenar()`: ela zera `na_lista` e recontá-lo a partir da lista que
+realmente saiu. Assim o censo passa a refletir a lista, e não a cascata — um
+provedor só é `com_fonte` se a fonte dele sobreviveu até o fim.
 
 #### O `👤 0` do Torrentio não significa "fonte morta"
 
@@ -1154,18 +1492,16 @@ extremo, quando nem o episódio nem o `S01 completa` acham nada.
 
 O preço da largueza é o falso positivo. Um termo sem `S01E01` também casa *"Freak
 Show"* — que é a 4ª temporada de American Horror Story e não declara número nenhum. Por
-isso as fontes vindas de um termo de série passam por um **gate de temporada** em
-[`CatalogoProvedores::aproveitaveis()`](../backend/app/Services/Torrents/CatalogoProvedores.php:414),
-reconhecidas por
-[`TermosBusca::eTermoDeSerie()`](../backend/app/Services/Torrents/TermosBusca.php:160):
+isso as fontes passam por um **gate de temporada** em
+[`CatalogoProvedores::aproveitaveis()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1162):
 se o release **não** declara episódio e **não** prova a temporada pedida, é descartado.
 É a inversão da regra dos outros cortes — aqui o silêncio não é inocente. O
 reconhecimento sobe pela mesma tubulação do termo de pack: de
-[`CatalogoProvedores::buscar()`](../backend/app/Services/Torrents/CatalogoProvedores.php:106)
+[`CatalogoProvedores::buscar()`](../backend/app/Services/Torrents/CatalogoProvedores.php:196)
 para `buscarGrupo()` e daí para `aproveitaveis()`.
 
 Para o gate reconhecer o pacote multi-temporada,
-[`TermosBusca::temporadaNoRelease()`](../backend/app/Services/Torrents/TermosBusca.php:381)
+[`TermosBusca::temporadaNoRelease()`](../backend/app/Services/Torrents/TermosBusca.php:393)
 passou a ler a **lista** de temporadas: `1ª 2ª 3ª Temporada(s)`, `Temporadas 1, 2 e 3` e
 faixas (`S01-S03`, já cobertas antes). Ficou de fora, de propósito, a faixa crua `1-3`:
 sem palavra-chave, o risco de casar ano, resolução ou tamanho é maior que o ganho.
@@ -1174,11 +1510,103 @@ O contador do gate aparece no log de cada etapa (`termo_serie` e `barradas_gate`
 ele, "0 fontes" no termo de série ficaria indistinguível entre "o provedor não tinha
 nada" e "veio, mas nada provou a temporada".
 
+#### O furo do gate: ele só valia para o termo de série
+
+O gate nasceu amarrado ao termo de série — só as fontes reconhecidas por
+[`TermosBusca::eTermoDeSerie()`](../backend/app/Services/Torrents/TermosBusca.php:160)
+eram confrontadas com a temporada pedida. O termo de **pack** (`S01 completa`) ficava de
+fora, e era justamente por ali que o pack da temporada errada entrava. O caso que expôs
+o furo: uma busca por `S01E01` de *American Horror Story* voltava com três fontes, e uma
+delas era o pack da **2ª** temporada — `American Horror Story.2ª.Temporada.Dual.Áudio.720p.`
+— que, por ter mais seeds e áudio dual, subia ao topo e era a primeira fonte tentada
+pelo player. O episódio aberto era de outra temporada.
+
+Eram dois defeitos somados:
+
+1. **O gate não cobria o termo de pack.** `aproveitaveis()` só rodava a confrontação
+   quando o termo era de série. O pack da 2ª entrou por um termo de pack e passou.
+2. **A leitura da temporada não enxergava o ordinal com ponto.**
+   [`TermosBusca::temporadaDoTitulo()`](../backend/app/Services/Torrents/TermosBusca.php:351)
+   exigia um marcador de pack e usava `\s*` como separador, que não casa o `.` de
+   `2ª.Temporada`. O release declarava a temporada de forma explícita e a leitura
+   devolvia `null` — o gate não tinha o que confrontar.
+
+A correção tem três partes:
+
+- **O gate vale para qualquer termo.** `aproveitaveis()` deixou de receber o
+  `$termoDeSerie` e roda a confrontação para toda fonte, venha ela de termo de pack ou
+  de série. O pack legítimo da 1ª (`1ª Temporada [2011 DUAL AUDIO]`) continua passando
+  porque prova a temporada pedida.
+- **A leitura da temporada ficou independente do marcador de pack.**
+  `temporadaDoTitulo()` não exige mais "completa"/"temporada" e usa `[\s._-]*` como
+  separador, cobrindo `2ª.Temporada`. A ordem das checagens passou a ser a da
+  especificidade — o ordinal antes do "Temporada N" —, e cada padrão exige uma âncora
+  forte (o `S` de release, a palavra-chave ou o ordinal), de modo que o ano do release
+  (`2011`) nunca é lido como temporada.
+- **A montagem final confronta o pack.** Mesmo com PT-BR provado, um pack cuja
+  temporada declarada difere da pedida é descartado em
+  [`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:260), por
+  [`TorrentService::packDaTemporadaErrada()`](../backend/app/Services/TorrentService.php:439).
+  A exceção `TORRENTS_PACKS_QUALQUER_IDIOMA` continua valendo para o pack de idioma
+  **não** provado — o que muda é que a temporada dele também é conferida.
+
+A leitura da temporada no gate usa `temporadaNoRelease()`, e não `temporadaDoTitulo()`,
+porque o pack pode cobrir uma faixa (`1ª 2ª 3ª Temporadas`, `Seasons 1 to 8`): a leitura
+simples devolveria só o primeiro número e reprovaria um pack multi-temporada que inclui a
+pedida. `temporadaNoRelease()` aceita a faixa e só reprova quando a pedida está fora
+dela.
+
+A regressão está travada em
+[`backend/tests/Unit/TermosBuscaTest.php`](../backend/tests/Unit/TermosBuscaTest.php:1):
+o pack da 2ª não pode entrar numa busca da 1ª, o pack da 1ª precisa continuar passando,
+o ano não pode virar temporada e os packs multi-temporada que incluem a pedida seguem
+aceitos. Rode com `docker compose exec backend php vendor/bin/phpunit`.
+
 | Variável | Padrão | O que faz |
 |----------|--------|-----------|
 | `TORRENTS_TERMOS_SERIE_HABILITADO` | `true` | Liga/desliga os termos de série no fim da cascata de episódio. Ligado, acrescenta `"... dublado"`, `"... temporada N"` e `"... SN"` (sem numeração de episódio e sem "completa") depois dos termos de pack; as fontes que vêm deles passam pelo gate de temporada. Desligar restaura a busca anterior sem reverter código. |
 
 ### Ajustes obrigatórios no media-service
+
+#### A paciência com a fonte é ajustável, não fixa
+
+O sistema corta uma fonte por **tempo de espera**, não por velocidade. O
+`TIMEOUT_DADOS_MS` conta a espera pelo **primeiro byte**: uma fonte com poucos
+peers demora a conectar e, depois de conectada, baixa normalmente. Foi assim que
+fontes vivas — que baixam sem problema em qualquer cliente de torrent — eram
+descartadas pelo sistema e o player pulava para a próxima até cancelar.
+
+Os limites agora saem do ambiente, para quem tem fontes lentas mas vivas esticar
+a paciência sem mexer no código.
+
+**No media-service:**
+
+- `MEDIA_TIMEOUT_DADOS_MS` (padrão `30000`) — espera pelo primeiro byte em
+  [`aguardarDados`](../media-service/src/services/sessoes.js:1376).
+- `MEDIA_TIMEOUT_METADADOS_MS` (padrão `20000`) — espera pelos metadados do
+  magnet em [`adicionarTorrent`](../media-service/src/services/sessoes.js:1158) e
+  [`esperarMetadados`](../media-service/src/services/sessoes.js:1189).
+
+**No frontend:**
+
+- `VITE_TIMEOUT_FONTE_MS` (padrão `90000`) — prazo total por fonte em
+  [`aguardarFonte`](../frontend/src/components/PlayerOverlay.vue:1651). Numa
+  conexão de 1 Mbps o buffer inicial do HLS demora bem mais que os 90 s padrão, e
+  uma fonte que baixa normalmente era abandonada no meio do preparo.
+- `VITE_ESTAGNACAO_FONTE_MS` (padrão `20000`) — tempo parado a 0 MB/s antes de
+  trocar de fonte.
+
+Os limites do media-service precisam ficar **abaixo** do `VITE_TIMEOUT_FONTE_MS`,
+para que o backend seja o primeiro a desistir e o overlay receba o motivo real em
+vez de um cancelamento do navegador.
+
+**A estagnação só vale para fonte que nunca entregou um byte.** Uma vez que
+qualquer byte chegou, a fonte provou estar viva e não é mais abandonada por
+estagnação — segue só sob o `VITE_TIMEOUT_FONTE_MS`. Sem essa trava, a velocidade
+oscilava até zero entre ciclos enquanto o WebTorrent negociava, e uma conexão
+lenta derrubava fontes boas no meio de um download que estava andando. A marca
+`jaEntregouBytes` em [`aguardarFonte`](../frontend/src/components/PlayerOverlay.vue:1662)
+é o que separa "fonte morta" de "fonte lenta".
 
 Problemas de ambiente e de streaming encontrados na validação, já tratados:
 
@@ -1541,6 +1969,157 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   [`index.js`](../media-service/src/index.js:1) apenas registram o erro e deixam
   o processo seguir, então uma exceção não tratada pode deixar o serviço num
   estado inconsistente antes de o contêiner reiniciar.
+
+#### Trocar de episódio não pode tocar o anterior
+
+O overlay do player observava o **booleano** `aberto` (`props.filme !== null`) para
+decidir quando começar e quando limpar. Isso bastava enquanto o único caminho era
+"abre o player, fecha o player": o valor ia de `false` a `true` e o watcher
+disparava. O problema apareceu na série, quando o usuário fecha o episódio 1 e
+escolhe o episódio 2: o pai troca o objeto de uma vez, sem passar por `null`, e o
+booleano continua `true`. O watcher não via mudança nenhuma — a sessão do episódio
+1 seguia viva no media-service e o player nunca era reconstruído, então o episódio
+2 tocava o episódio 1.
+
+A correção troca o gatilho pelo **conteúdo**: o watcher observa
+[`props.filme`](../frontend/src/components/PlayerOverlay.vue:1991) inteiro. Cada
+episódio é um objeto novo, então a troca sempre conta como caso novo.
+
+##### A limpeza mora num lugar só
+
+A primeira tentativa limpava o título anterior dentro do próprio watcher, e só
+quando havia um valor anterior não nulo. Isso deixava de fora o caminho mais
+comum: **fechar o player** (a prop vira `null`) e **reabrir** outro episódio. Nesse
+caso o watcher chega com o valor anterior `null`, a limpeza era pulada, e o
+`<video>` do episódio anterior continuava montado — com o estado ainda em
+`reproduzindo`. O player novo reaproveitava o mesmo nó e o episódio 2 tocava o
+episódio 1.
+
+Agora a limpeza é incondicional e vive no começo de
+[`iniciar()`](../frontend/src/components/PlayerOverlay.vue:1879): ele chama
+`destruirPlayer()` e `await limparSessao()` antes de qualquer outra coisa. Os dois
+caminhos — troca direta e reabertura após fechar — passam pelo mesmo ponto, sem
+assimetria.
+
+##### Abertura e geração são contadores diferentes
+
+Havia ainda uma corrida sutil. `limparSessao()` avançava a geração para invalidar
+os passos assíncronos do fluxo que saía. Mas o fluxo novo capturava a geração
+**depois** da limpeza, e a limpeza faz uma chamada de rede (`await
+encerrarSessao`). Se outra abertura começasse durante essa espera, o fluxo antigo
+acordaria com um número maior que o do novo e se acharia o corrente — sobrescrevendo
+o player do episódio recém-aberto.
+
+A solução separa as duas responsabilidades:
+
+- **`abertura`** ([`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:151))
+  é a identidade da abertura. Só avança em `iniciar()`, uma vez por abertura, e é o
+  que os passos assíncronos comparam para saber se ainda são os correntes.
+- **`geracao`** continua invalidando os passos do fluxo que sai, mas agora só é
+  avançada por `iniciar()`, **depois** da limpeza. `limparSessao()` não mexe mais
+  nela — apenas marca `cancelado`, limpa os timers e encerra a sessão no servidor.
+
+Assim, cada abertura tem uma identidade estável desde o primeiro instante, e a
+limpeza do episódio anterior nunca derruba o episódio novo.
+
+##### O pack PT-BR numera o episódio sem "SxxExx"
+
+Mesmo com o player reconstruído e a numeração certa chegando ao media-service, o
+episódio continuava errado — e o log provou por quê:
+
+```
+[WARN] [torrent] nenhum arquivo casa S1E4; usando o maior vídeo do pacote
+[INFO] [sessao ...] episódio S01E04 -> arquivo ".../12 - Afterbirth.mp4"
+```
+
+O pack dublado **"American Horror Story 1ª Temporada [2011 DUAL ÁUDIO] 720p PT
+BR"** nomeia os arquivos como `12 - Afterbirth.mp4` — número do episódio, um
+separador e o título. Não há `S01E04` em lugar nenhum. O
+[`caminhoCorrespondeAoEpisodio()`](../media-service/src/services/sessoes.js:1294)
+não reconhecia esse formato, caía no fallback "maior vídeo do pacote" e devolvia
+**sempre o mesmo arquivo** — o maior, que por acaso era o `12 - Afterbirth.mp4`.
+Daí a impressão de que "sempre executa o ep 1": na verdade era sempre o mesmo
+arquivo do pack, qualquer que fosse o episódio pedido.
+
+A correção ancora o número no **começo do nome do arquivo** (depois da última
+barra), seguido de um separador:
+
+```js
+new RegExp(`^0*${episodio}\\s*[-._]\\s*\\S`, 'i')
+```
+
+A âncora e o separador obrigatório são o que separam o episódio da resolução:
+sem eles, `720p` casaria o episódio 7 e `1080p` o episódio 10. O separador
+obrigatório já fecha essa brecha, então o lookahead `(?!p\b)` foi **removido** —
+ele barrava títulos legítimos que começam com "P" ("Pilot", "Parte", "Prólogo"),
+e era por isso que `01 - Pilot.mp4` não casava e o fallback escolhia o maior
+vídeo do pacote (o episódio errado). O padrão cobre `12 - Título`, `2. Título`,
+`2_Título` e `01 - Pilot`, e convive com os formatos antigos (`S01E02`, `1x02`,
+`Episódio 02`, `Capítulo 02`) e com o prefixo `Ep 01`.
+
+#### O pack da 2ª temporada invadia a 1ª quando o `release` era o nome do arquivo
+
+O gate de temporada julgava a fonte por **um** nome só — `release ?? titulo`. Nos
+provedores por identificador o `release` é o nome do torrent (a primeira linha do
+rótulo), mas em alguns provedores ele acaba sendo o nome do **arquivo interno**.
+O log mostrou o caso exato:
+
+```
+[sessao 0d901920] episódio S01E01 -> arquivo "American Horror Story.2ª.Temporada.Dual.Áudio.720p.By.Luan.Harper/2x13 - Madness Ends (Season Finale).mp4"
+```
+
+O `release` era `2x13 - Madness Ends` e o `titulo` era o nome do torrent
+(`2ª.Temporada`). Como `numeracaoDoTitulo('2x13 - Madness Ends')` devolve
+temporada=2, episódio=13, o código tratava a fonte como "episódio mal marcado" e
+**nunca a marcava como pack** — então a defesa final (`packDaTemporadaErrada()`),
+que só julga packs, nem era acionada. O pack dual da 2ª, com mais seeds, subia ao
+topo de uma busca da 1ª.
+
+A correção lê **os dois nomes** em três pontos — [`marcarPacks()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1118),
+o gate de [`aproveitaveis()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1241)
+e a defesa final [`packDaTemporadaErrada()`](../backend/app/Services/TorrentService.php:440).
+Dois helpers novos em [`TermosBusca`](../backend/app/Services/Torrents/TermosBusca.php:505)
+concentram a leitura:
+
+- `temporadaDosNomes()` — devolve a temporada declarada por **qualquer** dos
+  nomes. Um nome que declara "2ª Temporada" prova a temporada mesmo que outro
+  traga "2x13".
+- `algumNomeCobreTemporada()` — responde se a temporada pedida está coberta por
+  algum nome, inclusive faixas ("1ª 2ª 3ª Temporadas").
+
+Só quando **nenhum** nome declara temporada é que a numeração de episódio volta a
+decidir — o comportamento de antes, para não apagar episódios legítimos.
+
+#### "Temporadas 720p" era lido como temporada 72
+
+Ao cobrir o caso acima, os testes revelaram um bug pré-existente na leitura de
+faixa. A regex de "Temporada 1 / Season 1" tinha o `s?` opcional e um `\s*`
+solto: em "American Horror Story 1ª 2ª 3ª **Temporadas 720p**" ela consumia o "s"
+de "Temporadas" e pulava para a resolução, capturando `72`. Com o 72 na lista,
+`max($numeros)` virava 72 e **qualquer** temporada "cabia" na faixa — o gate
+aprovava o que devia reprovar.
+
+A correção acrescenta o lookahead `(?![\d p])` nas duas leituras (a simples e a
+de lista), rejeitando tanto o dígito seguinte ("720" não vira "72") quanto a
+resolução colada ("720p"). A leitura de faixa ("Seasons 1 to 8") também passou a
+vir **antes** do corte de lista vazia: em "Seasons 1 to 8" a regex de lista não
+casa nada (o "1" é seguido de " to", não de vírgula), e o early-return apagaria o
+pack antes de a faixa ser lida.
+
+#### O arquivo completo que o ffprobe recusa não é "cabeçalho ilegível"
+
+O erro dominante nos logs era `ffprobe exited with code 1`, reportado como "Não
+foi possível ler o cabeçalho do vídeo". A causa é que
+[`analisarComEspera()`](../media-service/src/services/sessoes.js:1470) desiste
+quando `arquivo.progress >= 1` e lança a mesma mensagem para dois desfechos
+distintos: o arquivo que **nunca terminou de baixar** (fonte lenta) e o arquivo
+**completo que o ffprobe recusou** (corrompido, falso vídeo ou o episódio errado
+escolhido pelo fallback). A mensagem agora separa os dois casos e registra o nome
+do arquivo no log:
+
+```
+[torrent] arquivo completo mas ilegível: "12 - Afterbirth.mp4" (1234567 bytes) — ffprobe exited with code 1
+```
 
 ### Endereço do media-service no frontend
 
