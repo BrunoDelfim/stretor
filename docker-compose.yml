@@ -56,10 +56,22 @@ services:
       # Categoria Torznab de séries (5000 = TV). Sem ela, o Prowlarr filtraria
       # um episódio pela categoria de filme e devolveria zero resultados.
       - TORRENTS_TORZNAB_CATEGORIA_SERIE=${TORRENTS_TORZNAB_CATEGORIA_SERIE:-5000}
+      # Orçamento da busca inteira, em segundos — os três degraus somados. Cada
+      # degrau tinha o seu teto, mas os tetos não conversavam: um provedor
+      # bloqueado custa a tentativa direta mais o socorro pelo FlareSolverr, e
+      # isso se repete a cada termo do episódio. Como a cascata é sequencial, o
+      # pior caso é a soma de tudo, e essa soma não tinha limite. Ao estourar,
+      # a busca para onde está e devolve o que já recolheu.
+      - TORRENTS_ORCAMENTO_BUSCA=${TORRENTS_ORCAMENTO_BUSCA:-45}
       # Orçamento do degrau do indexador, em segundos. É o teto que impede a
       # varredura sequencial dos indexadores de passar dos 60s de espera do
       # frontend — sem ele, a busca de episódio era cancelada pelo navegador.
-      - TORRENTS_TORZNAB_ORCAMENTO=${TORRENTS_TORZNAB_ORCAMENTO:-20}
+      - TORRENTS_TORZNAB_ORCAMENTO=${TORRENTS_TORZNAB_ORCAMENTO:-8}
+      # Fontes aproveitadas de um provedor a partir das quais ele para de ser
+      # perguntado nos termos seguintes. Numa série nova os termos passam de vinte
+      # e a soma das rodadas estoura a espera do frontend; o corte por provedor
+      # derruba o número de requisições sem mexer na ordem final da lista.
+      - TORRENTS_FONTES_SUFICIENTES_POR_PROVEDOR=${TORRENTS_FONTES_SUFICIENTES_POR_PROVEDOR:-4}
       # Usados pelo comando `prowlarr:provisionar` na subida do container.
       - PROWLARR_URL=${PROWLARR_URL:-http://prowlarr:9696}
       # Sem este caminho o provisionamento não acha o config.xml, não descobre a
@@ -78,16 +90,40 @@ services:
       # false pula o registro do proxy: os indexadores protegidos voltam a ficar
       # apenas cadastrados, sem funcionar.
       - PROWLARR_PROXY_ATIVO=${PROWLARR_PROXY_ATIVO:-true}
+      # Socorro pelo FlareSolverr também na busca nativa (degrau 1). Sem isto, os
+      # provedores nativos falam HTTP direto e batem de frente no Cloudflare — foi
+      # assim que o BT4G passou a responder 403 e os trackers PT-BR sumiram. Com
+      # isto ligado, o ClienteHttp reenvia pelo FlareSolverr o que vier bloqueado.
+      - TORRENTS_PROXY_NATIVO=${TORRENTS_PROXY_NATIVO:-true}
+      - TORRENTS_PROXY_NATIVO_TIMEOUT=${TORRENTS_PROXY_NATIVO_TIMEOUT:-70}
       # Reserva de torrents (YTS) usada quando o indexador não responde.
       - TORRENTS_BASE_URL=${TORRENTS_BASE_URL:-https://yts.gg}
       - TORRENTS_CACHE_TTL=${TORRENTS_CACHE_TTL:-1800}
       # Idiomas pedidos ao Torrentio. Sem isso ele responde só com o catálogo
       # padrão (quase todo em inglês) e as séries não trazem fonte dublada.
       - TORRENTS_TORRENTIO_IDIOMAS=${TORRENTS_TORRENTIO_IDIOMAS:-portuguese}
+      # Endereços e limites dos provedores nativos do degrau 1. Sem estas no
+      # environment, o container cai nos padrões do config/services.php e o valor
+      # do .env da raiz não chega a valer — o mesmo furo que deixou a Fase 1
+      # inerte. Os trackers PT-BR nascem vazios de propósito (os domínios antigos
+      # morreram); preencha no .env para reativar.
+      - TORRENTS_TRACKERS_BR_URLS=${TORRENTS_TRACKERS_BR_URLS:-}
+      - TORRENTS_TRACKERS_BR_BUSCA=${TORRENTS_TRACKERS_BR_BUSCA:-index.php}
+      - TORRENTS_APIBAY_URL=${TORRENTS_APIBAY_URL:-https://apibay.org}
+      - TORRENTS_TORRENTIO_URL=${TORRENTS_TORRENTIO_URL:-https://torrentio.strem.fun}
+      - TORRENTS_BT4G_URLS=${TORRENTS_BT4G_URLS:-https://bt4gprx.com}
+      - TORRENTS_MAX_DETALHES_BUSCA=${TORRENTS_MAX_DETALHES_BUSCA:-16}
+      - TORRENTS_TEMPO_LIMITE=${TORRENTS_TEMPO_LIMITE:-15}
+      - TORRENTS_ACERVO_MUNDIAL_TEMPO_LIMITE=${TORRENTS_ACERVO_MUNDIAL_TEMPO_LIMITE:-8}
+      - TORRENTS_USER_AGENT=${TORRENTS_USER_AGENT:-Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36}
       # Corte de idioma e a exceção do pack de temporada. Sem estas três no
       # environment, o container cai no padrão do config/services.php e o valor
       # do .env da raiz não chega a valer — foi o que deixou a Fase 1 inerte.
       - TORRENTS_APENAS_PT_BR=${TORRENTS_APENAS_PT_BR:-true}
+      # Corte duro de idioma: descarta original e legendado da lista final,
+      # deixando só dublado e dual áudio. Sem esta linha no environment, o valor
+      # do .env da raiz não chega ao container.
+      - TORRENTS_SOMENTE_PT_BR_OU_LEGENDADO=${TORRENTS_SOMENTE_PT_BR_OU_LEGENDADO:-true}
       - TORRENTS_PACKS_HABILITADOS=${TORRENTS_PACKS_HABILITADOS:-true}
       - TORRENTS_PACKS_QUALQUER_IDIOMA=${TORRENTS_PACKS_QUALQUER_IDIOMA:-true}
       # Termos de série no fim da cascata: sem numeração e sem "completa", é o
@@ -112,6 +148,14 @@ services:
       - TORRENTS_INSPECAO_PACKS_LIMITE=${TORRENTS_INSPECAO_PACKS_LIMITE:-6}
       - TORRENTS_INSPECAO_TIMEOUT=${TORRENTS_INSPECAO_TIMEOUT:-12}
       - TORRENTS_INSPECAO_CACHE_TTL=${TORRENTS_INSPECAO_CACHE_TTL:-86400}
+      # Cobertura completa: com a meta PT-BR batida, ainda desce os degraus
+      # restantes (indexador e YTS) para que todo provedor seja consultado ao
+      # menos uma vez — é o que o relatório de cobertura usa como prova.
+      - TORRENTS_COBERTURA_COMPLETA=${TORRENTS_COBERTURA_COMPLETA:-false}
+      # Buscar em todos os provedores: a meta PT-BR deixa de encerrar a busca e a
+      # cascata percorre o registro inteiro, deixando cada provedor de lado só
+      # depois que ele rendeu TORRENTS_FONTES_SUFICIENTES_POR_PROVEDOR fontes.
+      - TORRENTS_BUSCAR_TODOS=${TORRENTS_BUSCAR_TODOS:-true}
     depends_on:
       init:
         condition: service_completed_successfully
@@ -168,6 +212,13 @@ services:
     environment:
       - VITE_API_URL=${VITE_API_URL:-http://localhost/api}
       - VITE_MEDIA_SERVICE_URL=${VITE_MEDIA_SERVICE_URL:-http://localhost/media}
+      # Paciência do player com uma fonte. Numa conexão lenta o buffer inicial do
+      # HLS demora mais que os 90 s padrão e uma fonte boa era abandonada no meio
+      # do preparo. Estes valores precisam ser maiores que os do media-service
+      # (MEDIA_TIMEOUT_*), para que o backend desista primeiro e o overlay receba
+      # o motivo real em vez de um cancelamento do navegador.
+      - VITE_TIMEOUT_FONTE_MS=${VITE_TIMEOUT_FONTE_MS:-90000}
+      - VITE_ESTAGNACAO_FONTE_MS=${VITE_ESTAGNACAO_FONTE_MS:-20000}
     depends_on:
       init:
         condition: service_completed_successfully
@@ -198,6 +249,13 @@ services:
       - PORT=3000
       - REDIS_URL=redis://redis:6379
       - STORAGE_PATH=/app/storage
+      # Paciência do media-service com fontes de poucos peers. O timeout de
+      # dados mede a espera pelo primeiro byte, não a velocidade: uma fonte
+      # lenta mas viva demora a conectar e depois baixa normalmente, e era
+      # justamente ela que o corte de 30 s matava. Estes valores ficam abaixo
+      # do TIMEOUT_FONTE_MS do frontend (90 s) para o backend desistir primeiro.
+      - MEDIA_TIMEOUT_DADOS_MS=${MEDIA_TIMEOUT_DADOS_MS:-30000}
+      - MEDIA_TIMEOUT_METADADOS_MS=${MEDIA_TIMEOUT_METADADOS_MS:-20000}
     depends_on:
       init:
         condition: service_completed_successfully

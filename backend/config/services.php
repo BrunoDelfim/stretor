@@ -147,11 +147,73 @@ return [
         // Tempo limite, em segundos, de cada requisição HTTP a um provedor.
         'tempo_limite' => (int) env('TORRENTS_TEMPO_LIMITE', 15),
 
+        /*
+         * Teto próprio dos provedores de acervo mundial (BT4G e APIBay).
+         *
+         * Eles varrem a rede DHT inteira e são os mais lentos da cascata: nos
+         * testes, o BT4G gastou 30 s (dois espelhos) para devolver zero fontes
+         * PT-BR, e o APIBay 19 fontes em 351 ms. Como a rodada de abertura é
+         * sequencial, um BT4G lento consumia o orçamento inteiro e os provedores
+         * por identificador (Torrentio, addons Stremio) ficavam `nao_consultado`
+         * — o inverso do problema que a rodada de abertura veio resolver.
+         *
+         * O teto curto não os descarta: eles continuam sendo perguntados, só não
+         * podem segurar a rodada sozinhos. O Knaben, que é quem traz os packs
+         * nacionais, mantém o teto cheio (`tempo_limite`).
+         */
+        'acervo_mundial_tempo_limite' => (int) env('TORRENTS_ACERVO_MUNDIAL_TEMPO_LIMITE', 8),
+
+        /*
+         * Socorro pelo FlareSolverr na busca nativa (degrau 1).
+         *
+         * O FlareSolverr sempre esteve no stack, mas só servia ao Prowlarr: os
+         * provedores nativos falavam HTTP direto e batiam de frente no
+         * Cloudflare. Foi assim que o BT4G passou a responder 403 e os trackers
+         * PT-BR sumiram. Com isto ligado, o [`ClienteHttp`] tenta a requisição
+         * direta e, quando ela vem bloqueada (403/429/503 ou a página "Just a
+         * moment..."), reenvia pelo FlareSolverr — que abre um navegador e
+         * resolve o desafio. É o mesmo caminho que o Stremio usa por baixo.
+         *
+         * Desligado, os provedores voltam ao HTTP direto de antes. Sem
+         * `FLARESOLVERR_URL` configurada, o socorro simplesmente não acontece e
+         * nada quebra.
+         */
+        'proxy_nativo' => (bool) env('TORRENTS_PROXY_NATIVO', true),
+
+        /*
+         * Teto, em segundos, da chamada ao FlareSolverr. Ele abre um Chromium e
+         * resolve o desafio, o que leva bem mais que uma requisição comum; o
+         * valor fica acima do `maxTimeout` que enviamos a ele, para que o erro
+         * venha dele (com diagnóstico) e não de um corte nosso.
+         */
+        'proxy_nativo_timeout' => (int) env('TORRENTS_PROXY_NATIVO_TIMEOUT', 70),
+
         // Vários trackers respondem 403 para cliente sem User-Agent de navegador.
         'user_agent' => env(
             'TORRENTS_USER_AGENT',
             'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
         ),
+
+        /*
+         * Orçamento de tempo, em segundos, para a busca inteira — os três degraus
+         * somados.
+         *
+         * Cada degrau já tinha o seu próprio teto, mas os tetos não conversavam:
+         * um provedor bloqueado custa o `tempo_limite` da tentativa direta mais o
+         * `proxy_nativo_timeout` do socorro pelo FlareSolverr, e isso se repete a
+         * cada termo do episódio. Como a cascata é sequencial, o pior caso é a
+         * soma de tudo — e essa soma não tinha limite nenhum. O resultado era o
+         * `/fontes` passar dos 60 s que o frontend espera
+         * (`TIMEOUT_REQUISICAO_MS`) e a requisição ser cancelada antes de a lista
+         * chegar à tela.
+         *
+         * Este é o único relógio que a busca inteira enxerga: o
+         * [`CatalogoProvedores`] o abre no início e o fecha na saída, e o
+         * [`ClienteHttp`] o consulta para não iniciar um socorro de 70 s a poucos
+         * segundos do fim. Ao estourar, a cascata para onde está e devolve o que
+         * já recolheu — uma lista parcial é melhor do que nenhuma.
+         */
+        'orcamento_busca' => (int) env('TORRENTS_ORCAMENTO_BUSCA', 45),
 
         // --- Degrau 2: indexador Torznab (Prowlarr) ---
 
@@ -186,7 +248,7 @@ return [
          * chegar à tela. Ao estourar o orçamento, o degrau para e devolve o que
          * já recolheu: perder um indexador é melhor do que perder a busca.
          */
-        'torznab_orcamento' => (int) env('TORRENTS_TORZNAB_ORCAMENTO', 20),
+        'torznab_orcamento' => (int) env('TORRENTS_TORZNAB_ORCAMENTO', 8),
 
         // --- Degrau 3: YTS (reserva em inglês) ---
 
@@ -205,6 +267,23 @@ return [
          * legendado/original passar a ser o padrão.
          */
         'apenas_pt_br' => (bool) env('TORRENTS_APENAS_PT_BR', true),
+
+        /*
+         * Corte duro de idioma: só áudio PT-BR provado na lista final.
+         *
+         * O `apenas_pt_br` acima decide *quanto* da reserva entra para completar
+         * o mínimo — mas a reserva ainda carrega original e legendado, o que
+         * enche a lista de releases que o usuário brasileiro não aproveita. Com
+         * esta chave ligada, a montagem final descarta de vez tudo que não seja
+         * áudio PT-BR provado: sobram dublado e dual áudio. O original em inglês
+         * e o legendado (áudio original com legenda PT-BR) somem, mesmo que a
+         * lista fique menor que o mínimo.
+         *
+         * É um corte mais duro que o `apenas_pt_br`: aquele é sobre *quanto* de
+         * reserva entra, este é sobre *se* a reserva entra. Desligue quando
+         * quiser a lista completa de volta, com a reserva no fim.
+         */
+        'somente_pt_br_ou_legendado' => (bool) env('TORRENTS_SOMENTE_PT_BR_OU_LEGENDADO', true),
 
         /*
          * Busca de packs de temporada no fim da cascata de episódio.
@@ -268,8 +347,56 @@ return [
          * completava o resto com original — o que enchia a lista de releases
          * errados. Agora ela segue termo a termo até juntar esta meta ou esgotar
          * os degraus; o que passar disso é reserva.
+         *
+         * Com `buscar_todos` ligado (o padrão), esta meta deixa de encerrar a
+         * busca: ela só marca o ponto em que não vale mais insistir nos termos
+         * restantes do degrau atual. Quem encerra é o orçamento.
          */
         'meta_pt_br_coleta' => (int) env('TORRENTS_META_PT_BR', 6),
+
+        /*
+         * Buscar em todos os provedores, sem encerrar na primeira meta atingida.
+         *
+         * Ligada (padrão), a cascata percorre o registro inteiro: cada provedor
+         * recebe os termos até render `fontes_suficientes_por_provedor` fontes
+         * PT-BR e então é deixado de lado — não por ter falhado, mas por já ter
+         * dado o que tinha —, e a busca segue para o próximo. Um provedor sem
+         * fonte ou indisponível é pulado na hora. O efeito é uma lista montada
+         * com o que **cada** provedor oferece, em vez de parar no primeiro que
+         * bate a meta.
+         *
+         * O preço é latência: como a busca não encerra cedo, o orçamento global
+         * (`orcamento_busca`) passa a ser o único freio. Desligue só se precisar
+         * do comportamento antigo, de resposta rápida com o primeiro acerto.
+         */
+        'buscar_todos' => (bool) env('TORRENTS_BUSCAR_TODOS', true),
+
+        /*
+         * Cobertura completa: descer todos os degraus mesmo com a meta batida.
+         *
+         * Desligada (padrão), a cascata encerra assim que junta `meta_pt_br_coleta`
+         * fontes dubladas — rápida, mas os degraus de baixo nunca são consultados e
+         * o relatório de cobertura os mostra como `nao_consultado`. Ligada, a meta
+         * só encerra a repetição de termos do degrau atual e a cascata desce até o
+         * último, uma consulta por degrau, para que "perguntamos a todos?" tenha
+         * resposta verificável no relatório. O preço é a latência do indexador;
+         * ligue quando precisar de certeza, não no fluxo comum.
+         */
+        'cobertura_completa' => (bool) env('TORRENTS_COBERTURA_COMPLETA', false),
+
+        /*
+         * Fontes aproveitadas de um provedor a partir das quais ele deixa de ser
+         * consultado nos termos seguintes.
+         *
+         * Cada termo da cascata é uma nova rodada de requisições contra todos os
+         * degraus; numa série nova os termos passam de vinte e a soma estoura o
+         * tempo que o frontend espera. Este teto por provedor corta a repetição:
+         * quem já entregou este tanto de fontes que passaram pelo gate não é
+         * perguntado de novo. Não afeta a ordem final da lista e não vale para os
+         * provedores por identificador, que são consultados uma única vez. Em `0`
+         * o corte é desligado.
+         */
+        'fontes_suficientes_por_provedor' => (int) env('TORRENTS_FONTES_SUFICIENTES_POR_PROVEDOR', 4),
 
         /*
          * Teto de packs inspecionados por busca.
