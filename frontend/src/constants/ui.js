@@ -36,8 +36,13 @@ export const INTERVALO_STATUS_SESSAO_MS = 1500
  * Antes usávamos 5 minutos por fonte. Com várias fontes na fila, uma fonte
  * morta prendia o usuário por minutos antes de tentar a próxima. Noventa
  * segundos cobrem com folga a conexão do torrent e o buffer inicial do HLS.
+ *
+ * Ajustável por `VITE_TIMEOUT_FONTE_MS`: numa conexão lenta (1 Mbps, por
+ * exemplo) o buffer inicial do HLS demora bem mais que os 90 s padrão, e uma
+ * fonte que baixa normalmente era abandonada no meio do preparo. Quem tem
+ * banda apertada estica este valor sem mexer no código.
  */
-export const TIMEOUT_FONTE_MS = 90 * 1000
+export const TIMEOUT_FONTE_MS = Number(import.meta.env.VITE_TIMEOUT_FONTE_MS) || 90 * 1000
 
 /**
  * Tempo de estagnação tolerado numa fonte antes de abandoná-la, em ms (20 s).
@@ -48,8 +53,15 @@ export const TIMEOUT_FONTE_MS = 90 * 1000
  * antes de trocar. Aqui olhamos a telemetria de download: se nada foi baixado e
  * a velocidade segue zerada por este tempo, a fonte está morta na prática e
  * passamos para a próxima.
+ *
+ * Só vale para fonte que **nunca entregou um byte**. Uma vez que a fonte baixou
+ * algo, ela provou estar viva e não é mais abandonada por estagnação — segue
+ * sob o `TIMEOUT_FONTE_MS`, que é o limite para a lentidão. Sem essa distinção,
+ * uma conexão lenta derrubava fontes boas por causa de uma pausa momentânea.
+ *
+ * Ajustável por `VITE_ESTAGNACAO_FONTE_MS`.
  */
-export const ESTAGNACAO_FONTE_MS = 20 * 1000
+export const ESTAGNACAO_FONTE_MS = Number(import.meta.env.VITE_ESTAGNACAO_FONTE_MS) || 20 * 1000
 
 /**
  * Tempo máximo aguardando o Plyr emitir o evento `ready`, em ms.

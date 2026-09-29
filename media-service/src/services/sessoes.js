@@ -53,8 +53,13 @@ const EXTENSOES_VIDEO = ['.mkv', '.mp4', '.avi', '.mov', '.m4v', '.webm']
  * havia desistido aos 90 s. Este limite falha rápido para o frontend seguir
  * para a próxima fonte, e fica abaixo do `TIMEOUT_FONTE_MS` do frontend para
  * que o backend seja o primeiro a desistir.
+ *
+ * O tempo mede a espera pelo **primeiro byte**, não a velocidade da fonte: uma
+ * fonte com poucos peers demora a conectar e depois baixa normalmente. Por isso
+ * o valor é ajustável por `MEDIA_TIMEOUT_DADOS_MS` — quem tem fontes lentas mas
+ * vivas pode esticar a paciência sem mexer no código.
  */
-const TIMEOUT_DADOS_MS = 30000
+const TIMEOUT_DADOS_MS = Number(process.env.MEDIA_TIMEOUT_DADOS_MS) || 30000
 
 /**
  * Tempo máximo aguardando os metadados do magnet, em ms.
@@ -64,8 +69,11 @@ const TIMEOUT_DADOS_MS = 30000
  * seed offline nunca chega lá. Os 45 s anteriores consumiam metade da paciência
  * do overlay (90 s) sem gerar um byte. Vinte segundos cobrem a entrada no DHT e
  * nos trackers e devolvem o resto da espera a quem tem chance real de andar.
+ *
+ * Ajustável por `MEDIA_TIMEOUT_METADADOS_MS` pelo mesmo motivo do timeout de
+ * dados: a entrada no DHT varia com a rede e com a saúde dos trackers.
  */
-const TIMEOUT_METADADOS_MS = 20000
+const TIMEOUT_METADADOS_MS = Number(process.env.MEDIA_TIMEOUT_METADADOS_MS) || 20000
 
 /**
  * Quantidade de bytes do começo do filme que precisa estar em disco antes de
@@ -1286,6 +1294,14 @@ function escolherArquivoDeVideo(torrent, temporada = null, episodio = null) {
 function caminhoCorrespondeAoEpisodio(caminho, temporada, episodio) {
   const texto = caminho.toLowerCase()
 
+  /*
+   * O nome do arquivo é a última parte do caminho. Os padrões que numeram o
+   * episódio sem "SxxExx" precisam olhar só para ele: a pasta do pack costuma
+   * trazer o ano ("American Horror Story 1ª Temporada [2011 DUAL ÁUDIO] 720p
+   * PT BR"), e um número solto na pasta casaria o episódio errado.
+   */
+  const nomeArquivo = texto.split('/').pop() || texto
+
   const padroes = [
     // S01E02 / S1 E2 / S01.E02
     new RegExp(`s0*${temporada}[\\s._-]*e0*${episodio}(?!\\d)`, 'i'),
@@ -1301,7 +1317,28 @@ function caminhoCorrespondeAoEpisodio(caminho, temporada, episodio) {
     new RegExp(`cap[ií]tulo\\s*0*${episodio}(?!\\d)`, 'iu'),
   ]
 
-  return padroes.some((padrao) => padrao.test(texto))
+  /*
+   * "01 - Pilot.mp4", "12 - Afterbirth.mp4", "01. Pilot", "01_Pilot": o número
+   * do episódio abre o NOME do arquivo, separado do título por espaço, ponto,
+   * hífen ou underline. É o padrão dos packs dublados PT-BR, que não usam
+   * "SxxExx" em lugar nenhum.
+   *
+   * A âncora é o começo do nome do arquivo, e o número precisa ser seguido de
+   * um separador — sem isso "720p" casaria o episódio 7 e "1080p" o episódio
+   * 10. O separador obrigatório já fecha essa brecha, então não há mais o
+   * lookahead `(?!p)`: ele barrava títulos legítimos que começam com "P"
+   * ("Pilot", "Parte", "Prólogo"), e era por isso que "01 - Pilot.mp4" não
+   * casava e o fallback escolhia o maior vídeo do pacote — o episódio errado.
+   */
+  padroes.push(new RegExp(`^0*${episodio}\\s*[-._]\\s*\\S`, 'i'))
+
+  /*
+   * "Ep 01", "Ep. 01", "E01" solto: alguns packs numeram o episódio com o
+   * prefixo "ep" em vez de "SxxExx". O `(?!\\d)` evita casar "Ep 010".
+   */
+  padroes.push(new RegExp(`(?:^|[\\s._-])ep\\.?\\s*0*${episodio}(?!\\d)`, 'i'))
+
+  return padroes.some((padrao) => padrao.test(nomeArquivo))
 }
 
 /**
@@ -1477,17 +1514,38 @@ async function analisarComEspera(sessao, caminho, arquivo, timeoutMs = 120000) {
       ultimoErro = erro
     }
 
-    // Se o torrent já terminou e ainda assim não lemos o cabeçalho, não há
-    // mais o que esperar: o arquivo está corrompido ou não é um vídeo válido.
+    /*
+     * Se o torrent já terminou e ainda assim não lemos o cabeçalho, não há mais
+     * o que esperar: os dados estão todos em disco e o ffprobe continua
+     * recusando o arquivo. Isso não é lentidão — é arquivo corrompido, falso
+     * vídeo (sample, `.nfo` renomeado) ou o episódio errado escolhido pelo
+     * fallback. Registramos o nome do arquivo para o log apontar qual foi.
+     */
     if (arquivo.progress >= 1) {
+      logger.warn(
+        `[torrent] arquivo completo mas ilegível: "${arquivo.name}" (${arquivo.length} bytes) — ${ultimoErro?.message || 'formato desconhecido'}`
+      )
+
       break
     }
 
     await new Promise((resolve) => setTimeout(resolve, 1000))
   }
 
+  /*
+   * A mensagem separa os dois desfechos: o arquivo completo que o ffprobe
+   * recusou (provável arquivo errado ou corrompido) do arquivo que nunca
+   * terminou de baixar dentro do prazo (fonte lenta ou sem peers). Sem essa
+   * distinção, os dois casos chegavam ao usuário como "cabeçalho ilegível" e
+   * escondiam a causa real.
+   */
+  const completo = arquivo.progress >= 1
+  const causa = ultimoErro?.message || 'formato desconhecido'
+
   throw new Error(
-    `Não foi possível ler o cabeçalho do vídeo: ${ultimoErro?.message || 'formato desconhecido'}`
+    completo
+      ? `O arquivo "${arquivo.name}" não é um vídeo legível: ${causa}`
+      : `Não foi possível ler o cabeçalho do vídeo a tempo: ${causa}`
   )
 }
 

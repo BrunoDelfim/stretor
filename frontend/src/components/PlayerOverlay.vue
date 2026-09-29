@@ -151,6 +151,16 @@ let cancelado = false
 let geracao = 0
 
 /*
+ * Contador de aberturas.
+ *
+ * Separado de `geracao` de propósito: `limparSessao()` também avança a geração,
+ * então ela não serve para identificar "qual abertura é a mais nova". Este
+ * contador só cresce no início de `iniciar()`, uma vez por abertura, e é o que
+ * permite a uma abertura antiga perceber que outra já começou e se calar.
+ */
+let abertura = 0
+
+/*
  * Marca se o playhead já foi ancorado no primeiro trecho recebido. O ajuste
  * acontece uma única vez por reprodução: repeti-lo a cada trecho desfaria uma
  * busca do usuário.
@@ -261,12 +271,18 @@ let timerPlay = null
  * fixada onde o usuário está — veja `fixarBordaAoPlayhead()`.
  */
 
-/** Encerra o polling e libera a sessão no servidor. */
+/**
+ * Encerra o polling e libera a sessão no servidor.
+ *
+ * Esta função NÃO mexe na geração. Quem avança a geração é `iniciar()`, uma vez
+ * por abertura, e é essa marca que os passos assíncronos comparam para saber se
+ * ainda são os correntes. Se a limpeza também avançasse o contador, o fluxo novo
+ * — que captura a geração logo depois de chamá-la — nasceria já desatualizado e
+ * se abortaria sozinho. Aqui só derrubamos o que pertence ao fluxo que está
+ * saindo: o cancelamento, os timers e a sessão no servidor.
+ */
 async function limparSessao() {
   cancelado = true
-
-  // Subir a geração invalida qualquer passo assíncrono do filme que está saindo.
-  geracao += 1
 
   if (timerStatus) {
     clearTimeout(timerStatus)
@@ -1470,7 +1486,7 @@ function aguardarReposicionamento(sessao, minhaGeracao) {
  * overlay fechou ou outro filme entrou), este laço se cala em vez de continuar
  * mexendo no estado do player atual.
  */
-async function tentarFontes(fontes, minhaGeracao) {
+async function tentarFontes(fontes, minhaGeracao, minhaAbertura, filme) {
   /*
    * Quantas fontes caíram por não trazerem áudio em português e o placar dos
    * demais motivos. Sem esse placar a mensagem final era um "não conseguiu
@@ -1490,7 +1506,7 @@ async function tentarFontes(fontes, minhaGeracao) {
   }
 
   for (let indice = 0; indice < fontes.length; indice += 1) {
-    if (cancelado || minhaGeracao !== geracao) return
+    if (cancelado || minhaAbertura !== abertura) return
 
     const fonte = fontes[indice]
 
@@ -1503,16 +1519,21 @@ async function tentarFontes(fontes, minhaGeracao) {
       [fonte.provedor_rotulo, fonte.idioma_rotulo].filter(Boolean).join(' · ') || null
 
     try {
-      // No filme, `temporada`/`episodio` são indefinidos e a sessão escolhe o
-      // maior vídeo do torrent; na série, apontam o arquivo dentro de um pack.
+      /*
+       * A numeração vem do snapshot `filme`, capturado quando este fluxo
+       * começou — nunca de `props.filme`. Ler a prop aqui dentro era o que
+       * misturava os episódios: quando a busca do episódio 2 demorava e o
+       * usuário fechava e reabria, o loop antigo (ainda vivo) passava a ler a
+       * prop já trocada e criava sessões com a numeração do episódio errado.
+       */
       const sessao = await streamingService.criarSessao(
         fonte.magnet,
-        props.filme.id,
-        props.filme.temporada,
-        props.filme.episodio
+        filme.id,
+        filme.temporada,
+        filme.episodio
       )
 
-      if (cancelado || minhaGeracao !== geracao) return
+      if (cancelado || minhaAbertura !== abertura) return
 
       sessaoId = sessao.sessao_id
 
@@ -1535,7 +1556,7 @@ async function tentarFontes(fontes, minhaGeracao) {
     }
   }
 
-  if (!cancelado && minhaGeracao === geracao) {
+  if (!cancelado && minhaAbertura === abertura) {
     erro.value = mensagemDeFalha(desistencias, fontes.length, recusadasPorIdioma)
     estado.value = 'erro'
   }
@@ -1661,6 +1682,15 @@ function aguardarFonte(minhaGeracao, fonte) {
    */
   let estagnadaDesde = null
 
+  /*
+   * Prova de vida da fonte. Uma vez que qualquer byte chegou, a fonte não é mais
+   * abandonada por estagnação: ela só segue sob o `TIMEOUT_FONTE_MS`. Sem esta
+   * trava, uma conexão lenta (1 Mbps) derrubava fontes boas — a velocidade
+   * oscilava até zero por alguns ciclos e o frontend trocava de fonte no meio de
+   * um download que estava andando.
+   */
+  let jaEntregouBytes = false
+
   return new Promise((resolve) => {
     const consultar = async () => {
       if (cancelado || minhaGeracao !== geracao) return resolve({ desfecho: 'cancelado' })
@@ -1764,7 +1794,18 @@ function aguardarFonte(minhaGeracao, fonte) {
         const baixado = status.download?.baixado ?? 0
         const velocidade = status.download?.velocidade ?? 0
 
-        if (baixado === 0 && velocidade === 0) {
+        /*
+         * Qualquer byte já baixado é prova de vida permanente. A partir daqui a
+         * fonte não é mais abandonada por estagnação — só pelo `TIMEOUT_FONTE_MS`.
+         * É o que protege a conexão lenta: a velocidade cai a zero entre ciclos
+         * enquanto o WebTorrent negocia, e sem esta trava a fonte era trocada no
+         * meio de um download que estava andando.
+         */
+        if (baixado > 0) {
+          jaEntregouBytes = true
+        }
+
+        if (!jaEntregouBytes && baixado === 0 && velocidade === 0) {
           estagnadaDesde ??= Date.now()
 
           if (Date.now() - estagnadaDesde > ESTAGNACAO_FONTE_MS) {
@@ -1836,6 +1877,40 @@ async function limparSessaoAtual() {
 
 /** Inicia o fluxo completo: busca as fontes e percorre até uma conectar. */
 async function iniciar() {
+  /*
+   * Cada abertura recebe um número próprio, que só avança aqui. É esta marca —
+   * e não a geração — que identifica "a abertura mais nova": a geração também
+   * muda em outros pontos do fluxo, então usá-la como identidade confundiria
+   * "sou o fluxo corrente" com "algo mexeu no contador".
+   */
+  abertura += 1
+  const minhaAbertura = abertura
+
+  /*
+   * O player e a sessão do filme anterior são derrubados AQUI, no começo do
+   * fluxo, e não no watcher. O watcher só enxerga a troca quando o valor
+   * anterior não é `null`; mas o caminho mais comum — fechar o player (a prop
+   * vira `null`) e reabrir outro episódio — chega aqui com o valor anterior
+   * `null`, e nesse caso a limpeza feita no watcher era pulada. O `<video>` do
+   * episódio anterior continuava montado, com o estado ainda em `reproduzindo`,
+   * e o player novo reaproveitava o mesmo nó: era isso que fazia o episódio 2
+   * tocar o episódio 1. Limpar incondicionalmente fecha essa brecha.
+   */
+  destruirPlayer()
+  await limparSessao()
+
+  // Se outra abertura começou enquanto a sessão antiga era encerrada, esta aqui
+  // já não é mais a corrente e não deve mexer no estado.
+  if (minhaAbertura !== abertura) return
+
+  /*
+   * A geração é reservada agora, depois da limpeza, e é o número que os passos
+   * assíncronos deste fluxo vão comparar. Como `limparSessao()` não mexe mais no
+   * contador, este valor permanece estável até a próxima abertura.
+   */
+  geracao += 1
+  const minhaGeracao = geracao
+
   cancelado = false
   erro.value = null
   estado.value = 'procurando'
@@ -1858,14 +1933,20 @@ async function iniciar() {
   tempoBase = 0
   buscandoTrecho.value = false
 
-  // Cada abertura é uma geração nova: os passos da anterior passam a ser ignorados.
-  geracao += 1
-  const minhaGeracao = geracao
+  /*
+   * O filme é congelado aqui, no começo do fluxo. Todo o resto — a busca e a
+   * criação de sessão — usa este snapshot, nunca `props.filme`. A prop muda
+   * quando o usuário troca de episódio, e um fluxo antigo ainda em andamento
+   * (a busca do episódio anterior que demorou) passaria a ler a numeração nova,
+   * criando sessões com o episódio errado. Era esse resíduo que fazia o episódio
+   * 2 tocar o episódio 1.
+   */
+  const filme = props.filme
 
   try {
-    const { fontes, mensagem: aviso } = await streamingService.buscarFontes(props.filme)
+    const { fontes, mensagem: aviso } = await streamingService.buscarFontes(filme)
 
-    if (cancelado || minhaGeracao !== geracao) return
+    if (cancelado || minhaAbertura !== abertura) return
 
     if (!fontes.length) {
       // O backend explica o motivo quando a lista volta vazia: "nenhuma fonte
@@ -1879,10 +1960,32 @@ async function iniciar() {
 
     totalFontes.value = fontes.length
 
-    await tentarFontes(fontes, minhaGeracao)
-  } catch {
-    if (!cancelado && minhaGeracao === geracao) {
-      erro.value = 'Não foi possível buscar as fontes agora. Tente novamente.'
+    await tentarFontes(fontes, minhaGeracao, minhaAbertura, filme)
+  } catch (falha) {
+    /*
+     * O `catch` antigo era mudo: qualquer exceção — timeout do axios, falha de
+     * rede, um `TypeError` inesperado — virava a mesma frase genérica, e a causa
+     * real morria aqui. O sintoma que isso escondia: a busca de fontes estoura o
+     * `TIMEOUT_REQUISICAO_MS` (60 s) numa execução a frio, o axios aborta com
+     * `ECONNABORTED` e descarta a resposta que ainda estava a caminho. O DevTools
+     * mostra a resposta chegando (com as fontes), mas o axios já desistiu — e o
+     * usuário lê "não foi possível buscar as fontes" mesmo com o backend tendo
+     * respondido. Registrar a falha no diagnóstico é o que permite distinguir
+     * esse caso de um erro real de rede.
+     */
+    anotarDiagnostico(`falha ao buscar fontes: ${falha?.code || falha?.message || falha}`)
+
+    if (!cancelado && minhaAbertura === abertura) {
+      /*
+       * Timeout merece uma mensagem própria: não é "não consegui buscar", é
+       * "busquei, mas demorou mais do que o frontend espera". A diferença muda o
+       * que o usuário faz — tentar de novo (o cache já estará quente) em vez de
+       * concluir que o sistema está quebrado.
+       */
+      erro.value =
+        falha?.code === 'ECONNABORTED'
+          ? 'A busca de fontes demorou demais. Tente novamente — da segunda vez o cache responde na hora.'
+          : 'Não foi possível buscar as fontes agora. Tente novamente.'
       estado.value = 'erro'
     }
   }
@@ -1896,20 +1999,41 @@ function aoTeclar(evento) {
   if (evento.key === 'Escape') fechar()
 }
 
-// O fluxo só começa quando o overlay abre, e é desmontado ao fechar.
+/*
+ * O fluxo começa quando o overlay abre e é desmontado ao fechar.
+ *
+ * O gatilho é o CONTEÚDO do filme, não o booleano `aberto`. Observar o booleano
+ * parecia bastar, mas ele só distingue "tem filme" de "não tem": quando o pai
+ * troca o episódio de uma vez — sem passar por `null` entre um e outro — o valor
+ * continua `true` e o watcher nunca dispara. Era assim que abrir o episódio 2
+ * tocava o episódio 1: a sessão antiga seguia viva e o player nunca era
+ * reconstruído. Comparar o objeto inteiro faz cada episódio ser um caso novo.
+ */
 watch(
-  aberto,
-  async (estaAberto) => {
+  () => props.filme,
+  async (filme) => {
+    const estaAberto = filme !== null
+
     document.body.style.overflow = estaAberto ? 'hidden' : ''
 
-    if (estaAberto) {
-      window.addEventListener('keydown', aoTeclar)
-      await iniciar()
-    } else {
+    if (!estaAberto) {
       window.removeEventListener('keydown', aoTeclar)
       destruirPlayer()
       await limparSessao()
+
+      return
     }
+
+    /*
+     * A limpeza do título anterior não é feita aqui: `iniciar()` já derruba o
+     * player e a sessão incondicionalmente, logo no primeiro passo. Concentrar
+     * isso num único lugar evita que a troca direta (episódio 1 → episódio 2) e
+     * a reabertura após fechar (que chega com o valor anterior `null`) sigam
+     * caminhos diferentes — era justamente essa assimetria que deixava o vídeo
+     * antigo vivo.
+     */
+    window.addEventListener('keydown', aoTeclar)
+    await iniciar()
   },
   { immediate: true }
 )
