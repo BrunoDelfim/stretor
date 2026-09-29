@@ -310,55 +310,67 @@ final class TermosBusca
          * declara a temporada de forma explícita E ela difere da pedida. Títulos
          * sem número nenhum seguem passando, para não apagar nomes nacionais
          * legítimos.
+         *
+         * A leitura usa [`temporadaNoRelease()`], e não [`temporadaDoTitulo()`],
+         * porque o pack pode cobrir uma faixa ("1ª 2ª 3ª Temporadas", "Seasons 1
+         * to 8"): a leitura simples devolveria só o primeiro número e reprovaria
+         * um pack multi-temporada que inclui a pedida. `temporadaNoRelease()`
+         * aceita a faixa e só reprova quando a pedida está fora dela.
          */
-        $declarada = self::temporadaDoTitulo($titulo);
-
-        if ($declarada !== null && $declarada !== $temporada) {
-            return false;
+        if (self::temporadaNoRelease($titulo, $temporada)) {
+            return true;
         }
 
-        return true;
+        /*
+         * A faixa não cobriu a pedida. Antes de reprovar, confirmamos que o
+         * título **declara** alguma temporada: sem número nenhum, ele passa — é o
+         * caso dos nomes nacionais legítimos, que não têm como provar a temporada
+         * e seriam apagados por um corte cego.
+         */
+        return self::temporadaDoTitulo($titulo) === null;
     }
 
     /**
-     * Extrai a temporada declarada num título de pack, se houver.
+     * Extrai a temporada declarada num título, se houver.
      *
-     * Só é chamada quando o título **não** declara numeração de episódio. Para
-     * evitar falso positivo em nomes que contêm "S" seguido de número por outros
-     * motivos, a leitura exige um marcador de pack ("completa", "temporada",
-     * "season", "superpack"): sem ele, devolvemos `null` e a fonte passa.
+     * Só é chamada quando o título **não** declara numeração de episódio. A leitura
+     * não exige mais um marcador de pack: exigir "completa"/"temporada" deixava
+     * passar nomes como "American Horror Story.2ª.Temporada.Dual.Áudio.720p." — que
+     * declara a temporada pelo ordinal, mas cujo marcador vinha depois de um ponto
+     * e a regex antiga não enxergava. O pack da temporada errada entrava na busca
+     * da 1ª e, por ter mais seeds, era o primeiro tentado pelo player.
      *
-     * Aceita "S01", "Temporada 1", "Season 1" e "1ª Temporada".
+     * A leitura é conservadora por construção: cada padrão exige uma âncora forte
+     * (o "S" de release, a palavra "temporada"/"season" ou o ordinal "ª/º"), de
+     * modo que o ano do release ("2011") nunca é lido como temporada. Sem âncora,
+     * devolvemos `null` e a fonte passa — nomes nacionais sem número continuam
+     * legítimos.
+     *
+     * Aceita "S01", "Temporada 1", "Season 1", "1ª Temporada" e "2ª.Temporada".
      */
     public static function temporadaDoTitulo(string $titulo): ?int
     {
         $texto = mb_strtolower($titulo);
 
-        $temMarcador = false;
-
-        foreach (['completa', 'completo', 'complete', 'temporada', 'season', 'superpack'] as $marcador) {
-            if (str_contains($texto, $marcador)) {
-                $temMarcador = true;
-                break;
-            }
+        /*
+         * A ordem das checagens é a ordem da especificidade. O ordinal vem antes
+         * do "Temporada N" porque "2ª Temporada" casaria os dois padrões e o
+         * ordinal é o que carrega o número de fato; ler "temporada" primeiro
+         * devolveria o número errado quando o ordinal viesse depois da palavra.
+         */
+        // "2ª Temporada", "2ª.Temporada", "2º temporada" — o separador cobre ponto,
+        // hífen e underline, que os trackers usam no lugar do espaço.
+        if (preg_match('/(?<![a-z0-9])(\d{1,2})\s*[ªº]\s*[\s._-]*temporada/u', $texto, $achados)) {
+            return (int) $achados[1];
         }
 
-        if (! $temMarcador) {
-            return null;
+        // "Temporada 2", "Season 2" — a palavra-chave seguida do número.
+        if (preg_match('/(?:temporada|season)s?\s*[\s._-]*(\d{1,2})/u', $texto, $achados)) {
+            return (int) $achados[1];
         }
 
         // "S02" — o formato dos releases; o lookbehind evita casar dentro de palavra.
         if (preg_match('/(?<![a-z0-9])s(\d{1,2})(?![a-z0-9])/i', $texto, $achados)) {
-            return (int) $achados[1];
-        }
-
-        // "Temporada 2", "Season 2".
-        if (preg_match('/(?:temporada|season)\s*(\d{1,2})/u', $texto, $achados)) {
-            return (int) $achados[1];
-        }
-
-        // "2ª Temporada" — só com o ordinal explícito para não ler o ano do release.
-        if (preg_match('/(?<![a-z0-9])(\d{1,2})\s*[ªº]\s*temporada/u', $texto, $achados)) {
             return (int) $achados[1];
         }
 
@@ -388,13 +400,24 @@ final class TermosBusca
             $numeros = array_merge($numeros, $achados[1]);
         }
 
-        // "Temporada 1", "Season 1", "Seasons 1".
-        if (preg_match_all('/(?:temporada|season)s?\s*(\d{1,2})/u', $texto, $achados)) {
+        /*
+         * "Temporada 1", "Season 1", "Seasons 1" — o separador cobre ponto,
+         * hífen e underline, que os trackers usam no lugar do espaço.
+         *
+         * O `(?![\d p])` é essencial: sem ele, "Temporadas 720p" casava o "72"
+         * como número de temporada (o `s?` consumia o "s" de "Temporadas" e o
+         * `\s*` pulava para a resolução). Isso injetava 72 na lista e `max()`
+         * virava 72, fazendo qualquer temporada "caber" na faixa — foi o que
+         * deixou o pack da 2ª passar por um gate que devia reprová-lo. O
+         * lookahead rejeita tanto o dígito seguinte ("720" não vira "72") quanto
+         * a resolução colada ("720p").
+         */
+        if (preg_match_all('/(?:temporada|season)s?\s*[\s._-]*(\d{1,2})(?![\d p])/u', $texto, $achados)) {
             $numeros = array_merge($numeros, $achados[1]);
         }
 
-        // "1ª Temporada".
-        if (preg_match_all('/(?<![a-z0-9])(\d{1,2})\s*[ªº]\s*temporada/u', $texto, $achados)) {
+        // "1ª Temporada", "2ª.Temporada".
+        if (preg_match_all('/(?<![a-z0-9])(\d{1,2})\s*[ªº]\s*[\s._-]*temporada/u', $texto, $achados)) {
             $numeros = array_merge($numeros, $achados[1]);
         }
 
@@ -413,8 +436,13 @@ final class TermosBusca
          * "Temporadas 1, 2 e 3" — a palavra-chave vem uma vez e os números em
          * lista. Sem ler a lista inteira, só o primeiro número entrava e o pack
          * parecia ser só da temporada 1.
+         *
+         * O `(?![\d p])` fecha a mesma brecha da leitura anterior: "Temporadas
+         * 720p" casava o "72" da resolução como se fosse número de temporada.
+         * Com o 72 na lista, `max()` virava 72 e qualquer temporada "cabia" na
+         * faixa.
          */
-        if (preg_match_all('/(?:temporada|season)s?\s*(\d{1,2}(?:\s*(?:,|e|and|&|\/)\s*\d{1,2})*)/u', $texto, $achados)) {
+        if (preg_match_all('/(?:temporada|season)s?\s*(\d{1,2}(?![\d p])(?:\s*(?:,|e|and|&|\/)\s*\d{1,2}(?![\d p]))*)/u', $texto, $achados)) {
             foreach ($achados[1] as $lista) {
                 if (preg_match_all('/\d{1,2}/', $lista, $itens)) {
                     $numeros = array_merge($numeros, $itens[0]);
@@ -422,14 +450,15 @@ final class TermosBusca
             }
         }
 
-        if ($numeros === []) {
-            return false;
-        }
-
         /*
          * "Seasons 1 to 8" e "Temporada 1 a 4": o segundo número não repete a
          * palavra-chave, então a faixa precisa ser lida explicitamente. Sem isso,
          * o pack de várias temporadas só casaria a temporada do primeiro número.
+         *
+         * A leitura da faixa vem **antes** do corte de lista vazia: em "Seasons
+         * 1 to 8" a regex de lista não casa nada (o "1" é seguido de " to", não
+         * de vírgula), e o early-return apagaria o pack antes de a faixa ser
+         * lida. A faixa é, ela própria, uma declaração de temporada.
          */
         foreach ([
             '/(?:temporada|season)s?\s*(\d{1,2})\s*(?:a|to|até|-|–|—)\s*(\d{1,2})/u',
@@ -439,6 +468,10 @@ final class TermosBusca
                 $numeros[] = $achados[1];
                 $numeros[] = $achados[2];
             }
+        }
+
+        if ($numeros === []) {
+            return false;
         }
 
         $numeros = array_map('intval', $numeros);
@@ -487,6 +520,65 @@ final class TermosBusca
         }
 
         return null;
+    }
+
+    /**
+     * Lê a temporada declarada considerando **todos** os nomes de uma fonte.
+     *
+     * O `release` de uma fonte nem sempre é o nome do torrent: nos provedores por
+     * identificador ele é a primeira linha do rótulo (o pacote), mas quando o
+     * provedor só informa o arquivo interno o `release` acaba sendo o nome do
+     * episódio ("2x13 - Madness Ends"). Nesse caso a numeração de episódio
+     * esconde a temporada do pacote e o pack da 2ª temporada passava batido pelo
+     * gate, subindo ao topo de uma busca da 1ª.
+     *
+     * A leitura aqui é a da temporada, e não a da numeração: um nome que declara
+     * "2ª Temporada" prova a temporada mesmo que outro nome do conjunto traga
+     * "2x13". Só quando nenhum nome declara temporada é que devolvemos `null` —
+     * e aí quem decide é a numeração de episódio, como antes.
+     *
+     * @param  array<int, string|null>  $nomes
+     */
+    public static function temporadaDosNomes(array $nomes): ?int
+    {
+        foreach ($nomes as $nome) {
+            $nome = trim((string) $nome);
+
+            if ($nome === '') {
+                continue;
+            }
+
+            $temporada = self::temporadaDoTitulo($nome);
+
+            if ($temporada !== null) {
+                return $temporada;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Diz se algum dos nomes declara a temporada pedida — inclusive faixas.
+     *
+     * Complementa [`temporadaDosNomes()`] para o caso de pack multi-temporada:
+     * um nome pode declarar "1ª 2ª 3ª Temporadas" e outro apenas "2x13". A
+     * pergunta "a pedida está coberta?" precisa olhar todos os nomes, não só o
+     * primeiro que declara uma temporada.
+     *
+     * @param  array<int, string|null>  $nomes
+     */
+    public static function algumNomeCobreTemporada(array $nomes, int $temporada): bool
+    {
+        foreach ($nomes as $nome) {
+            $nome = trim((string) $nome);
+
+            if ($nome !== '' && self::temporadaNoRelease($nome, $temporada)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

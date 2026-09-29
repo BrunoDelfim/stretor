@@ -108,6 +108,10 @@ class TorrentController extends Controller
                 'temporada' => $temporada,
                 'episodio' => $episodio,
                 'fontes' => $fontes,
+                // O censo é lido aqui, ainda na mesma busca que acabou de rodar,
+                // para provar quais provedores foram consultados e o que cada um
+                // devolveu — inclusive os que a cascata nem chegou a tocar.
+                'cobertura' => $this->torrents->cobertura(),
                 'mensagem' => $aviso ?? $this->mensagemDeListaVazia($fontes),
             ],
         ]);

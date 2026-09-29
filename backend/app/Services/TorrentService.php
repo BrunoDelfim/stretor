@@ -62,8 +62,20 @@ class TorrentService
         }
 
         $fontes = $this->ordenar(
-            $this->catalogo->buscar($titulos, $ano, $imdbId, $temporada, $episodio)
+            $this->catalogo->buscar($titulos, $ano, $imdbId, $temporada, $episodio),
+            $temporada,
+            $episodio
         );
+
+        /*
+         * O censo é contado dentro da cascata, antes da montagem final. Aqui ele é
+         * reconciliado com a lista que de fato saiu, para o relatório não dizer
+         * `com_fonte` de um provedor cujas fontes foram todas descartadas depois —
+         * era o caso do APIBay, que aparecia como `com_fonte` sem ter nada na
+         * lista. A leitura precisa ser imediatamente após `ordenar()`, enquanto o
+         * censo daquela busca ainda está de pé.
+         */
+        $this->catalogo->reconciliarCenso($fontes);
 
         $this->registrar($fontes, $titulos, $ano, $imdbId);
 
@@ -80,6 +92,21 @@ class TorrentService
     public function temProvedorDisponivel(): bool
     {
         return $this->catalogo->algumDisponivel();
+    }
+
+    /**
+     * Relatório de cobertura da última busca: o que cada provedor respondeu.
+     *
+     * A fachada expõe isto porque o controller só conhece `fontes()` e este
+     * relatório — assim "perguntamos a todos?" se responde sem abrir o catálogo.
+     * Precisa ser lido logo após `fontes()`, enquanto o censo daquela busca ainda
+     * está de pé: a próxima busca zera os contadores.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function cobertura(): array
+    {
+        return $this->catalogo->cobertura();
     }
 
     /**
@@ -220,30 +247,55 @@ class TorrentService
     /**
      * Filtra e monta a lista final.
      *
-     * O filtro de seeds é a primeira barreira contra fontes mortas. Depois, a
-     * montagem é por mérito de áudio, em duas chaves: **o idioma manda** e, dentro
-     * do mesmo idioma, **o episódio vem antes do pack**. Assim o dublado de
-     * episódio é o primeiro tentado, o pack dublado vem logo atrás, e o pack nunca
-     * passa à frente de um episódio de áudio igual ou melhor — era o que fazia o
-     * pack do Torrentio encobrir os episódios do Knaben, do TPB+ e do APIBay. O
-     * pack segue sendo o último recurso: fica atrás do dublado, do dual e de todo
-     * episódio do mesmo idioma.
+     * O filtro de seeds é a primeira barreira contra fontes mortas: fonte sem
+     * seed ou sem magnet não entra, porque não tem como servir dados e só faria o
+     * player perder tempo. Depois, a montagem é por mérito de áudio, em duas
+     * chaves: **o idioma manda** e, dentro do mesmo idioma, **o episódio vem antes
+     * do pack**. Assim o dublado de episódio é o primeiro tentado, o pack dublado
+     * vem logo atrás, e o pack nunca passa à frente de um episódio de áudio igual
+     * ou melhor — era o que fazia o pack do Torrentio encobrir os episódios do
+     * Knaben, do TPB+ e do APIBay.
      *
-     * A pilha boa é só o áudio PT-BR provado — dublado e dual. Se ela alcança o
-     * piso de `minimo_fontes`, a lista é só ela; senão, a reserva (legendado,
-     * original e os packs de idioma não provado) completa até o teto de fontes.
-     * Como a pilha boa só carrega as prioridades 0 e 1, a concatenação já sai em
-     * ordem de idioma: nenhum original antes de um dublado ou dual.
+     * A lista final é **só áudio PT-BR provado** — dublado e dual. Quando as
+     * PT-BR acabam, a lista para: não há preenchimento com reserva. O usuário quer
+     * ouvir em português, e uma lista curta de dublado vale mais que uma lista
+     * cheia de original que ele não vai tentar. A reserva só volta quando não há
+     * **nenhuma** PT-BR: aí a lista vazia seria o player sem nada para tentar, e
+     * entregar o que existe — mesmo legendado ou original — é melhor que nada.
      *
      * @param  array<int, array<string, mixed>>  $fontes
+     * @param  int|null  $temporada  Temporada pedida, quando a busca é de série
+     * @param  int|null  $episodio   Episódio pedido, quando a busca é de série
      * @return array<int, array<string, mixed>>
      */
-    private function ordenar(array $fontes): array
+    private function ordenar(array $fontes, ?int $temporada = null, ?int $episodio = null): array
     {
         $ordemProvedores = $this->ordemDeProvedores();
 
-        $fontes = array_values(array_filter($fontes, function (array $fonte): bool {
+        $somentePtBr = (bool) config('services.torrents.somente_pt_br_ou_legendado', true);
+        $packsQualquerIdioma = (bool) config('services.torrents.packs_qualquer_idioma', true);
+
+        $fontes = array_values(array_filter($fontes, function (array $fonte) use ($packsQualquerIdioma, $temporada, $episodio): bool {
             if (($fonte['seeds'] ?? 0) <= 0 || ($fonte['magnet'] ?? '') === '') {
+                return false;
+            }
+
+            /*
+             * Confronto de temporada do pack na montagem final.
+             *
+             * O gate da cascata já reprova o pack da temporada errada, mas ele
+             * julga pelo nome do release e pode ser enganado por um nome que não
+             * declara a temporada. Aqui a checagem é a última linha de defesa: um
+             * pack que declara uma temporada diferente da pedida não entra na
+             * lista, mesmo sendo dual — era justamente o pack dual da 2ª
+             * temporada, com mais seeds, que subia ao topo de uma busca da 1ª e
+             * fazia o player abrir o episódio errado.
+             *
+             * Só vale para pack: um episódio já foi julgado por numeração na
+             * cascata e não deve ser descartado aqui.
+             */
+            if ($temporada !== null && $episodio !== null && ! empty($fonte['pack'])
+                && $this->packDaTemporadaErrada($fonte, $temporada)) {
                 return false;
             }
 
@@ -254,7 +306,7 @@ class TorrentService
              * ele é descartado. O pack com PT-BR provado não depende da exceção.
              */
             if (! empty($fonte['pack']) && ! $this->ePtBr($fonte)) {
-                return (bool) config('services.torrents.packs_qualquer_idioma', true);
+                return $packsQualquerIdioma;
             }
 
             return true;
@@ -278,16 +330,23 @@ class TorrentService
         usort($reserva, $porMerito);
 
         $limite = MensagensTorrent::LIMITE_FONTES;
-        $minimo = (int) config('services.torrents.minimo_fontes', 15);
-        $apenasPtBr = (bool) config('services.torrents.apenas_pt_br', true);
 
         /*
-         * Com base PT-BR suficiente, a lista é só o que serve direto. O mínimo é
-         * um piso, não um teto: alcançado ele, a lista sobe até o teto de fontes
-         * com o que há de bom. Sem base suficiente, a reserva completa até o teto,
-         * para o player ter alternativa quando a fonte boa não responder.
+         * Corte duro de idioma: com `somente_pt_br_ou_legendado` ligado, a lista
+         * final é só o áudio PT-BR provado — dublado e dual. O original em inglês
+         * e o legendado (áudio original com legenda PT-BR) saem de vez, porque o
+         * usuário quer ouvir em português, não ler.
+         *
+         * Não há preenchimento com reserva: quando as PT-BR acabam, a lista para.
+         * O teto de fontes é um corte (`array_slice`), nunca uma cota a preencher
+         * — se houver menos que ele, a lista sai menor e está correta assim.
+         *
+         * O corte só vale se sobrar alguma fonte PT-BR. Sem nenhuma, ele é
+         * revertido e a reserva volta: uma lista vazia não é "só PT-BR", é o
+         * player sem nada para tentar. Nesse caso o sistema entrega o que existe,
+         * mesmo que seja legendado ou original.
          */
-        if ($apenasPtBr && count($ptBr) >= $minimo) {
+        if ($somentePtBr && $ptBr !== []) {
             return array_slice($ptBr, 0, $limite);
         }
 
@@ -359,6 +418,66 @@ class TorrentService
             [IdiomaFonte::DUBLADO->value, IdiomaFonte::DUAL_AUDIO->value],
             true
         );
+    }
+
+    /**
+     * Diz se um pack declara uma temporada diferente da pedida.
+     *
+     * É a última linha de defesa contra o pack da temporada errada. O gate da
+     * cascata julga pelo nome do release, mas pode ser enganado por um nome que
+     * não declara a temporada; aqui a leitura é a mesma, só que aplicada depois de
+     * toda a coleta, quando não há mais como o pack escapar.
+     *
+     * A regra é conservadora: só reprova quando o nome **declara** uma temporada
+     * que não cobre a pedida. Um pack sem número nenhum passa — é o caso dos
+     * nomes nacionais legítimos, e descartá-los apagaria o socorro da série
+     * antiga. A leitura usa [`TermosBusca::temporadaNoRelease()`], que aceita
+     * faixas ("S01-S05", "1ª 2ª 3ª Temporadas") e por isso não reprova o pack
+     * multi-temporada que inclui a pedida.
+     *
+     * @param  array<string, mixed>  $fonte
+     */
+    private function packDaTemporadaErrada(array $fonte, int $temporada): bool
+    {
+        /*
+         * A leitura olha os dois nomes da fonte. O `release` é o nome do torrent
+         * quando o provedor o informa, mas em alguns provedores ele acaba sendo
+         * o nome do arquivo interno ("2x13 - Madness Ends"): aí a numeração de
+         * episódio esconderia a temporada que o `titulo` declara, e o pack da 2ª
+         * passaria por esta última linha de defesa.
+         */
+        $nomes = array_values(array_unique(array_filter([
+            (string) ($fonte['release'] ?? ''),
+            (string) ($fonte['titulo'] ?? ''),
+        ], fn (string $valor): bool => $valor !== '')));
+
+        if ($nomes === []) {
+            return false;
+        }
+
+        $declarada = TermosBusca::temporadaDosNomes($nomes);
+
+        /*
+         * Um pack que não declara temporada em nome nenhum não é pack de
+         * temporada — é um episódio mal marcado. Deixamos passar: quem julga
+         * episódio é a numeração, e reprovar aqui apagaria uma fonte que a
+         * cascata aprovou.
+         */
+        if ($declarada === null) {
+            return false;
+        }
+
+        /*
+         * A temporada declarada pode ser uma faixa (o pack cobre várias). Nesse
+         * caso `temporadaNoRelease()` é quem decide: se a pedida está dentro da
+         * faixa, o pack serve. Só quando a leitura simples aponta uma temporada
+         * única e diferente da pedida é que reprovamos.
+         */
+        if (TermosBusca::algumNomeCobreTemporada($nomes, $temporada)) {
+            return false;
+        }
+
+        return $declarada !== $temporada;
     }
 
     /**

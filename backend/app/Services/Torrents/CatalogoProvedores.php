@@ -2,6 +2,7 @@
 
 namespace App\Services\Torrents;
 
+use App\Contracts\ProvedorPorLote;
 use App\Contracts\ProvedorTorrents;
 use App\Enums\IdiomaFonte;
 use App\Services\Torrents\TermosBusca;
@@ -110,6 +111,52 @@ class CatalogoProvedores
      */
     private array $packsInspecionados = [];
 
+    /**
+     * Todos os provedores registrados, na ordem em que a cascata os consulta.
+     *
+     * O relatório de cobertura precisa listar o registro **completo**, e não só o
+     * que foi tocado: um provedor nunca consultado só aparece como ausência se
+     * houver uma lista de referência para comparar. É esta lista que transforma
+     * "não veio nada do Prowlarr" em "o Prowlarr não foi perguntado".
+     *
+     * @var array<int, ProvedorTorrents>
+     */
+    private array $registro;
+
+    /**
+     * Censo da busca atual: o que cada provedor respondeu.
+     *
+     * @var array<string, array<string, mixed>>
+     */
+    private array $censo = [];
+
+    /**
+     * Ids de fonte já contabilizados no censo.
+     *
+     * O mesmo torrent reaparece em vários termos e degraus; sem este conjunto, um
+     * provedor que respondeu uma vez apareceria contando quatro.
+     *
+     * @var array<string, bool>
+     */
+    private array $fontesNoCenso = [];
+
+    /**
+     * Provedores de lote que já responderam o degrau inteiro nesta passagem.
+     *
+     * Um provedor que aceita vários termos numa rodada é consultado uma única vez,
+     * com todos os termos do degrau, e depois sai do laço: repetir a chamada nos
+     * termos seguintes seria perguntar de novo o que ele já respondeu. Zerado a
+     * cada degrau, porque o lote é por degrau — o indexador não herda o do nativo.
+     *
+     * @var array<string, bool>
+     */
+    private array $loteConsumido = [];
+
+    /**
+     * Evita repetir o aviso de prazo estourado a cada termo.
+     */
+    private bool $avisouPrazo = false;
+
     public function __construct(
         ProvedorTrackersBr $trackersBr,
         ProvedorApibay $apibay,
@@ -120,9 +167,21 @@ class CatalogoProvedores
         private readonly ProvedorTorznab $torznab,
         private readonly ProvedorYts $yts,
         private readonly InspecaoPack $inspecao,
+        private readonly OrcamentoBusca $orcamento,
     ) {
         $this->primarios = [$trackersBr, $apibay, $knaben, $bt4g];
         $this->porIdentificador = [$torrentio, $addonStremio];
+
+        // A ordem do relatório é a ordem da cascata: os por identificador abrem, os
+        // por nome seguem e o indexador com o YTS fecham os degraus.
+        $this->registro = [
+            ...$this->porIdentificador,
+            ...$this->primarios,
+            $this->torznab,
+            $this->yts,
+        ];
+
+        $this->reiniciarCenso();
     }
 
     /**
@@ -150,24 +209,93 @@ class CatalogoProvedores
          */
         $this->inspecoes = 0;
         $this->packsInspecionados = [];
+        $this->reiniciarCenso();
 
         /*
-         * Os provedores por identificador (Torrentio) são consultados uma única
-         * vez, com o termo puro. O termo não muda a resposta deles — só o
-         * `imdb_id` importa —, então repetir a chamada para cada variação dublada
-         * seria gastar o provedor mais lento da cascata à toa.
+         * O orçamento da busca inteira é aberto aqui, no primeiro passo. Cada
+         * provedor tem o seu teto, mas a soma deles não tinha: um tracker
+         * bloqueado gasta o `tempo_limite` na tentativa direta e mais o
+         * `proxy_nativo_timeout` no FlareSolverr, e isso se repete por termo. Com
+         * o orçamento global, a cascata para de perguntar quando o prazo acaba e
+         * entrega o que já recolheu — em vez de estourar o tempo do frontend e
+         * não entregar nada.
          *
-         * O que ele devolve entra na coleta e conta para o orçamento de fontes
-         * PT-BR. Antes, esta fonte era a que encerrava o laço no primeiro termo —
-         * o Torrentio respondia uma única fonte rotulada "Dublado" (S01E01 720p
-         * PORTUGUÊS BR) e as variações dubladas nunca eram perguntadas. O
-         * orçamento muda isso: ele olha o **acumulado** contra uma meta, então
-         * uma fonte boa não cala a busca, só a aproxima do fim.
+         * O relógio é compartilhado com o [`ClienteHttp`] (mesmo singleton), para
+         * que o socorro pelo FlareSolverr também encolha junto com o prazo.
          */
-        $fontes = $this->mesclar(
-            $fontes,
-            $this->buscarGrupo($this->porIdentificador, $titulos[0] ?? '', $ano, $imdbId, $temporada, $episodio)
-        );
+        $this->orcamento->abrir((int) config('services.torrents.orcamento_busca', 45));
+        $this->avisouPrazo = false;
+
+        /*
+         * Provedores que aceitam vários termos numa rodada são consultados uma
+         * única vez, com o degrau inteiro, e depois saem do laço. Sem isto, o
+         * Knaben pagava um POST por termo e a soma dominava a espera.
+         */
+        $this->loteConsumido = [];
+
+        /*
+         * O primeiro termo é a rodada de abertura, e ela é especial: nela os
+         * primários por nome (APIBay, Knaben, BT4G) e os provedores por
+         * identificador (Torrentio, addons Stremio) são consultados **juntos**,
+         * antes de qualquer corte.
+         *
+         * Antes, os por identificador vinham sozinhos e o `coletaSuficiente()`
+         * podia encerrar a busca logo depois: o Torrentio respondia rápido com
+         * fontes PT-BR e o Knaben — que é justamente quem enxerga os packs
+         * nacionais das séries antigas — nunca era perguntado. O sintoma era "só
+         * veio do Torrentio".
+         *
+         * A ordem aqui não é acidental: os primários por nome vêm **primeiro**.
+         * Eles são os únicos que respondem aos termos de pack/série, e o
+         * `jaTemEpisodioAproveitado()` lê o censo inteiro — se o Torrentio
+         * rodasse antes e marcasse uma fonte, os termos de socorro dos primários
+         * seriam pulados na mesma rodada. Rodando os primários primeiro, o Knaben
+         * recebe o degrau completo antes de qualquer contagem. A dispensa
+         * (`$dispensarSocorro`) cobre o caso inverso: mesmo que um primário já
+         * tenha achado episódio, os demais ainda recebem os termos de socorro
+         * nesta rodada, porque é a única chance que eles têm de achar o pack.
+         */
+        $primeiroTitulo = $titulos[0] ?? '';
+
+        if ($primeiroTitulo !== '' && ! $this->orcamentoEsgotado()) {
+            $termoDePack = $this->eTermoDePack($primeiroTitulo, $temporada, $episodio);
+            $termoDeSerie = $this->eTermoDeSerie($primeiroTitulo, $temporada, $episodio);
+
+            $porNome = $this->buscarGrupo(
+                $this->primarios,
+                $primeiroTitulo,
+                $ano,
+                $imdbId,
+                $temporada,
+                $episodio,
+                $termoDePack,
+                $termoDeSerie,
+                $titulos,
+                true
+            );
+
+            /*
+             * O contador do gate é lido aqui, e não depois: a chamada seguinte
+             * (`$porIdentificador`) zera `$this->barradasPeloGate` no seu próprio
+             * início, e o número que interessa ao relatório é o dos primários —
+             * é neles que os termos de pack/série rodam e é o gate deles que
+             * explica uma lista curta.
+             */
+            $barradasDosPrimarios = $this->barradasPeloGate;
+
+            $porIdentificador = $this->buscarGrupo(
+                $this->porIdentificador,
+                $primeiroTitulo,
+                $ano,
+                $imdbId,
+                $temporada,
+                $episodio
+            );
+
+            $fontes = $this->mesclar($fontes, $porNome, $porIdentificador);
+
+            $this->registrarEtapa('nativos', $primeiroTitulo, $porNome, $termoDeSerie, $barradasDosPrimarios);
+        }
 
         /*
          * O título traduzido é o que os trackers brasileiros usam, mas o título
@@ -182,47 +310,160 @@ class CatalogoProvedores
          * originais; agora o corte de idioma nem descarta mais nada — só etiqueta
          * — e quem decide quanto de reserva entra é a montagem final, no
          * TorrentService.
+         *
+         * O laço começa no **segundo** termo: o primeiro já foi coberto pela
+         * rodada de abertura acima, com todos os provedores. Aqui só restam as
+         * variações dubladas, que interessam aos provedores por nome — os por
+         * identificador ignoram o termo e não são repetidos.
          */
-        foreach ($titulos as $titulo) {
+        foreach (array_slice($titulos, 1) as $titulo) {
+            /*
+             * O prazo global é checado antes de cada termo: um termo novo é uma
+             * nova rodada de requisições em todos os provedores, e começar uma
+             * rodada que já não cabe no orçamento só serviria para estourar o
+             * tempo do frontend. O que já foi recolhido segue para a montagem.
+             */
+            if ($this->orcamentoEsgotado()) {
+                $this->avisarPrazo('nativos');
+
+                break;
+            }
+
             $termoDePack = $this->eTermoDePack($titulo, $temporada, $episodio);
             $termoDeSerie = $this->eTermoDeSerie($titulo, $temporada, $episodio);
 
-            $desteTermo = $this->buscarGrupo($this->primarios, $titulo, $ano, $imdbId, $temporada, $episodio, $termoDePack, $termoDeSerie);
+            $desteTermo = $this->buscarGrupo($this->primarios, $titulo, $ano, $imdbId, $temporada, $episodio, $termoDePack, $termoDeSerie, $titulos);
             $fontes = $this->mesclar($fontes, $desteTermo);
 
             $this->registrarEtapa('nativos', $titulo, $desteTermo, $termoDeSerie, $this->barradasPeloGate);
 
             if ($this->coletaSuficiente($fontes)) {
-                return $fontes;
+                /*
+                 * Com `buscar_todos` ligado, a meta não encerra a busca: ela só
+                 * diz que não vale mais insistir nos termos restantes deste
+                 * degrau. Os provedores que ainda não renderam o suficiente já
+                 * foram visitados na rodada de abertura, então parar aqui não
+                 * deixa ninguém de fora — e o degrau seguinte continua.
+                 */
+                if ($this->buscarTodos() || $this->coberturaCompleta()) {
+                    break;
+                }
+
+                return $this->encerrar($fontes, $titulos, $temporada, $episodio);
             }
         }
 
-        // Degrau 2: indexador. Só é consultado se o degrau nativo não juntou a meta
-        // de fontes PT-BR — e para assim que a meta é alcançada, sem varrer todos
-        // os termos restantes.
+        /*
+         * A rodada de abertura já perguntou a todos os provedores por nome. Se ela
+         * sozinha juntou a meta de fontes PT-BR, não há por que descer ao
+         * indexador: o corte que antes acontecia dentro do laço passa a valer
+         * aqui, depois de todos terem respondido.
+         *
+         * Com `buscar_todos` ligado o corte não vale: a busca desce ao indexador
+         * mesmo com a meta batida, porque o objetivo é somar o que cada degrau
+         * oferece — e o indexador é um provedor como os outros.
+         */
+        if ($this->coletaSuficiente($fontes) && ! $this->coberturaCompleta() && ! $this->buscarTodos()) {
+            return $this->encerrar($fontes, $titulos, $temporada, $episodio);
+        }
+
+        /*
+         * Degrau 2: indexador. Sem `buscar_todos`, só é consultado se o degrau
+         * nativo não juntou a meta de fontes PT-BR. Com ele ligado, o indexador é
+         * visitado de qualquer forma — é um provedor como os outros e o objetivo é
+         * somar o que cada degrau oferece. Em ambos os casos, a meta encerra a
+         * repetição de termos, não a busca.
+         */
+        $this->loteConsumido = [];
+
         foreach ($titulos as $titulo) {
+            /*
+             * O indexador é o degrau mais caro: cada termo rende duas consultas
+             * (pura e dublada) e cada consulta varre todos os indexadores do
+             * Prowlarr. Ele tem o próprio orçamento interno, mas ainda assim não
+             * vale começar um termo quando o prazo global já acabou.
+             */
+            if ($this->orcamentoEsgotado()) {
+                $this->avisarPrazo('indexador');
+
+                break;
+            }
+
             $termoDePack = $this->eTermoDePack($titulo, $temporada, $episodio);
             $termoDeSerie = $this->eTermoDeSerie($titulo, $temporada, $episodio);
 
-            $desteTermo = $this->buscarGrupo([$this->torznab], $titulo, $ano, $imdbId, $temporada, $episodio, $termoDePack, $termoDeSerie);
+            $desteTermo = $this->buscarGrupo([$this->torznab], $titulo, $ano, $imdbId, $temporada, $episodio, $termoDePack, $termoDeSerie, $titulos);
             $fontes = $this->mesclar($fontes, $desteTermo);
 
             $this->registrarEtapa('indexador', $titulo, $desteTermo, $termoDeSerie, $this->barradasPeloGate);
 
             if ($this->coletaSuficiente($fontes)) {
-                return $fontes;
+                /*
+                 * Mesma regra do degrau nativo: com `buscar_todos` ligado a meta
+                 * só encerra a repetição de termos, não a busca. O YTS, que é o
+                 * último degrau, ainda precisa ser consultado.
+                 */
+                if ($this->buscarTodos() || $this->coberturaCompleta()) {
+                    break;
+                }
+
+                return $this->encerrar($fontes, $titulos, $temporada, $episodio);
             }
         }
 
-        // Degrau 3: reserva em inglês. Entra sempre que nada dublado apareceu.
-        // Em episódio o YTS se abstém sozinho (é catálogo só de filmes), então a
-        // chamada é inofensiva e mantém a cascata com um formato único.
-        $fontes = $this->mesclar(
-            $fontes,
-            $this->buscarGrupo([$this->yts], $titulos[0] ?? '', $ano, $imdbId, $temporada, $episodio)
-        );
+        /*
+         * Degrau 3: reserva em inglês. Entra sempre que nada dublado apareceu.
+         * Em episódio o YTS se abstém sozinho (é catálogo só de filmes), então a
+         * chamada é inofensiva e mantém a cascata com um formato único.
+         *
+         * É a última rede: se o prazo global já estourou, nem ela é tentada — o
+         * que foi recolhido até aqui é o que o usuário recebe, e é melhor uma
+         * lista parcial agora do que uma lista completa que nunca chega.
+         */
+        if (! $this->orcamentoEsgotado()) {
+            $fontes = $this->mesclar(
+                $fontes,
+                $this->buscarGrupo([$this->yts], $titulos[0] ?? '', $ano, $imdbId, $temporada, $episodio)
+            );
+        } else {
+            $this->avisarPrazo('yts');
+        }
 
-        return $fontes;
+        return $this->encerrar($fontes, $titulos, $temporada, $episodio);
+    }
+
+    /**
+     * Diz se o orçamento de tempo da busca inteira acabou.
+     *
+     * O prazo é ancorado no início de `buscar()` e vale para a cascata toda —
+     * termos e degraus. Sem ele, cada provedor respeitava o próprio teto, mas a
+     * soma não tinha limite: era essa soma que estourava os 60 s do frontend e
+     * fazia a requisição ser cancelada antes de a lista chegar à tela.
+     */
+    private function orcamentoEsgotado(): bool
+    {
+        return $this->orcamento->esgotado();
+    }
+
+    /**
+     * Registra, uma vez por busca, que o orçamento acabou e onde.
+     *
+     * O `degrau` no log é o que separa "a busca terminou sozinha" de "a busca foi
+     * cortada no meio": sem ele, uma lista menor que o esperado fica
+     * indistinguível de "o acervo não tinha o release".
+     */
+    private function avisarPrazo(string $degrau): void
+    {
+        if ($this->avisouPrazo) {
+            return;
+        }
+
+        $this->avisouPrazo = true;
+
+        Log::warning('Orçamento da busca de torrents esgotado; devolvendo o que foi recolhido.', [
+            'degrau' => $degrau,
+            'orcamento' => (int) config('services.torrents.orcamento_busca', 45),
+        ]);
     }
 
     /**
@@ -241,6 +482,228 @@ class CatalogoProvedores
         }
 
         return false;
+    }
+
+    /**
+     * Relatório da cobertura da última busca: o que cada provedor respondeu.
+     *
+     * É a resposta verificável a "perguntamos a todos?". Cada provedor do registro
+     * aparece, mesmo o que nunca foi tocado, com a situação que explica o silêncio:
+     * `sem_credencial` (chave faltando), `nao_consultado` (a cascata parou antes de
+     * chegar nele), `erro`, `sem_resultado`, `barrado_no_filtro` (respondeu, mas
+     * nada sobreviveu ao gate) ou `com_fonte`. Sem o relatório, "o indexador não
+     * trouxe nada" e "o indexador nunca foi perguntado" viram a mesma linha de log.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function cobertura(): array
+    {
+        $relatorio = [];
+
+        foreach ($this->censo as $id => $censo) {
+            $relatorio[] = [
+                'provedor' => $id,
+                'rotulo' => $censo['rotulo'],
+                'situacao' => $this->situacaoDoCenso($censo),
+                'consultas' => $censo['consultas'],
+                'do_cache' => $censo['do_cache'],
+                'erros' => $censo['erros'],
+                // Tempo de parede gasto neste provedor na busca inteira. É o que
+                // separa "não trouxe nada" de "trouxe nada devagar": quando a lista
+                // demora e o frontend aborta, é este número que denuncia o degrau.
+                'ms' => $censo['ms'],
+                'fontes' => $censo['brutas'],
+                'aproveitadas' => $censo['aproveitadas'],
+                'pt_br' => $censo['pt_br'],
+                'packs' => $censo['packs'],
+                // Quantas fontes deste provedor sobreviveram à montagem final.
+                // Sem este número, `aproveitadas` conta o que passou pelo gate da
+                // cascata e o censo mente: um provedor que só trouxe original fica
+                // `com_fonte` mesmo sem nenhuma fonte na lista que o usuário vê.
+                'na_lista' => $censo['na_lista'],
+            ];
+        }
+
+        return $relatorio;
+    }
+
+    /**
+     * Reconcilia o censo com a lista final que o usuário recebe.
+     *
+     * O censo é contado dentro da cascata, antes da montagem final. Isso fazia o
+     * relatório dizer `com_fonte` para um provedor cujas fontes foram todas
+     * descartadas depois — o caso do APIBay, que teve aproveitadas no gate mas
+     * nenhuma sobreviveu ao corte de idioma. Aqui o número `na_lista` é gravado a
+     * partir da lista que de fato saiu, e a situação do provedor é reescrita para
+     * `descartado_na_montagem` quando ele teve aproveitadas mas nenhuma chegou ao
+     * fim. Assim o censo deixa de mentir: `com_fonte` passa a significar "tem
+     * fonte na lista", não "passou pelo gate".
+     *
+     * @param  array<int, array<string, mixed>>  $fontes  Lista final já montada
+     */
+    public function reconciliarCenso(array $fontes): void
+    {
+        foreach ($this->censo as $id => $censo) {
+            $this->censo[$id]['na_lista'] = 0;
+        }
+
+        foreach ($fontes as $fonte) {
+            $provedor = (string) ($fonte['provedor'] ?? '');
+
+            if ($provedor !== '' && isset($this->censo[$provedor])) {
+                $this->censo[$provedor]['na_lista']++;
+            }
+        }
+    }
+
+    /**
+     * Zera o censo, mantendo o registro de provedores do relatório.
+     *
+     * Roda também no construtor: assim uma busca que nunca chegou a consultar nada
+     * ainda devolve o registro completo, com todo mundo em `nao_consultado`, em vez
+     * de um relatório vazio que não distingue nada.
+     */
+    private function reiniciarCenso(): void
+    {
+        $this->censo = [];
+        $this->fontesNoCenso = [];
+
+        foreach ($this->registro as $provedor) {
+            $this->censo[$provedor->identificador()] = [
+                'rotulo' => $provedor->rotulo(),
+                'disponivel' => true,
+                'consultas' => 0,
+                'do_cache' => 0,
+                'erros' => 0,
+                'ms' => 0,
+                'brutas' => 0,
+                'aproveitadas' => 0,
+                'pt_br' => 0,
+                'packs' => 0,
+                // Preenchido só na reconciliação, depois da montagem final. Nasce
+                // zerado para o relatório de uma busca que nunca chegou a montar
+                // não devolver a chave ausente.
+                'na_lista' => 0,
+            ];
+        }
+    }
+
+    /**
+     * Contabiliza, por provedor, o que sobreviveu ao gate da cascata.
+     *
+     * O número que interessa não é quantas fontes o provedor devolveu, e sim
+     * quantas passaram pelo filtro de numeração/idioma: um provedor que responde
+     * vinte releases da temporada errada fica com `barrado_no_filtro`, e é isso que
+     * explica uma lista curta sem culpar o provedor nem esconder o gate. O corte de
+     * `LIMITE_FONTES` é posterior e não entra nesta conta — `aproveitadas` pode ser
+     * maior que a lista final.
+     *
+     * @param  array<int, array<string, mixed>>  $fontes
+     */
+    private function contabilizarAproveitadas(array $fontes): void
+    {
+        foreach ($fontes as $fonte) {
+            $id = (string) ($fonte['id'] ?? '');
+
+            if ($id === '' || isset($this->fontesNoCenso[$id])) {
+                continue;
+            }
+
+            $this->fontesNoCenso[$id] = true;
+
+            $provedor = (string) ($fonte['provedor'] ?? '');
+
+            if ($provedor === '' || ! isset($this->censo[$provedor])) {
+                continue;
+            }
+
+            $this->censo[$provedor]['aproveitadas']++;
+
+            if (($fonte['pt_br'] ?? false) === true) {
+                $this->censo[$provedor]['pt_br']++;
+            }
+
+            if (! empty($fonte['pack'])) {
+                $this->censo[$provedor]['packs']++;
+            }
+        }
+    }
+
+    /**
+     * Traduz os contadores de um provedor na situação que o relatório mostra.
+     *
+     * @param  array<string, mixed>  $censo
+     */
+    private function situacaoDoCenso(array $censo): string
+    {
+        if (! $censo['disponivel']) {
+            return 'sem_credencial';
+        }
+
+        if ($censo['consultas'] === 0) {
+            return 'nao_consultado';
+        }
+
+        if ($censo['brutas'] === 0) {
+            return $censo['erros'] > 0 ? 'erro' : 'sem_resultado';
+        }
+
+        if ($censo['aproveitadas'] === 0) {
+            return 'barrado_no_filtro';
+        }
+
+        /*
+         * Passou pelo gate da cascata, mas nenhuma fonte chegou à lista final.
+         * É o caso do provedor que só trouxe original quando havia dublado: o
+         * corte de idioma da montagem o descartou inteiro. Sem esta situação, o
+         * relatório diria `com_fonte` e o usuário procuraria na lista uma fonte
+         * que não está lá.
+         */
+        return $censo['na_lista'] > 0 ? 'com_fonte' : 'descartado_na_montagem';
+    }
+
+    /**
+     * Fecha a busca registrando a cobertura e devolvendo as fontes.
+     *
+     * O log sai junto do retorno porque este é o único ponto por onde todos os
+     * desfechos passam — inclusive os que param cedo por meta atingida, que são
+     * justamente os que deixam provedor sem consulta.
+     *
+     * @param  array<int, array<string, mixed>>  $fontes
+     * @param  array<int, string>  $titulos
+     * @return array<int, array<string, mixed>>
+     */
+    private function encerrar(array $fontes, array $titulos, ?int $temporada, ?int $episodio): array
+    {
+        /*
+         * O orçamento é fechado aqui porque este é o único ponto por onde todos os
+         * desfechos passam. Deixá-lo de pé faria a próxima busca — que o reabre
+         * logo no início — herdar um relógio já vencido caso alguma chamada
+         * acontecesse antes do `abrir()`.
+         */
+        $this->orcamento->fechar();
+
+        $cobertura = $this->cobertura();
+
+        $naoConsultados = array_values(array_map(
+            fn (array $item): string => (string) $item['provedor'],
+            array_filter($cobertura, fn (array $item): bool => $item['situacao'] === 'nao_consultado')
+        ));
+
+        Log::info('Cobertura da busca de torrents.', [
+            'titulos' => $titulos,
+            'temporada' => $temporada,
+            'episodio' => $episodio,
+            'fontes' => count($fontes),
+            'provedores_consultados' => count(array_filter(
+                $cobertura,
+                fn (array $item): bool => $item['consultas'] > 0
+            )),
+            'nao_consultados' => $naoConsultados,
+            'cobertura' => $cobertura,
+        ]);
+
+        return $fontes;
     }
 
     /**
@@ -285,6 +748,60 @@ class CatalogoProvedores
     }
 
     /**
+     * Diz se a busca deve seguir até o último degrau mesmo com a meta já batida.
+     *
+     * Desligada (padrão), a meta PT-BR encerra a cascata assim que alcançada — a
+     * busca economiza tempo e os degraus de baixo ficam `nao_consultado` no
+     * relatório. Ligada, a meta apenas encerra a repetição de termos do degrau
+     * atual: a cascata desce até o último degrau, para que todo provedor do
+     * registro seja perguntado ao menos uma vez e o relatório prove isso. O custo
+     * é a latência do indexador; ligue quando precisar de certeza, não no fluxo
+     * comum.
+     */
+    private function coberturaCompleta(): bool
+    {
+        return (bool) config('services.torrents.cobertura_completa', false);
+    }
+
+    /**
+     * Diz se a busca deve percorrer todos os provedores, sem encerrar na meta.
+     *
+     * É o comportamento padrão. Ligada, a meta PT-BR deixa de encerrar a busca:
+     * ela só marca o ponto em que não vale mais insistir nos termos restantes do
+     * degrau atual. Cada provedor é visitado até render
+     * `fontes_suficientes_por_provedor` fontes — e então é deixado de lado, não
+     * por ter falhado, mas por já ter dado o que tinha —, e a busca segue para o
+     * próximo. Quem não tem fonte ou está indisponível é pulado na hora.
+     *
+     * O efeito é uma lista montada com o que **cada** provedor oferece, em vez de
+     * parar no primeiro que bate a meta. O preço é a latência: como a busca não
+     * encerra cedo, o orçamento global passa a ser o único freio.
+     */
+    private function buscarTodos(): bool
+    {
+        return (bool) config('services.torrents.buscar_todos', true);
+    }
+
+    /**
+     * Diz se a busca já rendeu alguma fonte aproveitável de episódio.
+     *
+     * É o gatilho que dispensa os termos de socorro (pack e série): eles só fazem
+     * sentido quando os termos de episódio não acharam nada. A conta olha o censo
+     * inteiro, e não a lista corrente, porque a fonte pode ter vindo de qualquer
+     * provedor já consultado — o que importa é que o episódio tem resposta.
+     */
+    private function jaTemEpisodioAproveitado(): bool
+    {
+        foreach ($this->censo as $censo) {
+            if ($censo['aproveitadas'] > 0) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Diz se a coleta já juntou fontes PT-BR suficientes para parar de buscar.
      *
      * A meta (`meta_pt_br_coleta`) é deliberadamente menor que o mínimo da lista
@@ -300,6 +817,34 @@ class CatalogoProvedores
         $meta = (int) config('services.torrents.meta_pt_br_coleta', 6);
 
         return $this->ptBrAcumulado($fontes) >= $meta;
+    }
+
+    /**
+     * Diz se o provedor já rendeu o suficiente e pode ser deixado de lado nos
+     * termos seguintes.
+     *
+     * A conta usa as fontes **aproveitadas** (as que passaram pelo gate de
+     * numeração e idioma), e não as brutas: um provedor que devolve vinte releases
+     * da temporada errada não ganhou nada com isso, e continuar perguntando ainda
+     * faz sentido. Sem este corte, um episódio de série nova monta dezenas de
+     * termos e cada degrau é martelado uma vez por termo — foi assim que a busca
+     * de "Lanternas S01E01" passou de um minuto e o navegador abortou. O corte não
+     * encosta na ordenação final, que roda depois e ignora a ordem de coleta; ele
+     * só decide quando parar de repetir a mesma pergunta ao mesmo provedor.
+     *
+     * Com `buscar_todos` ligado, este é o mecanismo que faz a busca **avançar**:
+     * um provedor que já entregou o suficiente não é mais martelado, e a vez passa
+     * ao próximo — que é justamente o que garante que todos sejam visitados sem
+     * que nenhum consuma o orçamento inteiro.
+     *
+     * Em `0` (ou negativo) o corte fica desligado e a busca volta a varrer todos
+     * os termos em todos os degraus.
+     */
+    private function suficientePorProvedor(string $id): bool
+    {
+        $limite = (int) config('services.torrents.fontes_suficientes_por_provedor', 4);
+
+        return $limite > 0 && ($this->censo[$id]['aproveitadas'] ?? 0) >= $limite;
     }
 
     /**
@@ -358,7 +903,33 @@ class CatalogoProvedores
         ?int $episodio = null,
         bool $termoDePack = false,
         bool $termoDeSerie = false,
+        array $lote = [],
+        bool $dispensarSocorro = false,
     ): array {
+        /*
+         * Termo de socorro com o episódio já resolvido: não pergunta.
+         *
+         * Os termos de pack e de série existem para a série antiga, cujo episódio
+         * isolado já não tem seeds — são o último recurso, e por isso vêm no fim
+         * da lista de termos. Quando a busca já juntou fontes aproveitáveis nos
+         * termos de episódio, insistir neles é o que multiplica as requisições: no
+         * "Lanternas S01E01" são nove termos de socorro por título, e cada um
+         * varre todos os provedores por nome. O corte não muda o resultado — quem
+         * tem episódio vivo não precisa do pack — e derruba a espera.
+         *
+         * A exceção é a rodada de abertura (`$dispensarSocorro`): nela os
+         * provedores por identificador e os primários por nome correm juntos, e o
+         * que o Torrentio achar não pode calar o Knaben. Sem esta dispensa, o
+         * Torrentio respondia primeiro, marcava `aproveitadas` no censo e o
+         * `jaTemEpisodioAproveitado()` — que lê o censo inteiro — fazia os termos
+         * de pack/série dos primários serem pulados na mesma rodada. Era esse o
+         * "só veio do Torrentio": o Knaben, que é quem enxerga os packs nacionais
+         * das séries antigas, nunca chegava a ser perguntado.
+         */
+        if (! $dispensarSocorro && ($termoDePack || $termoDeSerie) && $this->jaTemEpisodioAproveitado()) {
+            return [];
+        }
+
         /*
          * O contador do gate começa zerado a cada grupo: ele é lido logo depois,
          * pelo `registrarEtapa()`, e precisa refletir só esta consulta — não o
@@ -373,15 +944,65 @@ class CatalogoProvedores
         $fontes = [];
 
         foreach ($provedores as $provedor) {
+            /*
+             * O prazo global é reavaliado a cada provedor, e não só entre termos.
+             * Sem esta checagem, uma rodada que começou a segundos do fim ainda
+             * percorria todos os provedores restantes — cada um com o próprio
+             * `tempo_limite` e, se bloqueado, mais o `proxy_nativo_timeout` do
+             * FlareSolverr. Era essa soma dentro de uma única rodada que estourava
+             * os 60 s do frontend mesmo com o orçamento global em 45 s: o relógio
+             * só era lido no termo seguinte, tarde demais. Parar aqui devolve o que
+             * já foi recolhido em vez de perder a lista inteira.
+             */
+            if ($this->orcamentoEsgotado()) {
+                $this->avisarPrazo('nativos');
+
+                break;
+            }
+
             if (! $provedor->disponivel()) {
                 /*
                  * Regra da credencial ausente: pular o provedor e deixar a
                  * cascata seguir. Nada de erro bloqueante — a falta de uma chave
-                 * reduz o alcance, não impede a busca.
+                 * reduz o alcance, não impede a busca. A dispensa entra no censo
+                 * para o relatório separar "não perguntamos" de "não havia como
+                 * perguntar".
                  */
+                $this->censo[$provedor->identificador()]['disponivel'] = false;
+
                 Log::info('Provedor de torrents pulado por falta de configuração.', [
                     'provedor' => $provedor->identificador(),
                 ]);
+
+                continue;
+            }
+
+            /*
+             * Provedor já suficiente: repetir os termos restantes só gastaria
+             * requisições com quem já disse o que tinha. Ele continua no censo com
+             * o que rendeu — o que muda é o custo da busca, não o relatório.
+             */
+            if ($this->suficientePorProvedor($provedor->identificador())) {
+                continue;
+            }
+
+            /*
+             * Provedor de lote: pergunta o degrau inteiro de uma vez e sai do
+             * laço. A chamada só acontece no primeiro termo — nos seguintes ele já
+             * está marcado como consumido, senão repetiria a mesma varredura a
+             * cada termo, que é justamente o custo que o lote veio eliminar.
+             */
+            if ($provedor instanceof ProvedorPorLote && $lote !== []) {
+                if (isset($this->loteConsumido[$provedor->identificador()])) {
+                    continue;
+                }
+
+                $this->loteConsumido[$provedor->identificador()] = true;
+
+                $fontes = $this->mesclar(
+                    $fontes,
+                    $this->buscarLoteComCache($provedor, $lote, $ano, $imdbId, $temporada, $episodio)
+                );
 
                 continue;
             }
@@ -407,8 +1028,11 @@ class CatalogoProvedores
          * "não acha pack" das séries antigas.
          */
         $fontes = $this->marcarPacks($fontes, $temporada, $episodio, $termoDePack);
+        $fontes = $this->aproveitaveis($fontes, $temporada, $episodio);
 
-        return $this->aproveitaveis($fontes, $temporada, $episodio, $termoDeSerie);
+        $this->contabilizarAproveitadas($fontes);
+
+        return $fontes;
     }
 
     /**
@@ -462,8 +1086,9 @@ class CatalogoProvedores
      *   confiamos no termo: o provedor nem sempre repete a temporada no nome.
      *
      * Marcar como pack não basta: o idioma ainda pode estar em aberto no nome.
-     * Um pack marcado e sem PT-BR provado segue para `confirmarIdiomaDoPack()`,
-     * que tenta provar o dublado pelo conteúdo.
+     * Um pack marcado e sem PT-BR provado tem o conteúdo inspecionado em lote
+     * pelo [`InspecaoPack::apurarVarios()`], que abre todos os candidatos de uma
+     * vez e promove a dublado os que provam PT-BR por dentro.
      *
      * @param  array<int, array<string, mixed>>  $fontes
      * @return array<int, array<string, mixed>>
@@ -474,77 +1099,127 @@ class CatalogoProvedores
             return $fontes;
         }
 
-        return array_map(function (array $fonte) use ($temporada, $termoDePack): array {
-            $nome = (string) ($fonte['release'] ?? $fonte['titulo'] ?? '');
+        /*
+         * A marcação acontece em duas passadas, e não numa só, porque a inspeção
+         * de conteúdo é a etapa mais cara da busca: cada pack aberto é uma
+         * conexão e uma espera no media-service. Julgar um pack de cada vez
+         * (como era antes) somava o custo de todos — seis packs com o teto de
+         * 12 s passavam de 70 s só aqui, e era isso que estourava o tempo do
+         * frontend mesmo com todos os provedores vindo do cache.
+         *
+         * A primeira passada só decide **quais** packs merecem inspeção e monta
+         * o mapa infohash => magnet. A segunda dispara todos de uma vez, em
+         * paralelo, e aplica os vereditos. O tempo de parede passa a ser o do
+         * pack mais lento, não a soma de todos.
+         */
+        $candidatos = [];
+        $magnetPorId = [];
 
-            if ($nome === '' || TermosBusca::numeracaoDoTitulo($nome) !== null) {
-                return $fonte;
+        foreach ($fontes as $indice => $fonte) {
+            /*
+             * A decisão de pack olha os **dois** nomes da fonte, e não só um.
+             *
+             * O `release` é o nome do torrent quando o provedor o informa (a
+             * primeira linha do rótulo, no caso dos addons Stremio). Mas há
+             * provedores em que o `release` acaba sendo o nome do arquivo interno
+             * ("2x13 - Madness Ends"): aí a numeração de episódio esconde a
+             * temporada do pacote e o pack da 2ª passava batido pelo gate,
+             * subindo ao topo de uma busca da 1ª. Lendo também o `titulo` — que
+             * carrega o nome do torrent — a temporada declarada reaparece.
+             */
+            $nomes = array_values(array_unique(array_filter([
+                (string) ($fonte['release'] ?? ''),
+                (string) ($fonte['titulo'] ?? ''),
+            ], fn (string $valor): bool => $valor !== '')));
+
+            if ($nomes === []) {
+                continue;
             }
 
-            $ePack = TermosBusca::temporadaNoRelease($nome, $temporada)
-                || ($termoDePack && TermosBusca::temporadaDoTitulo($nome) === null);
+            /*
+             * Um nome que declara temporada prova o pack mesmo que outro traga
+             * numeração de episódio. Só quando nenhum nome declara temporada é
+             * que a numeração de episódio manda — e aí não é pack de temporada,
+             * é um episódio mal marcado, que quem julga é a numeração.
+             */
+            $temporadaDeclarada = TermosBusca::temporadaDosNomes($nomes);
+
+            if ($temporadaDeclarada === null) {
+                $temNumeracao = false;
+
+                foreach ($nomes as $nome) {
+                    if (TermosBusca::numeracaoDoTitulo($nome) !== null) {
+                        $temNumeracao = true;
+
+                        break;
+                    }
+                }
+
+                if ($temNumeracao) {
+                    continue;
+                }
+            }
+
+            $ePack = TermosBusca::algumNomeCobreTemporada($nomes, $temporada)
+                || ($termoDePack && $temporadaDeclarada === null);
 
             if (! $ePack) {
-                return $fonte;
+                continue;
             }
 
-            $fonte['pack'] = true;
+            $fontes[$indice]['pack'] = true;
 
-            return $this->confirmarIdiomaDoPack($fonte);
-        }, $fontes);
-    }
+            $idioma = (string) ($fonte['idioma'] ?? '');
 
-    /**
-     * Confirma, pelo conteúdo, se um pack sem idioma no nome é dublado.
-     *
-     * O nome do pack é a primeira prova de idioma, mas muitos packs nacionais
-     * não a trazem: o "Dublado" mora na pasta de dentro ("Temporada 1 Dublado/")
-     * ou no nome de cada episódio. Quando o nome deixa o idioma em aberto — nem
-     * dublado, nem dual —, abrimos os metadados pelo media-service e lemos os
-     * caminhos. Se algum prova PT-BR, o idioma do pack é promovido a dublado e
-     * ele passa a contar como fonte boa na lista.
-     *
-     * O esforço é limitado de propósito: cada abertura é uma conexão e uma
-     * espera, e a busca não pode virar uma varredura de dezenas de packs. O teto
-     * (`inspecao_packs_limite`) e o conjunto de ids já vistos valem por busca.
-     *
-     * Falha de leitura não rebaixa nada: o pack fica como estava (reserva) e a
-     * próxima busca tenta de novo — o cache só guarda veredito definitivo.
-     *
-     * @param  array<string, mixed>  $fonte
-     * @return array<string, mixed>
-     */
-    private function confirmarIdiomaDoPack(array $fonte): array
-    {
-        $idioma = (string) ($fonte['idioma'] ?? '');
+            // O nome já provou PT-BR: não há o que inspecionar.
+            if (in_array($idioma, [IdiomaFonte::DUBLADO->value, IdiomaFonte::DUAL_AUDIO->value], true)) {
+                continue;
+            }
 
-        // O nome já provou PT-BR: não há o que inspecionar.
-        if (in_array($idioma, [IdiomaFonte::DUBLADO->value, IdiomaFonte::DUAL_AUDIO->value], true)) {
-            return $fonte;
+            $magnet = (string) ($fonte['magnet'] ?? '');
+            $id = (string) ($fonte['id'] ?? '');
+
+            if ($magnet === '' || $id === ''
+                || isset($this->packsInspecionados[$id])
+                || $this->inspecoes >= (int) config('services.torrents.inspecao_packs_limite', 6)) {
+                continue;
+            }
+
+            $this->packsInspecionados[$id] = true;
+            $this->inspecoes++;
+
+            $candidatos[$id] = $indice;
+            $magnetPorId[$id] = $magnet;
         }
 
-        $magnet = (string) ($fonte['magnet'] ?? '');
-        $id = (string) ($fonte['id'] ?? '');
-        $limite = (int) config('services.torrents.inspecao_packs_limite', 6);
-
-        if ($magnet === '' || $id === ''
-            || isset($this->packsInspecionados[$id])
-            || $this->inspecoes >= $limite) {
-            return $fonte;
+        if ($magnetPorId === []) {
+            return $fontes;
         }
 
-        $this->packsInspecionados[$id] = true;
-        $this->inspecoes++;
-
-        if ($this->inspecao->apurar($magnet, $id) !== true) {
-            return $fonte;
+        /*
+         * O orçamento global manda também aqui: se o prazo já acabou, não faz
+         * sentido abrir packs que não terão tempo de responder — a busca está
+         * encerrando e o que já foi recolhido é o que o usuário recebe.
+         */
+        if ($this->orcamentoEsgotado()) {
+            return $fontes;
         }
 
-        $fonte['idioma'] = IdiomaFonte::DUBLADO->value;
-        $fonte['idioma_rotulo'] = IdiomaFonte::DUBLADO->rotulo();
-        $fonte['idioma_por_inspecao'] = true;
+        $vereditos = $this->inspecao->apurarVarios($magnetPorId, $this->orcamento);
 
-        return $fonte;
+        foreach ($vereditos as $id => $indicio) {
+            if ($indicio !== true || ! isset($candidatos[$id])) {
+                continue;
+            }
+
+            $indice = $candidatos[$id];
+
+            $fontes[$indice]['idioma'] = IdiomaFonte::DUBLADO->value;
+            $fontes[$indice]['idioma_rotulo'] = IdiomaFonte::DUBLADO->rotulo();
+            $fontes[$indice]['idioma_por_inspecao'] = true;
+        }
+
+        return $fontes;
     }
 
     /**
@@ -555,10 +1230,13 @@ class CatalogoProvedores
      * 1. **Numeração** — releases que declaram uma temporada/episódio diferente
      *    da pedida. Releases sem numeração passam, para não apagar packs e nomes
      *    nacionais legítimos.
-     * 2. **Temporada (só no termo de série)** — quando a fonte veio de um termo
-     *    de série, o silêncio deixa de ser inocente: sem numeração que a
-     *    localize, ela precisa declarar a temporada pedida ou é descartada. É o
-     *    gate que a largueza do termo de série torna obrigatório.
+     * 2. **Temporada (em qualquer termo)** — quando a fonte não declara
+     *    numeração de episódio, o silêncio deixa de ser inocente: ela precisa
+     *    declarar a temporada pedida (ou uma faixa que a cubra) ou é descartada.
+     *    O gate valia só para o termo de série, e era esse o furo: o pack da 2ª
+     *    temporada chegava por um termo de **pack** ("... Temporada 2 completa"),
+     *    onde o gate era pulado inteiro, e entrava numa busca da 1ª. Como o pack
+     *    tem mais seeds, subia ao topo e o player abria o episódio errado.
      * 3. **Etiqueta de idioma** — cada fonte que passa recebe `pt_br` conforme o
      *    idioma deduzido (dublado e dual valem). O idioma **não** descarta mais
      *    nada aqui: o que não é PT-BR vira reserva, e a montagem final decide
@@ -568,7 +1246,7 @@ class CatalogoProvedores
      * @param  array<int, array<string, mixed>>  $fontes
      * @return array<int, array<string, mixed>>
      */
-    private function aproveitaveis(array $fontes, ?int $temporada, ?int $episodio, bool $termoDeSerie = false): array
+    private function aproveitaveis(array $fontes, ?int $temporada, ?int $episodio): array
     {
         $resultado = [];
 
@@ -579,7 +1257,7 @@ class CatalogoProvedores
             }
 
             /*
-             * Gate de temporada para fontes vindas de um termo de série.
+             * Gate de temporada para fontes sem numeração de episódio.
              *
              * O termo de série existe para ser largo: sem "S01E01" e sem
              * "completa", ele pergunta pela série pelo nome, e é assim que os
@@ -592,15 +1270,37 @@ class CatalogoProvedores
              * ponto, e é isso que separa o pack multi-temporada da temporada
              * avulsa homônima.
              *
-             * Releases com numeração seguem julgados pelo
-             * `correspondeAoEpisodio()` acima: o gate só olha o que não tem
+             * O gate roda para **todo** termo, não só o de série: o pack da
+             * temporada errada chega também pelos termos de pack, e era por ali
+             * que ele escapava. Releases com numeração seguem julgados pelo
+             * `correspondeAoEpisodio()` acima — o gate só olha o que não tem
              * número para provar a temporada.
              */
-            if ($termoDeSerie && $temporada !== null && $episodio !== null) {
-                $nome = (string) ($fonte['release'] ?? $fonte['titulo'] ?? '');
+            if ($temporada !== null && $episodio !== null) {
+                /*
+                 * O gate lê os dois nomes da fonte, pelo mesmo motivo da
+                 * marcação de pack: o `release` pode ser o nome do arquivo
+                 * ("2x13 - Madness Ends") e esconder a temporada que o `titulo`
+                 * (nome do torrent) declara. Julgar por um só deixava o pack da
+                 * 2ª passar pelo gate de uma busca da 1ª.
+                 */
+                $nomes = array_values(array_unique(array_filter([
+                    (string) ($fonte['release'] ?? ''),
+                    (string) ($fonte['titulo'] ?? ''),
+                ], fn (string $valor): bool => $valor !== '')));
 
-                if (TermosBusca::numeracaoDoTitulo($nome) === null
-                    && ! TermosBusca::temporadaNoRelease($nome, $temporada)) {
+                $temNumeracao = false;
+
+                foreach ($nomes as $nome) {
+                    if (TermosBusca::numeracaoDoTitulo($nome) !== null) {
+                        $temNumeracao = true;
+
+                        break;
+                    }
+                }
+
+                if (! $temNumeracao
+                    && ! TermosBusca::algumNomeCobreTemporada($nomes, $temporada)) {
                     $this->barradasPeloGate++;
 
                     continue;
@@ -644,17 +1344,35 @@ class CatalogoProvedores
         ?int $temporada = null,
         ?int $episodio = null,
     ): array {
-        $chave = 'torrent:provedor:'.self::VERSAO_CACHE.':'.$provedor->identificador().':'
+        $id = $provedor->identificador();
+
+        $chave = 'torrent:provedor:'.self::VERSAO_CACHE.':'.$id.':'
             .md5(mb_strtolower($titulo).'|'.$ano.'|'.$imdbId.'|'.$temporada.'|'.$episodio);
 
         $ttl = (int) config('services.torrents.cache_ttl', 1800);
 
-        return Cache::remember($chave, $ttl, function () use ($provedor, $titulo, $ano, $imdbId, $temporada, $episodio) {
+        /*
+         * O `has()` antes do `remember()` é o que separa "o provedor respondeu
+         * agora" de "o valor veio do cache": o censo precisa dos dois números para
+         * o relatório não dizer que consultamos o indexador quando ele foi lido de
+         * uma resposta de meia hora atrás.
+         */
+        $doCache = Cache::has($chave);
+
+        /*
+         * O cronômetro abraça o `remember()` inteiro — inclusive o tempo de rede do
+         * provedor — porque é esse tempo de parede que o usuário espera, e é ele que
+         * estoura o tempo limite do frontend. Somado por provedor, mostra onde a
+         * espera foi gasta quando a lista demora a aparecer.
+         */
+        $inicio = hrtime(true);
+
+        $fontes = Cache::remember($chave, $ttl, function () use ($provedor, $id, $titulo, $ano, $imdbId, $temporada, $episodio) {
             try {
                 $fontes = $provedor->buscar($titulo, $ano, $imdbId, $temporada, $episodio);
 
                 Log::debug('Provedor de torrents respondeu.', [
-                    'provedor' => $provedor->identificador(),
+                    'provedor' => $id,
                     'titulo' => $titulo,
                     'temporada' => $temporada,
                     'episodio' => $episodio,
@@ -663,11 +1381,85 @@ class CatalogoProvedores
 
                 return $fontes;
             } catch (\Throwable $excecao) {
+                $this->censo[$id]['erros']++;
+
                 report($excecao);
 
                 return [];
             }
         });
+
+        $this->censo[$id]['consultas']++;
+        $this->censo[$id]['brutas'] += count($fontes);
+        $this->censo[$id]['ms'] += (int) ((hrtime(true) - $inicio) / 1_000_000);
+
+        if ($doCache) {
+            $this->censo[$id]['do_cache']++;
+        }
+
+        return $fontes;
+    }
+
+    /**
+     * Consulta um provedor de lote com todos os termos do degrau de uma vez.
+     *
+     * É o mesmo contrato do `buscarComCache()`, com uma diferença: a chave de
+     * cache cobre o **conjunto** de termos, não um termo. O provedor responde o
+     * degrau inteiro numa rodada, então o cache tem de guardar essa rodada — e
+     * invalidá-la quando a lista de termos mudar (outra temporada, outro título).
+     *
+     * @param  ProvedorTorrents&ProvedorPorLote  $provedor
+     * @param  array<int, string>  $termos
+     * @return array<int, array<string, mixed>>
+     */
+    private function buscarLoteComCache(
+        ProvedorTorrents $provedor,
+        array $termos,
+        ?int $ano,
+        ?string $imdbId,
+        ?int $temporada = null,
+        ?int $episodio = null,
+    ): array {
+        $id = $provedor->identificador();
+
+        $chave = 'torrent:provedor:'.self::VERSAO_CACHE.':'.$id.':lote:'
+            .md5(mb_strtolower(implode('|', $termos)).'|'.$ano.'|'.$imdbId.'|'.$temporada.'|'.$episodio);
+
+        $ttl = (int) config('services.torrents.cache_ttl', 1800);
+
+        $doCache = Cache::has($chave);
+
+        $inicio = hrtime(true);
+
+        $fontes = Cache::remember($chave, $ttl, function () use ($provedor, $id, $termos, $ano, $imdbId, $temporada, $episodio) {
+            try {
+                $fontes = $provedor->buscarVarios($termos, $ano, $imdbId, $temporada, $episodio);
+
+                Log::debug('Provedor de torrents respondeu em lote.', [
+                    'provedor' => $id,
+                    'termos' => count($termos),
+                    'fontes' => count($fontes),
+                ]);
+
+                return $fontes;
+            } catch (\Throwable $excecao) {
+                $this->censo[$id]['erros']++;
+
+                report($excecao);
+
+                return [];
+            }
+        });
+
+        $this->censo[$id]['consultas']++;
+        $this->censo[$id]['brutas'] += count($fontes);
+        $this->censo[$id]['ms'] += (int) ((hrtime(true) - $inicio) / 1_000_000);
+
+        if ($doCache) {
+            $this->censo[$id]['do_cache']++;
+        }
+
+        return $fontes;
     }
 
     /**
