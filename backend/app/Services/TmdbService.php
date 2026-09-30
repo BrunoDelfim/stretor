@@ -191,7 +191,13 @@ class TmdbService
     }
 
     /**
-     * Busca filmes pelo título informado na navbar.
+     * Busca filmes e séries pelo título informado na navbar.
+     *
+     * Usamos `/search/multi` em vez de `/search/movie` porque a Home unificada
+     * exibe os dois tipos: buscar só filmes fazia séries como "American Horror
+     * Story" aparecerem no trending mas sumirem na pesquisa. O endpoint multi
+     * também devolve pessoas, que descartamos — elas não têm `media_type` de
+     * filme/série e quebrariam a normalização.
      *
      * @return array<int, array<string, mixed>>
      */
@@ -203,13 +209,21 @@ class TmdbService
             return [];
         }
 
-        $payload = $this->requisitar('/search/movie', [
+        $payload = $this->requisitar('/search/multi', [
             'query' => $termo,
             'page' => $pagina,
             'region' => config('services.tmdb.region'),
         ]);
 
-        return $this->normalizarLista($payload['results'] ?? []);
+        // O multi mistura filmes, séries e pessoas. Mantemos apenas os dois
+        // primeiros: pessoas não têm capa/sinopse no mesmo contrato e não são
+        // clicáveis na Home.
+        $resultados = array_values(array_filter(
+            $payload['results'] ?? [],
+            fn (array $item) => in_array($item['media_type'] ?? null, ['movie', 'tv'], true)
+        ));
+
+        return $this->normalizarLista($resultados);
     }
 
     /**
@@ -586,7 +600,10 @@ class TmdbService
             // indexadores internacionais — costumam usar o original. Tentar os
             // dois evita perder a fonte quando a tradução ficou ambígua.
             'titulo_original' => $filme['original_title'] ?? $filme['original_name'] ?? null,
-            'sinopse' => $filme['overview'] ?: MensagensFilme::SINOPSE_INDISPONIVEL,
+            // Nem todo item da listagem traz `overview` (acontece em páginas
+            // mais profundas da Home). O acesso direto quebrava a requisição
+            // inteira com "Undefined array key", então tratamos a ausência.
+            'sinopse' => ($filme['overview'] ?? '') ?: MensagensFilme::SINOPSE_INDISPONIVEL,
             'capa' => $this->montarImagem($filme['poster_path'] ?? null, TamanhoImagem::POSTER),
             'backdrop' => $this->montarImagem($filme['backdrop_path'] ?? null, TamanhoImagem::BACKDROP),
             'backdrop_alta' => $this->montarImagem($filme['backdrop_path'] ?? null, TamanhoImagem::ORIGINAL),

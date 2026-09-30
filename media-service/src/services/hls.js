@@ -114,6 +114,18 @@ const FORMATOS_CONTAINER = {
  * @returns {Promise<{modo: string, videoCodec: string, pixFmt: string, audioCodec: string, duracao: number|null, inicioFonte: number|null, idiomaAudio: string|null, idiomaAudioRotulo: string|null, idiomasAudio: Array<object>}>}
  */
 export async function analisarArquivo(arquivo) {
+  /*
+   * O ffprobe devolve "No such file or directory" quando o arquivo ainda não
+   * existe em disco — o que acontece nos primeiros porcentos do download. Esse
+   * erro é indistinguível, na mensagem, de um arquivo corrompido, então o
+   * rotulamos aqui para o chamador poder esperar em vez de desistir da fonte.
+   */
+  if (!fs.existsSync(arquivo)) {
+    const erro = new Error(`Arquivo ainda não existe em disco: ${arquivo}`)
+    erro.code = 'ENOENT'
+    throw erro
+  }
+
   const metadados = await new Promise((resolve, reject) => {
     ffmpeg.ffprobe(arquivo, (erro, dados) => {
       if (erro) return reject(erro)

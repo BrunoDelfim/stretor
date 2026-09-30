@@ -8,7 +8,7 @@ Endpoints expostos pelo backend (Laravel) e pelo media-service (Node).
 - `GET /up` — health check do framework
 - `GET /api/v1/movies/popular?page=N` — filmes mais assistidos no Brasil
 - `GET /api/v1/movies/trending?page=N` — tendências do dia (filmes, animação e séries) — alimenta a Home unificada
-- `GET /api/v1/movies/search?query=...` — busca por título (navbar)
+- `GET /api/v1/movies/search?query=...` — busca por título na navbar (filmes e séries, via `/search/multi` do TMDB)
 - `GET /api/v1/movies/{id}` — detalhes do filme (modal)
 - `GET /api/v1/movies/{id}/fontes` — fontes de torrent para reprodução
 

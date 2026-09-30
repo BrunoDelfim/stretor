@@ -15,8 +15,8 @@ namespace App\Support;
  *
  * A lista foi montada com o que os trackers PT-BR usam na prática. O critério do
  * usuário é generoso de propósito: **um** indício já prova o áudio — não precisa
- * ter todos. "Dublado", "dual áudio", "nacional", "PT-BR", "🇧🇷" e "Brasileiro"
- * apontam todos para a mesma coisa.
+ * ter todos. "Dublado", "dual áudio", "multi áudio", "nacional", "PT-BR", "🇧🇷" e
+ * "Brasileiro" apontam todos para a mesma coisa.
  *
  * Ficou de fora o "br" solto: em "BRRip" (BluRay ripado) ele apareceria em
  * release americano e marcaria como dublado o que não é. O "pt" também não pode
@@ -39,6 +39,11 @@ final class IndiciosPtBr
         'dublada',
         'dublagem',
         'dual',
+        'duplo áudio',
+        'duplo audio',
+        'multi áudio',
+        'multi audio',
+        'multi-audio',
         'nacional',
         'portugu',
         'áudio pt',

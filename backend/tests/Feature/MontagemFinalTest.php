@@ -164,6 +164,42 @@ class MontagemFinalTest extends TestCase
     }
 
     /**
+     * O pack de idioma não provado é o socorro da série antiga: sem PT-BR nenhum
+     * na lista, ele entra pela exceção de `packs_qualquer_idioma`. É este caminho
+     * que sustenta o pack compactado que não declara idioma no nome.
+     */
+    public function test_pack_sem_pt_br_e_socorro_quando_nao_ha_dublado(): void
+    {
+        $servico = $this->servicoComFontes([
+            $this->fonte('pack_original', 'torrentio', IdiomaFonte::ORIGINAL->value, 20, pack: true),
+        ]);
+
+        $fontes = $servico->fontes('American Horror Story', 2011, 'tt1320771', null, 1, 1);
+
+        $this->assertCount(1, $fontes, 'Sem PT-BR, o pack de idioma não provado entra como socorro.');
+        $this->assertSame('pack_original', $fontes[0]['id']);
+    }
+
+    /**
+     * A última linha de defesa: um pack que **declara** a temporada errada não
+     * entra, mesmo sendo dublado e tendo mais seeds. A exceção do gate na
+     * cascata não abre espaço para o pack da 2ª numa busca da 1ª — quem o barra
+     * aqui é [`TorrentService::packDaTemporadaErrada()`].
+     */
+    public function test_pack_da_temporada_errada_e_descartado_na_montagem(): void
+    {
+        $pack = $this->fonte('pack_2a', 'torrentio', IdiomaFonte::DUBLADO->value, 50, pack: true);
+        $pack['titulo'] = 'American Horror Story 2ª Temporada Dublado 1080p';
+        $pack['release'] = 'American Horror Story 2ª Temporada Dublado 1080p';
+
+        $servico = $this->servicoComFontes([$pack]);
+
+        $fontes = $servico->fontes('American Horror Story', 2011, 'tt1320771', null, 1, 1);
+
+        $this->assertCount(0, $fontes, 'O pack que declara a temporada errada não pode entrar na lista.');
+    }
+
+    /**
      * O teto de fontes é curto: mesmo com muitas PT-BR, a lista não passa do
      * limite. O usuário quer poucas opções boas, não um catálogo.
      */

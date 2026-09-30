@@ -199,6 +199,32 @@ Duas armadilhas custaram tempo aqui e valem o registro:
    definido no `.env` da raiz nunca era visto pelo Laravel. As duas pontas foram
    corrigidas.
 
+#### A segunda consulta sem o filtro (só para série)
+
+O `language=portuguese` é um corte **na origem**: o Torrentio só devolve o stream
+que ele próprio já classificou como português. Para o pack de temporada isso é um
+problema — muitos vêm rotulados de um jeito que o filtro não reconhece (grafias de
+"multi áudio", "completa legendado") e o pack some antes de o nosso parser olhar o
+nome do release, que é quem decide o idioma de fato.
+
+Por isso o [`ProvedorTorrentio::buscar()`](../backend/app/Services/Torrents/ProvedorTorrentio.php:53)
+dispara uma **segunda consulta**, sem o segmento de configuração, quando a busca é
+de série (temporada e episódio presentes). As duas respostas são fundidas por
+infohash: a consulta filtrada tem prioridade — é a leitura com o idioma mais
+provável — e a ampla só acrescenta o que ainda faltava. Filme fica de fora: o
+catálogo de filme é bem servido pelo filtro, e a consulta extra só encheria a lista
+de originais em inglês.
+
+O trecho comum às duas consultas saiu para o helper
+[`consultar()`](../backend/app/Services/Torrents/ProvedorTorrentio.php:166) — elas
+só divergem no segmento embutido na URL; a montagem, a leitura do rótulo e o corte
+de numeração são idênticos. A segunda consulta respeita o mesmo orçamento global:
+só sai se ainda houver tempo, e o teto é o que resta.
+
+| Variável | Padrão | O que faz |
+|----------|--------|-----------|
+| `TORRENTS_TORRENTIO_BUSCA_AMPLA` | `true` | Liga a segunda consulta ao Torrentio sem filtro de idioma, só para série. Filme segue apenas com o filtro. |
+
 #### O nome do release está no rótulo, não no `name` do stream
 
 O Torrentio devolve cada stream com três campos de texto e é fácil pegar o
@@ -719,6 +745,8 @@ Basta **um** indício para provar áudio PT-BR; não precisa ter todos:
 | --- | --- |
 | `dublado`, `dublada`, `dublagem` | `AHS S01 Dublado 720p` |
 | `dual` / `dual audio` | `Dual Áudio By-LuanHarper` |
+| `multi áudio` / `multi audio` | `Multi Áudio 1080p` |
+| `duplo áudio` / `duplo audio` | `Duplo Áudio 720p` |
 | `nacional` / `brasileiro` | `Nacional` |
 | `português` / `portuguese` / `pt` | `PORTUGUÊS BR`, `[pt-br]` |
 | `brasil` / `brazil` / `brazilian` | `Brasil` |
@@ -1165,6 +1193,37 @@ presas em `aguardando` com `percentual: 0`. Hoje a defesa é em camadas:
   traz áudio em português.` continua sendo uma conclusão firme — todas as
   tentativas foram reprovadas pelo porteiro de idioma.
 
+#### "Sem peers" nem sempre é fonte morta
+
+O rótulo `sem_peers` tem duas leituras muito diferentes: a fonte morreu de
+verdade, ou é a **rede do container** que não resolve tracker nem entra no DHT.
+As duas ficam idênticas no log, e por muito tempo tratamos só a primeira — o
+usuário via "sem peers" numa fonte que estava viva e já tinha rodado no sistema.
+
+O `media-service` é quem abre o torrent, e ele ficava sem as duas coisas que o
+`backend`, o `prowlarr` e o `flaresolverr` já tinham:
+
+- **DNS confiável.** O resolver herdado da operadora bloqueia ou devolve
+  `NXDOMAIN` para domínios de tracker. Sem resolver os anunciadores nem alcançar
+  os roteadores do DHT, o WebTorrent não forma malha. O `media-service` agora
+  recebe o mesmo `dns:` dos outros containers (`DNS_PRIMARIO`/`DNS_SECUNDARIO`).
+- **Porta de escuta publicada.** O container só fazia conexões de saída. Sem
+  publicar a porta do WebTorrent em TCP e UDP, nenhuma conexão de entrada chega —
+  a malha fica pela metade e a chance de achar peer cai muito. A porta é fixa
+  (`MEDIA_TORRENT_PORT`, padrão `51413`) e precisa bater com o `torrentPort` do
+  cliente em [`sessoes.js`](../media-service/src/services/sessoes.js:54): uma
+  porta aleatória a cada subida nunca seria alcançável de fora.
+
+O cliente também passou a ligar o **DHT explicitamente** (`dht: true`): é ele que
+acha peers sem depender de tracker, então um anunciador fora do ar não derruba
+mais a malha sozinho. O uTP segue desligado — o `utp-native` provoca `SIGSEGV`
+neste ambiente e derruba o processo inteiro.
+
+Quando os metadados não chegam, o log de diagnóstico agora diz **por que**:
+`peers`, número de `trackers` anunciados, porta de escuta e estado do DHT. Se a
+lista de anunciadores vier vazia, o problema é de montagem do magnet, não de
+rede; se vier cheia e os peers forem zero, é a malha que não fecha.
+
 O prazo dos metadados caiu de 45 s para 20 s
 ([`TIMEOUT_METADADOS_MS`](../media-service/src/services/sessoes.js:67)): os 45 s
 anteriores consumiam metade da paciência do overlay (90 s) sem gerar um byte. O
@@ -1177,6 +1236,57 @@ O `POST /verificar` continua disponível para testar a fonte antes de abrir a
 sessão, mas deixou de ser o caminho principal: quem mede os peers de verdade
 agora é a própria sessão, que já precisa esperar os dados de qualquer forma.
 
+#### A paciência com a peça se mede pelo progresso, não pelo relógio
+
+Fonte viva com poucos seeds é o pior caso do acervo antigo: o torrent conecta,
+negocia e **entrega**, só que devagar. O erro `Tempo esgotado aguardando o
+trecho do vídeo` aparecia justamente aí — não porque a fonte morreu, mas porque
+o prazo era um relógio fixo que corria contra a velocidade da malha, e não
+contra a saúde dela.
+
+A espera por peças em [`aguardarPecas()`](../media-service/src/services/sessoes.js:1166)
+deixou de ser um `setTimeout` de prazo único. Agora ela acompanha o
+`torrent.downloaded` a cada verificação:
+
+- **Cada byte novo renova a paciência.** Enquanto o contador de bytes baixados
+  avança, o relógio de estagnação reinicia. Um seed que entrega 200 KB/s por
+  vinte minutos nunca é interrompido — ele está progredindo, só que no ritmo
+  dele.
+- **Só a estagnação real derruba.** Se o `downloaded` fica parado por
+  `MEDIA_ESTAGNACAO_PECAS_MS` (padrão 90 s), aí sim a sessão desiste: a fonte
+  parou de entregar, não está apenas lenta.
+- **Há um teto absoluto.** `MEDIA_TETO_PECAS_MS` (padrão 15 min) impede que uma
+  fonte patológica que pinga um byte a cada minuto prenda a sessão para sempre.
+  O teto é a rede de segurança; a estagnação é o critério normal.
+
+O mesmo critério vale para [`aguardarDownloadCompleto()`](../media-service/src/services/sessoes.js:1264),
+que antes também tinha prazo fixo. E [`aguardarInicio()`](../media-service/src/services/sessoes.js:1233)
+perdeu os 180 s cravados: agora herda a paciência por progresso, porque o começo
+do arquivo é exatamente onde o primeiro seed lento demora mais.
+
+Quando o prazo estoura, o log diz **o que estava acontecendo** — segundos
+parado, bytes baixados, número de peers, velocidade e a faixa pedida. Isso
+separa "a fonte nunca entregou" de "a fonte entregou e parou", que antes eram a
+mesma linha de erro.
+
+#### A janela de leitura abre mais quando há poucos peers
+
+Com poucos peers ativos, o gargalo não é só a velocidade: é a **variedade** de
+peças disponíveis na malha. Pedir uma janela estreita demais concentra a
+requisição em poucos pedaços que talvez só um peer tenha — e se esse peer estiver
+lento, a leitura trava nele.
+
+[`tamanhoDaJanela()`](../media-service/src/services/sessoes.js:374) agora observa
+`torrent.numPeers`: quando a malha tem `MEDIA_PEERS_ESCASSOS` (padrão 3) ou menos
+peers, a janela é multiplicada por `MEDIA_FATOR_JANELA_ESCASSOS` (padrão 2),
+respeitando o teto de `ANTECEDENCIA_MAXIMA_BYTES`. Com mais peças elegíveis, o
+seletor do WebTorrent tem de onde escolher entre peers vizinhos em vez de
+depender de um único fornecedor do trecho.
+
+As quatro variáveis seguem o espelhamento de sempre — `.env`, `.env.example` e
+o bloco `environment:` do `media-service` no `docker-compose.yml` — e têm padrão
+embutido no código, então o serviço sobe sem configuração manual.
+
 ### Demais regras
 
 - A busca prioriza o `imdb_id` (mais preciso que o título, que traz remakes).
@@ -1187,6 +1297,30 @@ agora é a própria sessão, que já precisa esperar os dados de qualquer forma.
 - Respostas cacheadas no Redis (`TORRENTS_CACHE_TTL`, padrão 1800s).
 - O motor de torrent roda no media-service (biblioteca `webtorrent`), que
   conecta a fonte e serve o vídeo convertido em HLS.
+
+#### O cache que prende o resultado velho
+
+As consultas por provedor ficam em cache por `TORRENTS_CACHE_TTL` (padrão 1800 s).
+Isso mantém o `/fontes` barato, mas também prende um resultado limitado por até um
+TTL inteiro: a lista de uma série antiga pode ter sido montada quando os termos de
+busca eram restritos e continuar sendo servida depois da correção.
+
+`TORRENTS_CACHE_BYPASS=true` ignora a **leitura** do cache nas consultas externas
+durante a busca. Não desliga o cache: o provedor é reconsultado e o resultado novo
+grava por cima. É o que libera a lista presa sem esperar o TTL vencer nem limpar o
+Redis à mão — ligue só pontualmente, desaloje o resultado e volte para `false`.
+
+O caminho vale para os dois formatos de consulta do catálogo — termo a termo
+([`buscarComCache()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1371))
+e em lote
+([`buscarLoteComCache()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1460)) —
+porque o Knaben responde o degrau inteiro numa rodada e tem a sua própria chave,
+que cobre o **conjunto** de termos. Com o bypass ligado, o `do_cache` do censo não
+incrementa: a leitura não aconteceu, então a consulta conta como real.
+
+| Variável | Padrão | O que faz |
+|----------|--------|-----------|
+| `TORRENTS_CACHE_BYPASS` | `false` | Ignora a leitura do cache das consultas externas (Torrentio, Knaben, BT4G, APIBay e Torznab) durante a busca. O resultado novo volta a ser gravado. |
 
 ### Packs de temporada — o socorro das séries antigas
 
@@ -1226,6 +1360,22 @@ passou a procurar o pacote quando os termos de episódio não acham fonte dublad
   [`caminhoCorrespondeAoEpisodio()`](../media-service/src/services/sessoes.js:1283).
   Sem correspondência, mantém o comportamento antigo (maior arquivo de vídeo).
   Chamadas que mandam só `magnet` seguem válidas — o par é opcional.
+- **Escolher o arquivo não basta: é preciso isolá-lo.** O WebTorrent seleciona
+  **todos** os arquivos do torrent com prioridade 1 por padrão. Num pack isso
+  espalha o download pelos episódios inteiros e o episódio pedido fica sem os
+  pedaços iniciais — o FFmpeg não lê o cabeçalho e a sessão trava em
+  "aguardando" com ~11% baixado. A correção está em
+  [`isolarArquivoDoEpisodio()`](../media-service/src/services/sessoes.js:1535):
+  ela percorre `torrent.files`, chama `deselect()` (com queda para `select(0)`)
+  em **todos** os arquivos menos o alvo e devolve prioridade 1 só ao episódio
+  escolhido. A janela deslizante de leitura
+  ([`iniciarJanela()`](../media-service/src/services/sessoes.js:456)) continua
+  subindo as prioridades do trecho em reprodução por cima dessa base.
+- O isolamento roda **duas vezes**: no preparo da sessão, antes de a janela
+  começar a mexer nas prioridades, e de novo no
+  [`reposicionarEmSegundoPlano()`](../media-service/src/services/sessoes.js:2122)
+  antes de reabrir a janela — um seek não pode devolver prioridade aos outros
+  episódios. Sessões de filme (`episodio === null`) não passam pelo isolamento.
 - O frontend propaga o par pelo
   [`streamingService.criarSessao()`](../frontend/src/services/streaming.js:74) e pelo
   [`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:1506).
@@ -1463,12 +1613,13 @@ este último alimentando tanto a marcação de pack quanto a dedução de idioma
 | `TORRENTS_KNABEN_LIMITE` | `20` | Quantos resultados pedir por termo. Cada termo é uma requisição; o corte de idioma descarta o resto. |
 | `TORRENTS_STREMIO_ADDONS` | `https://thepiratebay-plus.strem.fun` | Addons Stremio hospedados, por vírgula. O Torrentio tem provedor próprio e não precisa estar aqui. |
 
-A `VERSAO_CACHE` subiu de `6` para `11`, e depois para `12` com a coleta por
-orçamento e a inspeção de packs. Cada provedor novo e cada correção de leitura
-mudam o conjunto — ou o próprio texto — das fontes já cacheadas no Redis (as entradas
-antigas guardam o `titulo`, o `idioma` e até a marca de pack do código anterior), então
-a chave precisa mudar para a reconsulta valer já na próxima busca, sem depender de
-limpar o Redis à mão.
+A `VERSAO_CACHE` subiu de `6` para `11`, depois para `12` com a coleta por
+orçamento e a inspeção de packs, e para `13` com a busca ampla da série — o termo
+novo muda o conjunto de fontes que o provedor devolve. Cada provedor novo e cada
+correção de leitura mudam o conjunto — ou o próprio texto — das fontes já cacheadas
+no Redis (as entradas antigas guardam o `titulo`, o `idioma` e até a marca de pack do
+código anterior), então a chave precisa mudar para a reconsulta valer já na próxima
+busca, sem depender de limpar o Redis à mão.
 
 ### Termos de série e o gate de temporada
 
@@ -1509,6 +1660,28 @@ sem palavra-chave, o risco de casar ano, resolução ou tamanho é maior que o g
 O contador do gate aparece no log de cada etapa (`termo_serie` e `barradas_gate`): sem
 ele, "0 fontes" no termo de série ficaria indistinguível entre "o provedor não tinha
 nada" e "veio, mas nada provou a temporada".
+
+#### O termo amplo: o que o meta-buscador precisa
+
+O [`serieDublado()`](../backend/app/Services/Torrents/TermosBusca.php:200) ainda leva
+uma **tag de áudio** em cada termo ("... dublado", "... dual áudio"). No Knaben, que
+exige que **todas** as palavras casem, isso ainda corta recall: o pack publicado como
+*"American Horror Story S01 Completa Legendado PT-BR"* não casa com nenhum termo que
+peça "dublado".
+
+[`TermosBusca::serieAmpla()`](../backend/app/Services/Torrents/TermosBusca.php:231)
+fecha essa última fresta: devolve só o **nome da série com a temporada** — `"{nome}
+S01"`, `"{nome} temporada 1"`, `"{nome} season 1"` e o nome puro como última rede de
+recall —, sem numeração de episódio e sem tag de áudio. A pontuação do título sai pelo
+`limpar()` (dois-pontos e hífen atrapalham a busca por palavra-chave). Os termos são
+montados, por título candidato, dentro de
+[`TorrentService::titulosDeEpisodio()`](../backend/app/Services/TorrentService.php:158),
+logo depois dos termos de pack, e entram no lote que a rodada de abertura entrega ao
+Knaben.
+
+Quem valida o resultado é o parser interno, no mesmo caminho de sempre: o **gate de
+temporada** descarta o que não cobre a temporada pedida e a **classificação de idioma**
+lê o nome do release. O termo amplo só amplia o alcance; ele não decide nada.
 
 #### O furo do gate: ele só valia para o termo de série
 
@@ -1565,6 +1738,110 @@ aceitos. Rode com `docker compose exec backend php vendor/bin/phpunit`.
 | Variável | Padrão | O que faz |
 |----------|--------|-----------|
 | `TORRENTS_TERMOS_SERIE_HABILITADO` | `true` | Liga/desliga os termos de série no fim da cascata de episódio. Ligado, acrescenta `"... dublado"`, `"... temporada N"` e `"... SN"` (sem numeração de episódio e sem "completa") depois dos termos de pack; as fontes que vêm deles passam pelo gate de temporada. Desligar restaura a busca anterior sem reverter código. |
+
+#### O gate perdoa o pack etiquetado, e o pack se prova pelo marcador no nome
+
+Existe um pack de série antiga que nem numera a temporada: *"American Horror Story -
+A Série Completa Dublado 1080p"*. Ele é exatamente o socorro que a busca quer — seeds
+de sobra e áudio dublado —, mas era ele o `na_lista: 0` que sobrava das séries antigas.
+O caminho do descarte era sutil e duplo:
+
+1. [`CatalogoProvedores::marcarPacks()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1096)
+   só etiquetava o pacote quando o **termo corrente** era de pack
+   (`$termoDePack && $temporadaDeclarada === null`) ou quando o nome provava a
+   temporada. Um pacote que chegava por um termo de série (*"... dublado"*) ou de
+   episódio, e cujo nome não traz número nenhum, escapava da etiqueta.
+2. Sem a etiqueta, o gate de
+   [`aproveitaveis()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1271)
+   o via como "fonte que nada declara" e o descartava — o censo registrava
+   `descartado_na_montagem`.
+
+A correção tem duas partes, uma em cada ponta do mesmo fio:
+
+- **A etiqueta nasce também do marcador textual.** A lista canônica
+  [`TermosBusca::MARCADORES_PACK`](../backend/app/Services/Torrents/TermosBusca.php:59)
+  cobre as gírias de pacote (`completa`, `complete`, `boxset`, `coleção`,
+  `todas as temporadas`, `temporadas completas`, ...) e
+  [`TermosBusca::temMarcadorDePack()`](../backend/app/Services/Torrents/TermosBusca.php:88)
+  é quem confere. `marcarPacks()` passou a usá-lo como **terceira via de prova**, ao
+  lado da cobertura de temporada e do termo de pack. Como só chega ali o nome **sem**
+  numeração de episódio (o corte anterior já descartou quem declara `SxxExx`), o
+  "completo"/"coleção" no nome é pista de pacote, não ruído de título de filme.
+- **O gate perdoa o que já tem a etiqueta.** Em `aproveitaveis()`, a barreira por
+  ausência de número só vale quando a fonte **não** é pack
+  (`empty($fonte['pack'])`). Um pack etiquetado já provou a temporada por outra via —
+  cobertura, marcador ou o próprio termo de pack —, então não faz sentido barrá-lo
+  pela mesma ausência de número que o marcador veio justamente suprir.
+
+A defesa contra a temporada errada fica intacta: um pack que **declara** outra
+temporada é barrado antes de o gate ser consultado, por
+[`TermosBusca::correspondeAoEpisodio()`](../backend/app/Services/Torrents/TermosBusca.php:346),
+e a última linha de defesa continua sendo
+[`TorrentService::packDaTemporadaErrada()`](../backend/app/Services/TorrentService.php:440).
+A etiqueta não é passe livre — é a permissão que o gate dava só a quem provava a
+temporada, estendida a quem já foi reconhecido como pacote.
+
+Os testes que travam este comportamento: [`GateFontesTest`](../backend/tests/Unit/GateFontesTest.php:1)
+(o pack etiquetado passa, a mesma fonte sem etiqueta não, a homônima não, o episódio
+numerado passa e o pack de temporada errada é barrado) e os casos de pack em
+[`MontagemFinalTest`](../backend/tests/Feature/MontagemFinalTest.php:1).
+
+#### O pack aprovado não pode morrer no gate da cascata
+
+Mesmo com a etiqueta e o gate ajustados, o sintoma `"situacao":"descartado_na_montagem"`
+com `"na_lista": 0` persistia quando o Torrentio e o Knaben encontravam dezenas de packs
+(`packs: 10` e `packs: 12` no log). A causa estava em **dois** pontos, e os dois
+descartavam o pack **antes** de ele chegar à montagem final:
+
+1. **A numeração de episódio do arquivo interno desqualificava o pack.**
+   [`marcarPacks()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1096) fazia
+   `continue` quando algum nome declarava `SxxExx` — mas o `release` de um provedor por
+   identificador é o nome do **arquivo interno** (`2x13 - Madness Ends`), não o do
+   torrent. O pack da temporada chegava por um termo de pack, o arquivo interno escondia
+   a temporada e a fonte nunca recebia a etiqueta. Sem etiqueta, o gate a barrava.
+2. **O gate exigia a temporada no nome mesmo em termo de pack.**
+   [`aproveitaveis()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1271) só
+   perdoava a fonte com a etiqueta `pack`. O pack cujo nome nacional não numera nada
+   (*"A Série Completa Dublado"*) e que veio de um termo de pack não tinha como provar a
+   temporada pelo nome — e era descartado.
+
+A correção faz o pack de temporada **chegar à montagem**:
+
+- **O termo de pack prevalece sobre a numeração.** Em `marcarPacks()`, o corte por
+  numeração de episódio só vale quando o termo corrente **não** é de pack. Em termo de
+  pack, o arquivo interno numerado não desqualifica: quem confirma o pacote é o termo.
+- **O gate perdoa o termo de pack.** `aproveitaveis()` passou a receber `$termoDePack` e
+  a quarta via de prova é o próprio termo: se a busca veio de `"... S01 completa"`, o
+  termo já declara a temporada pedida. A defesa contra a temporada errada continua em
+  [`packDaTemporadaErrada()`](../backend/app/Services/TorrentService.php:453).
+
+O pack que **declara** a temporada errada continua barrado — a exceção não abre espaço
+para o pack da 2ª numa busca da 1ª. O teste que trava o comportamento está em
+[`MontagemFinalTest`](../backend/tests/Feature/MontagemFinalTest.php:189): o pack da
+temporada errada é descartado na montagem.
+
+##### O corte duro de idioma continua valendo na montagem final
+
+Chegar à montagem **não** é entrar na lista. O corte duro de idioma em
+[`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:284) continua
+sendo a última palavra: com `somente_pt_br_ou_legendado` ligado e havendo alguma fonte
+PT-BR, a lista final é **só** o áudio PT-BR provado — dublado e dual. O original em
+inglês e o legendado saem de vez.
+
+Houve uma tentativa de anexar os packs de temporada à lista mesmo sem PT-BR provado
+(`comPacksDeTemporada()`), tratando-os como "opção de reprodução". Ela foi **revertida**:
+o efeito colateral era a lista misturar dois dublados com legendado e original, que é
+exatamente o que o corte duro existe para impedir. O pack só entra na lista se **provar**
+PT-BR (pela etiqueta de áudio ou pela inspeção do conteúdo); sem prova, ele fica na
+reserva e só aparece quando **não há nenhuma** fonte PT-BR — aí o corte é revertido e a
+reserva volta, porque uma lista vazia não é "só PT-BR", é o player sem nada para tentar.
+
+Como a lista de indícios de áudio PT-BR foi ampliada (`multi áudio`, `multi audio`,
+`duplo áudio`, `duplo audio` em [`IndiciosPtBr`](../backend/app/Support/IndiciosPtBr.php:37)
+e no espelho [`idiomas.js`](../media-service/src/utils/idiomas.js:126)), o
+`VERSAO_CACHE` de [`InspecaoPack`](../backend/app/Services/Torrents/InspecaoPack.php:37)
+subiu para `2`: o veredito cacheado depende da leitura, e a inspeção antiga precisa ser
+refeita na próxima busca.
 
 ### Ajustes obrigatórios no media-service
 
@@ -2120,6 +2397,46 @@ do arquivo no log:
 ```
 [torrent] arquivo completo mas ilegível: "12 - Afterbirth.mp4" (1234567 bytes) — ffprobe exited with code 1
 ```
+
+#### O caminho do arquivo precisa da pasta do torrent
+
+Um segundo erro, ainda mais enganoso, aparecia como `No such file or directory`
+no caminho `/tmp/American Horror Story 1ª Temporada [2011 DUAL ÁUDIO] 720p PT
+BR/01 - Pilot.mp4` — com o arquivo existindo no disco. A causa não era o nome
+com espaços, acentos e colchetes: o `path.join` monta a string e o fluent-ffmpeg
+a repassa como argumento de vetor, sem passar pelo shell. O problema era que o
+WebTorrent baixa cada torrent dentro de uma pasta com o **nome do próprio
+torrent** (`torrent.path/<torrent.name>/...`), e o `arquivo.path` que ele expõe
+já é relativo a essa pasta. Juntar apenas `torrent.path` com `arquivo.path`
+produzia um caminho sem o nível intermediário, e o ffprobe procurava o arquivo
+um diretório acima de onde ele estava.
+
+O helper [`caminhoDoArquivo()`](../media-service/src/services/sessoes.js:1207)
+centraliza essa montagem e cobre também o caso em que o `arquivo.path` já vem
+prefixado com o nome do torrent (versões antigas do WebTorrent): nesse cenário
+o segmento não é duplicado.
+
+#### O ffprobe não pode ser disparado antes de o arquivo existir
+
+O mesmo log mostrava `percentual: 3` no momento da falha. Nos primeiros
+porcentos do download o WebTorrent ainda não criou o arquivo (ou o criou com
+tamanho zero), e o ffprobe devolvia `No such file or directory` — indistinguível,
+na mensagem, de um arquivo corrompido. Três guardas resolvem o caso:
+
+1. [`prepararSessao()`](../media-service/src/services/sessoes.js:583) agora
+   aguarda o começo do filme estar contíguo em disco (`aguardarInicio()`) antes
+   de sondar o cabeçalho. Isso também evita que o ffprobe leia um arquivo
+   esparso e interprete os zeros do trecho não baixado como dados inválidos.
+2. [`analisarComEspera()`](../media-service/src/services/sessoes.js:1470) confere
+   o tamanho físico do arquivo a cada volta e só chama o ffprobe quando ele
+   passa de `TAMANHO_MINIMO_SONDAGEM` (1 MB).
+3. [`analisarArquivo()`](../media-service/src/services/hls.js:116) valida a
+   existência do arquivo e lança um erro rotulado com `code = 'ENOENT'`, para o
+   laço distinguir "ainda não existe" de "existe mas o ffprobe recusou".
+
+A cobertura está em
+[`caminho-arquivo.test.js`](../media-service/test/caminho-arquivo.test.js:1),
+que roda com `npm test` (runner nativo do Node).
 
 ### Endereço do media-service no frontend
 

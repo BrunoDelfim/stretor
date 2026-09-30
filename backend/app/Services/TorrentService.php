@@ -224,6 +224,13 @@ class TorrentService
          * pela série pelo nome, que é como os packs multi-temporada aparecem
          * ("1ª 2ª 3ª Temporadas Dublado e Legendado"). Quem descarta o que não
          * cobrir a temporada pedida é o gate do [`CatalogoProvedores`].
+         *
+         * A esta altura entram também os termos amplos ([`TermosBusca::serieAmpla()`]):
+         * nome da série com a temporada e, por fim, só o nome, sem tag de áudio.
+         * É a pergunta mais larga que existe, e é de propósito — o Knaben casa
+         * todas as palavras do termo, então tirar "dublado" e a numeração de
+         * episódio é o que deixa o pack nacional aparecer na busca em lote. O
+         * parser interno valida o episódio e classifica o idioma depois.
          */
         if (config('services.torrents.termos_serie_habilitados', true)) {
             foreach ([$titulo, $tituloOriginal] as $candidato) {
@@ -236,6 +243,12 @@ class TorrentService
                 foreach (TermosBusca::serieDublado($candidato, $temporada) as $serie) {
                     if (! in_array($serie, $titulos, true)) {
                         $titulos[] = $serie;
+                    }
+                }
+
+                foreach (TermosBusca::serieAmpla($candidato, $temporada) as $ampla) {
+                    if (! in_array($ampla, $titulos, true)) {
+                        $titulos[] = $ampla;
                     }
                 }
             }

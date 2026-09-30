@@ -31,12 +31,31 @@ import { contemIndicioPtBr } from '../utils/idiomas.js'
  */
 
 /*
+ * Porta de escuta do WebTorrent, fixa e casada com o mapeamento do compose.
+ *
+ * Uma porta aleatória a cada subida nunca seria alcançável de fora: o container
+ * publica uma porta específica (`MEDIA_TORRENT_PORT`), e é nela que o cliente
+ * precisa escutar para aceitar conexões de entrada. Sem isso, a malha fica só
+ * com as conexões de saída e a fonte aparece como "sem peers" com muito mais
+ * frequência do que deveria.
+ */
+const PORTA_TORRENT = Number(process.env.MEDIA_TORRENT_PORT) || 51413
+
+/*
  * O transporte uTP (utp-native) provoca segfault neste ambiente de container:
  * o processo morre com SIGSEGV sem chance de tratar o erro, derrubando todas
  * as sessões. Desligamos apenas o uTP e mantemos TCP, DHT e trackers, que são
  * suficientes para montar a malha e baixar o filme.
+ *
+ * O DHT fica explícito porque é ele que acha peers sem depender de tracker: se
+ * um anunciador estiver fora do ar, o DHT ainda pode montar a malha. A porta
+ * TCP é fixada para casar com o `ports:` do compose.
  */
-const cliente = new WebTorrent({ utp: false })
+const cliente = new WebTorrent({
+  utp: false,
+  dht: true,
+  torrentPort: PORTA_TORRENT,
+})
 
 /** Mapa `sessao_id → sessão`. */
 const sessoes = new Map()
@@ -75,6 +94,54 @@ const TIMEOUT_DADOS_MS = Number(process.env.MEDIA_TIMEOUT_DADOS_MS) || 30000
  */
 const TIMEOUT_METADADOS_MS = Number(process.env.MEDIA_TIMEOUT_METADADOS_MS) || 20000
 
+/*
+ * Prazos fixos não servem para fonte de poucos seeds.
+ *
+ * Um lançamento antigo com um ou dois seeds baixa devagar, mas baixa: o
+ * progresso avança alguns KB por segundo, sem parar. Um prazo fixo derruba a
+ * sessão no meio de um download que estava andando — foi assim que fontes
+ * vivas morriam com "Tempo esgotado aguardando o trecho do vídeo".
+ *
+ * A partir daqui a paciência é medida por **progresso**, não por relógio: o
+ * prazo só corre enquanto o download estiver parado. Cada avanço real de bytes
+ * renova a espera. Assim uma fonte lenta mas viva nunca é cortada, e uma fonte
+ * que estagnou de verdade é abandonada rápido.
+ */
+
+/**
+ * Janela de tolerância à estagnação, em ms.
+ *
+ * É o tempo que aceitamos sem nenhum byte novo antes de considerar a fonte
+ * parada. Não é o prazo total: enquanto houver avanço, a espera continua. O
+ * valor é generoso porque um seed único pode ficar dezenas de segundos sem
+ * entregar um pedaço inteiro — o pedaço só conta como baixado quando fecha.
+ */
+const ESTAGNACAO_PECAS_MS = Number(process.env.MEDIA_ESTAGNACAO_PECAS_MS) || 90000
+
+/**
+ * Teto absoluto de espera por um trecho, em ms.
+ *
+ * Mesmo com progresso, uma fonte patologicamente lenta (poucos KB/s) levaria
+ * horas para entregar o começo do filme. Este teto evita que a sessão fique
+ * presa para sempre; é alto o bastante para não cortar uma fonte lenta porém
+ * útil, e ajustável por `MEDIA_TETO_PECAS_MS`.
+ */
+const TETO_PECAS_MS = Number(process.env.MEDIA_TETO_PECAS_MS) || 15 * 60 * 1000
+
+/**
+ * Abaixo desta contagem de peers, a janela de leitura é ampliada.
+ *
+ * Com poucos peers o *picker* do WebTorrent tem pouca escolha de onde buscar
+ * cada pedaço, e uma janela apertada faz o download se concentrar em poucos
+ * pedaços que talvez estejam justamente com o peer mais lento. Alargar a janela
+ * dá ao picker mais pedaços elegíveis e permite que ele peça a um peer vizinho
+ * o que o outro não entrega — a malha pequena deixa de ser gargalo.
+ */
+const PEERS_ESCASSOS = Number(process.env.MEDIA_PEERS_ESCASSOS) || 3
+
+/** Fator de ampliação da janela quando os peers são escassos. */
+const FATOR_JANELA_PEERS_ESCASSOS = Number(process.env.MEDIA_FATOR_JANELA_ESCASSOS) || 2
+
 /**
  * Quantidade de bytes do começo do filme que precisa estar em disco antes de
  * uma conversão ler direto do arquivo.
@@ -88,6 +155,17 @@ const TIMEOUT_METADADOS_MS = Number(process.env.MEDIA_TIMEOUT_METADADOS_MS) || 2
  * disco.
  */
 const BYTES_INICIAIS = 4 * 1024 * 1024
+
+/**
+ * Tamanho mínimo, em bytes, para o arquivo valer uma sondagem do ffprobe.
+ *
+ * Nos primeiros porcentos do download o WebTorrent cria o arquivo com tamanho
+ * zero (ou alguns poucos bytes) e o ffprobe falha com "No such file or
+ * directory" ou "Invalid data found" — erros que pareciam corrupção, mas eram
+ * só o arquivo ainda vazio. Exigimos um mínimo antes de sondar para não gastar
+ * uma chamada do ffprobe a cada segundo em cima de um arquivo inexistente.
+ */
+const TAMANHO_MINIMO_SONDAGEM = 1024 * 1024
 
 /*
  * A janela de leitura existe porque selecionar o arquivo inteiro (prioridade 1)
@@ -283,11 +361,23 @@ function bytesDoTempo(sessao, arquivo, segundos) {
   return vazao ? Math.round(vazao * segundos) : null
 }
 
-/** Tamanho da antecedência da janela, entre o mínimo e o máximo. */
+/**
+ * Tamanho da antecedência da janela, entre o mínimo e o máximo.
+ *
+ * Com poucos peers a janela é ampliada. Numa malha pequena o *picker* tem pouca
+ * escolha de onde buscar cada pedaço: uma janela apertada o obriga a insistir
+ * nos mesmos pedaços, que podem estar justamente com o peer mais lento. Alargar
+ * a janela dá a ele mais pedaços elegíveis e permite pedir a um peer vizinho o
+ * que o outro não entrega — a malha pequena deixa de ser gargalo. O teto máximo
+ * continua valendo para a janela não virar a seleção do filme inteiro.
+ */
 function tamanhoDaJanela(sessao, arquivo) {
   const alvo = bytesDoTempo(sessao, arquivo, ANTECEDENCIA_SEGUNDOS) ?? ANTECEDENCIA_MINIMA_BYTES
+  const peers = sessao.torrent?.numPeers ?? 0
+  const escassos = peers > 0 && peers <= PEERS_ESCASSOS
+  const ampliado = escassos ? alvo * FATOR_JANELA_PEERS_ESCASSOS : alvo
 
-  return Math.min(Math.max(alvo, ANTECEDENCIA_MINIMA_BYTES), ANTECEDENCIA_MAXIMA_BYTES)
+  return Math.min(Math.max(ampliado, ANTECEDENCIA_MINIMA_BYTES), ANTECEDENCIA_MAXIMA_BYTES)
 }
 
 /** Margem de folga mínima antes de frear a leitura (bytes). */
@@ -534,10 +624,16 @@ async function prepararSessao(sessao) {
     logger.info(`[sessao ${sessao.id}] episódio ${rotulo} -> arquivo "${arquivo.path}"`)
   }
 
-  // `arquivo.path` é relativo à pasta do torrent (ex.: "Filme (1999)/filme.mp4"),
-  // não ao sistema de arquivos. Sem juntar com `torrent.path`, o FFmpeg procura
-  // o arquivo no diretório de trabalho do processo e falha com "No such file".
-  const caminho = path.join(torrent.path, arquivo.path)
+  /*
+   * Num pack de temporada o torrent traz todos os episódios e o WebTorrent
+   * seleciona todos por padrão. Sem isolar o arquivo do episódio, o download se
+   * espalha pelo pack inteiro e o episódio pedido fica sem os pedaços iniciais —
+   * o FFmpeg não lê o cabeçalho e a sessão trava em "aguardando". Isolamos aqui,
+   * antes de a janela de leitura começar a mexer nas prioridades.
+   */
+  isolarArquivoDoEpisodio(sessao, torrent, arquivo)
+
+  const caminho = caminhoDoArquivo(torrent, arquivo)
 
   /*
    * O download passa a ser guiado por uma janela móvel, não pela seleção do
@@ -571,6 +667,17 @@ async function prepararSessao(sessao) {
    * filme inteiro.
    */
   await anteciparCauda(sessao, arquivo, caminho)
+  conferirSessao(sessao)
+
+  /*
+   * Antes de sondar o cabeçalho, exigimos que o começo do filme esteja contíguo
+   * em disco. Sem isso, o ffprobe era chamado nos primeiros porcentos do
+   * download — quando o arquivo ainda nem existia — e devolvia "No such file or
+   * directory", um erro que parecia corrupção mas era só o arquivo ausente.
+   * Esperar os primeiros megabytes também evita que o ffprobe leia um arquivo
+   * esparso e interprete os zeros do trecho não baixado como dados inválidos.
+   */
+  await aguardarInicio(sessao, arquivo)
   conferirSessao(sessao)
 
   /*
@@ -1047,19 +1154,28 @@ function faixaPresente(torrent, arquivo, de, ate) {
 }
 
 /**
- * Aguarda uma faixa do arquivo ficar presente, com prazo.
+ * Aguarda uma faixa do arquivo ficar presente, com paciência por progresso.
  *
  * Usada tanto para o índice (`moov`) quanto para o começo do filme. O download
  * corre em paralelo; aqui só esperamos o pedaço do arquivo que interessa.
+ *
+ * O prazo não é um relógio fixo: ele só corre enquanto o download estiver
+ * **parado**. Cada avanço real de bytes baixados renova a espera, então uma
+ * fonte de poucos seeds que anda devagar nunca é cortada no meio do caminho —
+ * só é abandonada quando estagna de verdade (`ESTAGNACAO_PECAS_MS`) ou quando
+ * bate o teto absoluto (`TETO_PECAS_MS`), que existe para uma fonte
+ * patologicamente lenta não prender a sessão para sempre.
  *
  * @param {object} sessao
  * @param {import('webtorrent').TorrentFile} arquivo
  * @param {number} de byte inicial da faixa
  * @param {number} ate byte final da faixa
- * @param {number} timeoutMs tempo máximo de espera
+ * @param {number} timeoutMs teto absoluto de espera (opcional)
  */
-function aguardarPecas(sessao, arquivo, de, ate, timeoutMs = 120000) {
+function aguardarPecas(sessao, arquivo, de, ate, timeoutMs = TETO_PECAS_MS) {
   const inicio = Date.now()
+  let ultimoBaixado = sessao.torrent?.downloaded ?? 0
+  let ultimoAvanco = Date.now()
 
   return new Promise((resolve, reject) => {
     const verificar = () => {
@@ -1078,7 +1194,39 @@ function aguardarPecas(sessao, arquivo, de, ate, timeoutMs = 120000) {
         return resolve()
       }
 
-      if (Date.now() - inicio > timeoutMs) {
+      /*
+       * O sinal de vida é o total baixado do torrent, não a faixa pedida: o
+       * picker pode estar fechando pedaços vizinhos antes do trecho que
+       * interessa, e isso também é progresso — a fonte está entregando.
+       */
+      const baixado = sessao.torrent?.downloaded ?? ultimoBaixado
+
+      if (baixado > ultimoBaixado) {
+        ultimoBaixado = baixado
+        ultimoAvanco = Date.now()
+      }
+
+      const agora = Date.now()
+      const parado = agora - ultimoAvanco
+
+      if (parado > ESTAGNACAO_PECAS_MS || agora - inicio > timeoutMs) {
+        const peers = sessao.torrent?.numPeers ?? 0
+        const velocidade = sessao.torrent?.downloadSpeed ?? 0
+
+        /*
+         * O diagnóstico separa os dois desfechos que antes chegavam iguais ao
+         * usuário: a fonte que nunca entregou nada (parada desde o início) e a
+         * que entregava e parou no meio (seed caiu). A velocidade no instante da
+         * desistência diz se ainda havia tráfego residual.
+         */
+        logger.warn(
+          `[sessao ${sessao.id}] trecho do vídeo não chegou: ` +
+            `parado há ${Math.round(parado / 1000)}s, ` +
+            `baixado ${emMB(baixado)}, peers ${peers}, ` +
+            `velocidade ${emMB(velocidade)}/s, ` +
+            `faixa ${emMB(de)}–${emMB(ate)}`
+        )
+
         return reject(new Error('Tempo esgotado aguardando o trecho do vídeo.'))
       }
 
@@ -1099,27 +1247,33 @@ function aguardarPecas(sessao, arquivo, de, ate, timeoutMs = 120000) {
  * nenhuma mensagem de erro. Exigir os primeiros megabytes é o que garante que a
  * conversão começa onde o filme começa.
  *
+ * O prazo fica por conta de `aguardarPecas`, que o mede por progresso: uma
+ * fonte de poucos seeds que anda devagar não é cortada, só a que estagna.
+ *
  * @param {object} sessao
  * @param {import('webtorrent').TorrentFile} arquivo
- * @param {number} timeoutMs tempo máximo de espera
  */
-function aguardarInicio(sessao, arquivo, timeoutMs = 180000) {
-  return aguardarPecas(sessao, arquivo, 0, Math.min(BYTES_INICIAIS, arquivo.length), timeoutMs)
+function aguardarInicio(sessao, arquivo) {
+  return aguardarPecas(sessao, arquivo, 0, Math.min(BYTES_INICIAIS, arquivo.length))
 }
 
 /**
  * Aguarda o download completo do arquivo.
  *
  * Reserva do caminho não progressivo, usada quando o `moov` não pôde ser
- * localizado. Tem um teto de tempo para não deixar a sessão presa para sempre
- * caso o download estagne.
+ * localizado. Como em `aguardarPecas`, a paciência é medida por progresso: o
+ * download completo de uma fonte lenta pode levar muito tempo, e um teto fixo
+ * derrubava a sessão no meio de um download que estava andando. Só desistimos
+ * quando o download estagna de verdade ou quando bate o teto absoluto.
  *
  * @param {object} sessao
  * @param {import('webtorrent').TorrentFile} arquivo
- * @param {number} timeoutMs tempo máximo de espera
+ * @param {number} timeoutMs teto absoluto de espera
  */
-function aguardarDownloadCompleto(sessao, arquivo, timeoutMs = 10 * 60 * 1000) {
+function aguardarDownloadCompleto(sessao, arquivo, timeoutMs = TETO_PECAS_MS) {
   const inicio = Date.now()
+  let ultimoBaixado = sessao.torrent?.downloaded ?? 0
+  let ultimoAvanco = Date.now()
 
   return new Promise((resolve, reject) => {
     const verificar = () => {
@@ -1129,7 +1283,26 @@ function aguardarDownloadCompleto(sessao, arquivo, timeoutMs = 10 * 60 * 1000) {
         return resolve()
       }
 
-      if (Date.now() - inicio > timeoutMs) {
+      const baixado = sessao.torrent?.downloaded ?? ultimoBaixado
+
+      if (baixado > ultimoBaixado) {
+        ultimoBaixado = baixado
+        ultimoAvanco = Date.now()
+      }
+
+      const agora = Date.now()
+      const parado = agora - ultimoAvanco
+
+      if (parado > ESTAGNACAO_PECAS_MS || agora - inicio > timeoutMs) {
+        const peers = sessao.torrent?.numPeers ?? 0
+
+        logger.warn(
+          `[sessao ${sessao.id}] download do filme não terminou: ` +
+            `parado há ${Math.round(parado / 1000)}s, ` +
+            `baixado ${emMB(baixado)}, peers ${peers}, ` +
+            `progresso ${Math.round(arquivo.progress * 100)}%`
+        )
+
         return reject(new Error('Tempo esgotado aguardando o download do filme.'))
       }
 
@@ -1155,6 +1328,49 @@ function aguardarDownloadCompleto(sessao, arquivo, timeoutMs = 10 * 60 * 1000) {
  * @param {number} timeoutMs prazo para os metadados, em ms
  * @returns {Promise<import('webtorrent').Torrent>}
  */
+/**
+ * Monta o caminho real do arquivo no disco.
+ *
+ * O WebTorrent baixa cada torrent dentro de uma pasta com o nome do próprio
+ * torrent (`torrent.path/<torrent.name>/...`), e o `arquivo.path` que ele expõe
+ * já é relativo a essa pasta — não à raiz de download. Juntar apenas
+ * `torrent.path` com `arquivo.path` produzia um caminho sem a pasta do torrent,
+ * e o ffprobe falhava com "No such file or directory" mesmo com o arquivo
+ * existindo alguns níveis abaixo. O nome do torrent costuma trazer espaços,
+ * acentos e colchetes ("American Horror Story 1ª Temporada [2011 DUAL ÁUDIO]
+ * 720p PT BR"), mas isso não é problema: o `path.join` monta a string e o
+ * fluent-ffmpeg a repassa como argumento de vetor, sem passar pelo shell.
+ *
+ * @param {import('webtorrent').Torrent} torrent
+ * @param {import('webtorrent').TorrentFile} arquivo
+ * @returns {string} caminho absoluto do arquivo
+ */
+export function tamanhoDoArquivoEmDisco(caminho) {
+  try {
+    const info = fs.statSync(caminho)
+
+    return info.isFile() ? info.size : null
+  } catch (erro) {
+    // ENOENT é o caso normal nos primeiros segundos: o WebTorrent ainda não
+    // criou o arquivo. Qualquer outro erro (permissão, caminho inválido) também
+    // devolve `null` para o laço seguir esperando em vez de derrubar a sessão.
+    return null
+  }
+}
+
+export function caminhoDoArquivo(torrent, arquivo) {
+  /*
+   * O `arquivo.path` pode, em versões antigas do WebTorrent, já vir prefixado
+   * com o nome do torrent. Nesse caso juntar a pasta de novo duplicaria o
+   * segmento e o arquivo não seria encontrado. Só prefixamos quando o caminho
+   * ainda não começa pela pasta do torrent.
+   */
+  const relativo = arquivo.path ?? arquivo.name ?? ''
+  const jaTemPasta = torrent.name && relativo.startsWith(`${torrent.name}/`)
+
+  return jaTemPasta ? path.join(torrent.path, relativo) : path.join(torrent.path, torrent.name ?? '', relativo)
+}
+
 async function adicionarTorrent(magnet, timeoutMs = TIMEOUT_METADADOS_MS) {
   const existente = await cliente.get(magnet)
 
@@ -1210,6 +1426,22 @@ function esperarMetadados(torrent, timeoutMs = TIMEOUT_METADADOS_MS) {
 
     const temporizador = setTimeout(() => {
       const peers = torrent.numPeers ?? 0
+
+      /*
+       * Diagnóstico da malha no instante da desistência. "Sem peers" tem duas
+       * leituras muito diferentes — fonte morta de verdade ou rede do container
+       * que não resolve tracker nem entra no DHT — e sem estes números as duas
+       * ficam idênticas no log. Os anunciadores vêm do próprio magnet; se a
+       * lista estiver vazia, o problema é de montagem do magnet, não de rede.
+       */
+      const anunciadores = (torrent.announce ?? []).length
+      const porta = cliente.torrentPort ?? PORTA_TORRENT
+
+      logger.warn(
+        `[fonte] metadados não chegaram em ${timeoutMs / 1000}s ` +
+          `(peers: ${peers}, trackers: ${anunciadores}, porta: ${porta}, ` +
+          `dht: ${cliente.dht ? 'ligado' : 'desligado'})`
+      )
 
       finalizar()
 
@@ -1274,6 +1506,81 @@ function escolherArquivoDeVideo(torrent, temporada = null, episodio = null) {
   }
 
   return videos.sort((a, b) => b.length - a.length)[0]
+}
+
+/**
+ * Isola o arquivo do episódio dentro de um pack de temporada.
+ *
+ * O WebTorrent seleciona **todos** os arquivos de um torrent com prioridade 1
+ * assim que os metadados chegam. Num pack de temporada isso é desastroso: o
+ * *picker* espalha os pedidos por dezenas de episódios e o arquivo que o usuário
+ * pediu fica sem os pedaços iniciais — o FFmpeg não consegue ler o cabeçalho, a
+ * conversão trava em "aguardando" e o download aparenta ter parado em ~11%
+ * (justamente a fração que o pack inteiro já tinha baixado de forma difusa).
+ *
+ * Aqui varremos `torrent.files` e deixamos **apenas** o arquivo alvo ativo:
+ * todos os outros recebem `deselect()` (prioridade 0). A partir daí a banda
+ * inteira trabalha pelo episódio certo, e a janela móvel de `iniciarJanela`
+ * cuida de manter quentes só os pedaços à frente da leitura.
+ *
+ * Só agimos quando há um episódio pedido: no fluxo de filme o torrent costuma
+ * ter um único vídeo e a seleção padrão já é a correta — mexer nela só criaria
+ * risco sem ganho.
+ *
+ * @param {object} sessao
+ * @param {import('webtorrent').Torrent} torrent
+ * @param {import('webtorrent').TorrentFile} alvo arquivo do episódio escolhido
+ * @returns {number} quantidade de arquivos desselecionados
+ */
+function isolarArquivoDoEpisodio(sessao, torrent, alvo) {
+  if (sessao.episodio === null) return 0
+
+  const arquivos = torrent.files ?? []
+  let desselecionados = 0
+
+  for (const arquivo of arquivos) {
+    if (arquivo === alvo) continue
+
+    /*
+     * `deselect` é o caminho preferido: zera a prioridade do arquivo inteiro de
+     * uma vez. Quando a versão do WebTorrent não expõe o método, caímos para
+     * `select(0)` — a prioridade 0 tem o mesmo efeito prático de tirar o arquivo
+     * da fila do *picker*.
+     */
+    try {
+      if (typeof arquivo.deselect === 'function') {
+        arquivo.deselect()
+      } else {
+        arquivo.select(0)
+      }
+
+      desselecionados += 1
+    } catch (erro) {
+      logger.warn(
+        `[sessao ${sessao.id}] falha ao desselecionar "${arquivo.path ?? arquivo.name}":`,
+        erro.message
+      )
+    }
+  }
+
+  /*
+   * O arquivo alvo recebe prioridade máxima. A janela móvel vai reajustar os
+   * intervalos logo em seguida, mas esta seleção inicial garante que o *picker*
+   * já comece pelo episódio certo — sem ela, o primeiro instante do download
+   * ainda poderia atacar os arquivos que acabamos de soltar.
+   */
+  try {
+    alvo.select(1)
+  } catch (erro) {
+    logger.warn(`[sessao ${sessao.id}] falha ao selecionar o arquivo do episódio:`, erro.message)
+  }
+
+  logger.info(
+    `[sessao ${sessao.id}] pack isolado: "${alvo.path ?? alvo.name}" selecionado, ` +
+      `${desselecionados} arquivo(s) desselecionado(s) de ${arquivos.length}`
+  )
+
+  return desselecionados
 }
 
 /**
@@ -1476,6 +1783,27 @@ async function analisarComEspera(sessao, caminho, arquivo, timeoutMs = 120000) {
     // não faz sentido seguir esperando por um arquivo que já foi descartado.
     conferirSessao(sessao)
 
+    /*
+     * O ffprobe não pode ser disparado antes de o arquivo existir em disco. Nos
+     * primeiros porcentos do download o WebTorrent ainda não criou o arquivo (ou
+     * o criou com tamanho zero), e o ffprobe devolvia "No such file or directory"
+     * — um erro que parecia corrupção, mas era só o arquivo ausente. Esperamos o
+     * arquivo aparecer com um tamanho mínimo útil antes de sondar.
+     */
+    const tamanhoEmDisco = tamanhoDoArquivoEmDisco(caminho)
+
+    if (tamanhoEmDisco === null) {
+      ultimoErro = new Error('arquivo ainda não existe em disco')
+      await new Promise((resolve) => setTimeout(resolve, 1000))
+      continue
+    }
+
+    if (tamanhoEmDisco < TAMANHO_MINIMO_SONDAGEM) {
+      ultimoErro = new Error(`arquivo ainda pequeno demais (${tamanhoEmDisco} bytes)`)
+      await new Promise((resolve) => setTimeout(resolve, 1000))
+      continue
+    }
+
     try {
       const analise = await analisarArquivo(caminho)
 
@@ -1511,7 +1839,16 @@ async function analisarComEspera(sessao, caminho, arquivo, timeoutMs = 120000) {
 
       ultimoErro = new Error('cabeçalho incompleto')
     } catch (erro) {
-      ultimoErro = erro
+      /*
+       * ENOENT aqui é diferente de "ffprobe exited with code 1". O primeiro diz
+       * que o arquivo sumiu entre a checagem de tamanho e a sondagem (o torrent
+       * foi removido, por exemplo); o segundo diz que o arquivo existe mas o
+       * ffprobe não conseguiu lê-lo. Rotulamos para o log final não confundir os
+       * dois desfechos.
+       */
+      ultimoErro = erro?.code === 'ENOENT'
+        ? new Error('arquivo ausente no momento da sondagem')
+        : erro
     }
 
     /*
@@ -1797,6 +2134,14 @@ async function reposicionarEmSegundoPlano(sessao, tempo) {
 
   sessao.tempoBase = tempo
   sessao.progresso = null
+
+  /*
+   * Reaplicamos o isolamento do pack antes de reabrir a janela: um seek não pode
+   * devolver prioridade aos outros episódios. Sem isso, a janela nova partiria
+   * de um torrent com todos os arquivos ainda selecionados e o download voltaria
+   * a se espalhar pelo pack.
+   */
+  isolarArquivoDoEpisodio(sessao, sessao.torrent, arquivo)
 
   /*
    * A janela nova parte do ponto buscado. O byte alvo é estimado pela vazão do

@@ -30,12 +30,73 @@ final class TermosBusca
         'dublada',
         'dual áudio',
         'dual audio',
+        'multi áudio',
+        'multi audio',
+        'duplo áudio',
+        'duplo audio',
         'pt-br',
         'ptbr',
         'nacional',
+        'português',
+        'portugues',
         'áudio pt',
         'audio pt',
     ];
+
+    /**
+     * Marcadores textuais de que o release é um pacote, não um episódio solto.
+     *
+     * A lista é ampla de propósito: cada tracker tem a sua gíria para o pacote
+     * ("completa", "boxset", "coleção", "todas as temporadas"). Serve para dois
+     * usos — reconhecer o **termo de pack** em [`eTermoDePack()`] e reconhecer o
+     * **nome do release** em [`temMarcadorDePack()`]. No primeiro caso o marcador
+     * sozinho não basta (a busca de pack é um termo nosso, que sempre traz a
+     * temporada junto); no segundo ele é a única pista de que um nome sem
+     * numeração é um pacote.
+     *
+     * @var array<int, string>
+     */
+    public const MARCADORES_PACK = [
+        'completa',
+        'completo',
+        'complete',
+        'superpack',
+        'boxset',
+        'box set',
+        'coleção',
+        'colecao',
+        'season pack',
+        'temporadas completas',
+        'todas as temporadas',
+        'todos os episódios',
+        'todos os episodios',
+    ];
+
+    /**
+     * Diz se o nome carrega marcador de pacote, sem exigir a temporada.
+     *
+     * É o socorro do pack que não numera a temporada no nome — "American Horror
+     * Story - A Série Completa Dublado", comum em trackers nacionais. A leitura
+     * por temporada ([`temporadaDosNomes()`]) devolve `null` nesses nomes, e sem
+     * este marcador o pack nem sequer era etiquetado como tal, caindo no gate de
+     * temporada que o descartava.
+     *
+     * Como o "completo" também aparece em título de filme, o chamador só recorre
+     * a esta checagem no contexto de episódio — onde a fonte já passou pelo corte
+     * de numeração e não declarou nem temporada nem episódio.
+     */
+    public static function temMarcadorDePack(string $termo): bool
+    {
+        $texto = mb_strtolower($termo);
+
+        foreach (self::MARCADORES_PACK as $marcador) {
+            if (str_contains($texto, $marcador)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     /** Termo mais simples: título e ano, sem tag de idioma. */
     public static function base(string $titulo, ?int $ano): string
@@ -150,6 +211,39 @@ final class TermosBusca
     }
 
     /**
+     * Termos amplos de série: só o nome e a temporada, sem tag de áudio.
+     *
+     * É o termo que o meta-buscador precisa. O Knaben casa **todas** as palavras
+     * do termo (`search_type=100%`), então cada palavra a mais corta recall: um
+     * pack publicado como "American Horror Story S01 Completa Legendado PT-BR"
+     * nunca casa com "American Horror Story S01E01 dublado". Tirando a numeração
+     * de episódio e a tag de áudio, sobra o nome da série com a temporada — que é
+     * como o pack aparece — e quem valida o episódio e classifica o idioma é o
+     * parser interno, depois.
+     *
+     * A pontuação sai pelo [`limpar()`]: dois-pontos e hífen atrapalham a busca
+     * por palavra-chave em vários indexadores. A ordem vai do mais específico
+     * ("S01", "temporada 1") ao mais amplo — o nome puro é a última rede de
+     * recall, quando nem a temporada no termo acha o pack.
+     *
+     * @return array<int, string>
+     */
+    public static function serieAmpla(string $titulo, int $temporada): array
+    {
+        $nome = self::limpar($titulo);
+        $numerada = sprintf('S%02d', $temporada);
+
+        $termos = array_filter([
+            "{$nome} {$numerada}",
+            "{$nome} temporada {$temporada}",
+            "{$nome} season {$temporada}",
+            "{$nome}",
+        ], static fn (string $termo): bool => trim($termo) !== '');
+
+        return array_values(array_unique($termos));
+    }
+
+    /**
      * Diz se o termo é um dos termos de série (sem numeração de episódio).
      *
      * Espelha [`eTermoDePack()`]: separa os termos de série dos de episódio e dos
@@ -190,16 +284,7 @@ final class TermosBusca
     {
         $texto = mb_strtolower($termo);
 
-        $temMarcador = false;
-
-        foreach (['completa', 'completo', 'complete', 'superpack'] as $marcador) {
-            if (str_contains($texto, $marcador)) {
-                $temMarcador = true;
-                break;
-            }
-        }
-
-        if (! $temMarcador) {
+        if (! self::temMarcadorDePack($texto)) {
             return false;
         }
 

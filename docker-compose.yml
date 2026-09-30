@@ -99,9 +99,17 @@ services:
       # Reserva de torrents (YTS) usada quando o indexador não responde.
       - TORRENTS_BASE_URL=${TORRENTS_BASE_URL:-https://yts.gg}
       - TORRENTS_CACHE_TTL=${TORRENTS_CACHE_TTL:-1800}
+      # Ignora a leitura do cache das consultas externas durante a busca, forçando
+      # uma nova ida à origem. Serve para tirar o resultado velho preso por horas
+      # quando o provedor mudou de comportamento. Padrão false.
+      - TORRENTS_CACHE_BYPASS=${TORRENTS_CACHE_BYPASS:-false}
       # Idiomas pedidos ao Torrentio. Sem isso ele responde só com o catálogo
       # padrão (quase todo em inglês) e as séries não trazem fonte dublada.
       - TORRENTS_TORRENTIO_IDIOMAS=${TORRENTS_TORRENTIO_IDIOMAS:-portuguese}
+      # Segunda consulta ao Torrentio, sem o filtro de idioma, quando a busca é de
+      # série: é por ela que os packs de temporada aparecem. O parser interno
+      # classifica o idioma depois. Padrão true.
+      - TORRENTS_TORRENTIO_BUSCA_AMPLA=${TORRENTS_TORRENTIO_BUSCA_AMPLA:-true}
       # Endereços e limites dos provedores nativos do degrau 1. Sem estas no
       # environment, o container cai nos padrões do config/services.php e o valor
       # do .env da raiz não chega a valer — o mesmo furo que deixou a Fase 1
@@ -238,8 +246,22 @@ services:
     container_name: stretor_media_service
     restart: unless-stopped
     working_dir: /app
+    # DNS confiável, pelo mesmo motivo do backend e do Prowlarr: é este container
+    # que abre o torrent, e o resolver herdado da operadora costuma bloquear ou
+    # devolver NXDOMAIN para domínios de tracker. Sem resolver os anunciadores
+    # nem alcançar os roteadores do DHT, o WebTorrent não forma malha e a fonte
+    # aparece como "sem peers" mesmo estando viva.
+    dns:
+      - ${DNS_PRIMARIO:-1.1.1.1}
+      - ${DNS_SECUNDARIO:-8.8.8.8}
     ports:
       - "${MEDIA_SERVICE_PORT:-3000}:3000"
+      # Porta de escuta do WebTorrent (TCP) e a equivalente uTP (UDP). Sem
+      # publicá-las, o container só faz conexões de saída e não aceita nenhuma
+      # de entrada — a malha fica pela metade e a chance de achar peer cai muito.
+      # O valor precisa bater com `torrentPort` em `sessoes.js`.
+      - "${MEDIA_TORRENT_PORT:-51413}:51413/tcp"
+      - "${MEDIA_TORRENT_PORT:-51413}:51413/udp"
     volumes:
       - ./media-service:/app
       - /app/node_modules
@@ -249,6 +271,9 @@ services:
       - PORT=3000
       - REDIS_URL=redis://redis:6379
       - STORAGE_PATH=/app/storage
+      # Porta de escuta do WebTorrent. Fixa para casar com o mapeamento acima:
+      # uma porta aleatória a cada subida nunca seria alcançável de fora.
+      - MEDIA_TORRENT_PORT=${MEDIA_TORRENT_PORT:-51413}
       # Paciência do media-service com fontes de poucos peers. O timeout de
       # dados mede a espera pelo primeiro byte, não a velocidade: uma fonte
       # lenta mas viva demora a conectar e depois baixa normalmente, e era
@@ -256,6 +281,16 @@ services:
       # do TIMEOUT_FONTE_MS do frontend (90 s) para o backend desistir primeiro.
       - MEDIA_TIMEOUT_DADOS_MS=${MEDIA_TIMEOUT_DADOS_MS:-30000}
       - MEDIA_TIMEOUT_METADADOS_MS=${MEDIA_TIMEOUT_METADADOS_MS:-20000}
+      # Resiliência a fontes de poucos seeds. O prazo de espera por um trecho
+      # deixou de ser um relógio fixo: ele só corre enquanto o download estiver
+      # parado, e cada avanço real de bytes renova a espera. Uma fonte lenta mas
+      # viva não é mais cortada no meio do caminho; só a que estagna de verdade.
+      - MEDIA_ESTAGNACAO_PECAS_MS=${MEDIA_ESTAGNACAO_PECAS_MS:-90000}
+      - MEDIA_TETO_PECAS_MS=${MEDIA_TETO_PECAS_MS:-900000}
+      # Com poucos peers a janela de leitura é ampliada, dando ao picker mais
+      # pedaços elegíveis para pedir a peers vizinhos.
+      - MEDIA_PEERS_ESCASSOS=${MEDIA_PEERS_ESCASSOS:-3}
+      - MEDIA_FATOR_JANELA_ESCASSOS=${MEDIA_FATOR_JANELA_ESCASSOS:-2}
     depends_on:
       init:
         condition: service_completed_successfully

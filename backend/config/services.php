@@ -99,6 +99,16 @@ return [
          */
         'torrentio_idiomas' => env('TORRENTS_TORRENTIO_IDIOMAS', 'portuguese'),
 
+        /*
+         * Consulta ampla do Torrentio para séries: além da busca filtrada por
+         * idioma, repete a mesma rota **sem** o segmento `language=`. O filtro é
+         * um corte na origem e esconde packs que não declaram o idioma do jeito
+         * que ele reconhece ("multi áudio" mal grafado, "legendado"); sem o
+         * filtro, o parser interno classifica pelo nome do release. Filme não
+         * entra nessa segunda consulta. Desligue para voltar à consulta única.
+         */
+        'torrentio_busca_ampla' => (bool) env('TORRENTS_TORRENTIO_BUSCA_AMPLA', true),
+
         // BT4G varre a rede DHT inteira: costuma achar o release PT-BR que os
         // trackers indexados não têm. A lista de espelhos é separada por
         // vírgula; o domínio principal sai do ar com frequência.
@@ -257,6 +267,15 @@ return [
         // contrato da API v2, então é ele que fica como padrão.
         'base_url' => env('TORRENTS_BASE_URL', 'https://yts.gg'),
         'cache_ttl' => (int) env('TORRENTS_CACHE_TTL', 1800),
+
+        /*
+         * Bypass do cache de consultas aos provedores. Com isto ligado, a busca
+         * ignora a **leitura** do cache e reconsulta o provedor; o resultado novo
+         * é gravado por cima, então as chamadas seguintes já veem o valor fresco.
+         * Serve para tirar da frente um resultado limitado que ficou preso no
+         * cache antes de uma correção, sem esperar o TTL nem limpar o Redis.
+         */
+        'cache_bypass' => (bool) env('TORRENTS_CACHE_BYPASS', false),
 
         /*
          * Com isto ligado, a montagem final entrega só a pilha boa — dublado e

@@ -34,7 +34,7 @@ class InspecaoPack
      * mudança na lógica de leitura (a lista de indícios, por exemplo) faz a
      * reconsulta valer de imediato, sem depender de limpar o Redis à mão.
      */
-    private const VERSAO_CACHE = 1;
+    private const VERSAO_CACHE = 2;
 
     /**
      * Apura se o pack tem indício de áudio PT-BR no conteúdo.

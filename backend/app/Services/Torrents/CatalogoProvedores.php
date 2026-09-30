@@ -47,7 +47,7 @@ class CatalogoProvedores
      * mudança de comportamento de um provedor para a reconsulta valer já na
      * próxima busca, sem depender de limpar o Redis à mão.
      */
-    private const VERSAO_CACHE = 12;
+    private const VERSAO_CACHE = 13;
 
     /**
      * Provedores do primeiro degrau que buscam **por nome**.
@@ -1028,7 +1028,7 @@ class CatalogoProvedores
          * "não acha pack" das séries antigas.
          */
         $fontes = $this->marcarPacks($fontes, $temporada, $episodio, $termoDePack);
-        $fontes = $this->aproveitaveis($fontes, $temporada, $episodio);
+        $fontes = $this->aproveitaveis($fontes, $temporada, $episodio, $termoDePack);
 
         $this->contabilizarAproveitadas($fontes);
 
@@ -1144,7 +1144,22 @@ class CatalogoProvedores
              */
             $temporadaDeclarada = TermosBusca::temporadaDosNomes($nomes);
 
-            if ($temporadaDeclarada === null) {
+            /*
+             * O termo de pack tem precedência sobre a numeração de episódio do
+             * nome interno.
+             *
+             * A checagem de numeração existe para não marcar como pack um
+             * episódio solto que veio de um termo largo. Mas quando o próprio
+             * termo buscado é de pack ("... S01 completa"), a numeração que
+             * aparece no nome é a do **arquivo interno** do torrent — o
+             * Torrentio e afins devolvem "2x13 - Madness Ends" como `release`,
+             * escondendo que o torrent inteiro é a temporada. Descartar o
+             * candidato aqui era o que fazia o pack aprovado pelo termo nunca
+             * receber a marca e, sem a marca, morrer no gate de temporada
+             * adiante. Em termo de pack, portanto, a numeração de episódio não
+             * desqualifica: quem confirma o pacote é o termo.
+             */
+            if ($temporadaDeclarada === null && ! $termoDePack) {
                 $temNumeracao = false;
 
                 foreach ($nomes as $nome) {
@@ -1160,7 +1175,29 @@ class CatalogoProvedores
                 }
             }
 
+            /*
+             * A terceira via de prova é o marcador textual de pacote. Os packs
+             * nacionais antigos costumam não numerar a temporada no nome ("A
+             * Série Completa Dublado"): nem `temporadaDosNomes()` nem a cobertura
+             * o encontram, e sem esta pista ele não seria etiquetado — logo
+             * morreria no gate adiante, que só perdoa o que tem número ou a
+             * etiqueta de pack. Só chega aqui o nome sem numeração de episódio
+             * (o corte acima já descartou quem declara episódio), então
+             * "completo"/"coleção" no nome é pista de pacote, não ruído de
+             * título de filme.
+             */
+            $temMarcador = false;
+
+            foreach ($nomes as $nome) {
+                if (TermosBusca::temMarcadorDePack($nome)) {
+                    $temMarcador = true;
+
+                    break;
+                }
+            }
+
             $ePack = TermosBusca::algumNomeCobreTemporada($nomes, $temporada)
+                || $temMarcador
                 || ($termoDePack && $temporadaDeclarada === null);
 
             if (! $ePack) {
@@ -1246,7 +1283,7 @@ class CatalogoProvedores
      * @param  array<int, array<string, mixed>>  $fontes
      * @return array<int, array<string, mixed>>
      */
-    private function aproveitaveis(array $fontes, ?int $temporada, ?int $episodio): array
+    private function aproveitaveis(array $fontes, ?int $temporada, ?int $episodio, bool $termoDePack = false): array
     {
         $resultado = [];
 
@@ -1275,6 +1312,15 @@ class CatalogoProvedores
              * que ele escapava. Releases com numeração seguem julgados pelo
              * `correspondeAoEpisodio()` acima — o gate só olha o que não tem
              * número para provar a temporada.
+             *
+             * Um pack **etiquetado** por [`marcarPacks()`] já provou a temporada
+             * por outra via (cobertura, marcador textual ou o próprio termo de
+             * pack), então o gate o deixa passar. Sem esta exceção, "A Série
+             * Completa Dublado" — que não declara número — era barrado apesar de
+             * já ter sido reconhecido como pacote, e era esse o `na_lista: 0` dos
+             * packs compactados. A defesa contra a temporada errada continua em
+             * [`TorrentService::packDaTemporadaErrada()`], que ainda rejeita o
+             * pack que **declara** uma temporada diferente da pedida.
              */
             if ($temporada !== null && $episodio !== null) {
                 /*
@@ -1299,8 +1345,24 @@ class CatalogoProvedores
                     }
                 }
 
+                /*
+                 * A quarta via de prova é o próprio termo de pack.
+                 *
+                 * Quando a busca veio de um termo de pack ("... S01 completa"), o
+                 * termo já declara a temporada pedida — é ele que a monta. Exigir
+                 * que o nome do release repita a temporada era o que barrava o
+                 * pack cujo `release` é o nome do arquivo interno ("2x13 -
+                 * Madness Ends") ou cujo nome nacional não numera nada ("A Série
+                 * Completa Dublado"). Nesses casos o termo é a única prova
+                 * disponível, e confiar nele é o que faz o pack aprovado chegar
+                 * à montagem. A defesa contra a temporada errada continua em
+                 * [`TorrentService::packDaTemporadaErrada()`], que ainda rejeita
+                 * o pack que **declara** uma temporada diferente da pedida.
+                 */
                 if (! $temNumeracao
-                    && ! TermosBusca::algumNomeCobreTemporada($nomes, $temporada)) {
+                    && ! TermosBusca::algumNomeCobreTemporada($nomes, $temporada)
+                    && empty($fonte['pack'])
+                    && ! $termoDePack) {
                     $this->barradasPeloGate++;
 
                     continue;
@@ -1351,13 +1413,26 @@ class CatalogoProvedores
 
         $ttl = (int) config('services.torrents.cache_ttl', 1800);
 
+        $bypass = (bool) config('services.torrents.cache_bypass', false);
+
         /*
          * O `has()` antes do `remember()` é o que separa "o provedor respondeu
          * agora" de "o valor veio do cache": o censo precisa dos dois números para
          * o relatório não dizer que consultamos o indexador quando ele foi lido de
-         * uma resposta de meia hora atrás.
+         * uma resposta de meia hora atrás. Com o bypass ligado a leitura não
+         * acontece, então a consulta nunca conta como cache.
          */
-        $doCache = Cache::has($chave);
+        $doCache = ! $bypass && Cache::has($chave);
+
+        /*
+         * O bypass apaga a chave antes do `remember()`: sem a leitura, o provedor
+         * é reconsultado e o resultado novo grava por cima. É o que libera um
+         * resultado limitado que ficou preso no cache antes de uma correção, sem
+         * esperar o TTL nem limpar o Redis à mão.
+         */
+        if ($bypass) {
+            Cache::forget($chave);
+        }
 
         /*
          * O cronômetro abraça o `remember()` inteiro — inclusive o tempo de rede do
@@ -1427,7 +1502,13 @@ class CatalogoProvedores
 
         $ttl = (int) config('services.torrents.cache_ttl', 1800);
 
-        $doCache = Cache::has($chave);
+        $bypass = (bool) config('services.torrents.cache_bypass', false);
+
+        $doCache = ! $bypass && Cache::has($chave);
+
+        if ($bypass) {
+            Cache::forget($chave);
+        }
 
         $inicio = hrtime(true);
 

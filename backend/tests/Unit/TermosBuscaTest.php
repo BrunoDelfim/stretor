@@ -196,4 +196,79 @@ class TermosBuscaTest extends TestCase
         $this->assertTrue(TermosBusca::algumNomeCobreTemporada($nomes, 3));
         $this->assertFalse(TermosBusca::algumNomeCobreTemporada($nomes, 4));
     }
+
+    /**
+     * O marcador textual de pack é o socorro do nome que não numera a temporada —
+     * "A Série Completa Dublado", comum nos trackers nacionais. Sem ele o pack
+     * não era sequer etiquetado e morria no gate de temporada, o que produzia o
+     * `na_lista: 0` dos packs compactados.
+     */
+    public function test_marcador_de_pack_reconhece_nomes_sem_temporada(): void
+    {
+        $this->assertTrue(TermosBusca::temMarcadorDePack('American Horror Story - A Série Completa Dublado 1080p'));
+        $this->assertTrue(TermosBusca::temMarcadorDePack('American Horror Story Boxset 1080p'));
+        $this->assertTrue(TermosBusca::temMarcadorDePack('American Horror Story Coleção Completa'));
+        $this->assertTrue(TermosBusca::temMarcadorDePack('American Horror Story Temporadas Completas'));
+    }
+
+    /**
+     * O marcador não pode disparar num episódio solto: sem "completa", "boxset"
+     * ou "coleção" no nome, não há pacote a reconhecer.
+     */
+    public function test_marcador_de_pack_nao_dispara_em_episodio_solto(): void
+    {
+        $this->assertFalse(TermosBusca::temMarcadorDePack('American Horror Story Dublado 720p'));
+        $this->assertFalse(TermosBusca::temMarcadorDePack('American.Horror.Story.S01E01.720p'));
+    }
+
+    /**
+     * O termo de pack continua exigindo marcador **e** temporada juntos, para que
+     * um filme de título "The Complete ..." não seja tomado por pacote de série.
+     */
+    public function test_termo_de_pack_exige_marcador_e_temporada(): void
+    {
+        $this->assertTrue(TermosBusca::eTermoDePack('American Horror Story S01 completa'));
+        $this->assertTrue(TermosBusca::eTermoDePack('American Horror Story Temporada 1 completa dublada'));
+        $this->assertFalse(TermosBusca::eTermoDePack('American Horror Story completa'));
+        $this->assertFalse(TermosBusca::eTermoDePack('American Horror Story Dublado 720p'));
+    }
+
+    /**
+     * O termo amplo é o que destrava o meta-buscador. O Knaben casa **todas** as
+     * palavras do termo (`search_type=100%`), então a numeração de episódio e a
+     * tag de áudio, juntas, cortavam o recall do pack nacional. Tirando as duas,
+     * sobra o nome da série com a temporada — o formato em que o pack é publicado.
+     */
+    public function test_termo_amplo_de_serie_nao_carrega_tag_de_audio(): void
+    {
+        $termos = TermosBusca::serieAmpla('American Horror Story', 1);
+
+        $this->assertSame([
+            'American Horror Story S01',
+            'American Horror Story temporada 1',
+            'American Horror Story season 1',
+            'American Horror Story',
+        ], $termos);
+
+        foreach ($termos as $termo) {
+            $this->assertFalse(
+                TermosBusca::jaEDublado($termo),
+                "O termo amplo \"{$termo}\" não pode carregar tag de áudio — é ela que corta o recall."
+            );
+        }
+    }
+
+    /**
+     * A pontuação do título sai pelo `limpar()`: dois-pontos e hífen atrapalham a
+     * busca por palavra-chave em vários indexadores.
+     */
+    public function test_termo_amplo_de_serie_limpa_a_pontuacao_do_titulo(): void
+    {
+        $this->assertSame([
+            'Homem Aranha Sem Volta para Casa S03',
+            'Homem Aranha Sem Volta para Casa temporada 3',
+            'Homem Aranha Sem Volta para Casa season 3',
+            'Homem Aranha Sem Volta para Casa',
+        ], TermosBusca::serieAmpla('Homem-Aranha: Sem Volta para Casa', 3));
+    }
 }
