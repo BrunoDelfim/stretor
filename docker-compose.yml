@@ -164,14 +164,13 @@ services:
       # cascata percorre o registro inteiro, deixando cada provedor de lado só
       # depois que ele rendeu TORRENTS_FONTES_SUFICIENTES_POR_PROVEDOR fontes.
       - TORRENTS_BUSCAR_TODOS=${TORRENTS_BUSCAR_TODOS:-true}
-      # Fallback de stream direto (MP4/HLS). O motor de busca padrão é o SearXNG
+      # Fallback de stream direto (MP4/HLS). O motor de busca é o SearXNG
       # interno do compose (`http://searxng:8080/search`), e não uma instância
-      # pública: o DDG bloqueia o IP dos containers com status 202 e as
-      # instâncias públicas vêm e vão. O endereço é só o endpoint de busca — a
-      # query e o `format=json` entram na hora da requisição. O DDG fica como
-      # reserva, para quando o SearXNG interno estiver fora.
+      # pública nem um buscador comercial: o SearXNG sobe junto com o stack, tem
+      # cota própria e devolve JSON limpo. O endereço é só o endpoint de busca —
+      # a query e o `format=json` entram na hora da requisição.
       - TORRENTS_STREAM_DIRETO_HABILITADO=${TORRENTS_STREAM_DIRETO_HABILITADO:-false}
-      - TORRENTS_STREAM_DIRETO_MOTORES=${TORRENTS_STREAM_DIRETO_MOTORES:-http://searxng:8080/search,https://html.duckduckgo.com/html/,https://lite.duckduckgo.com/lite/}
+      - TORRENTS_STREAM_DIRETO_MOTORES=${TORRENTS_STREAM_DIRETO_MOTORES:-http://searxng:8080/search}
       - TORRENTS_STREAM_DIRETO_BRAVE_KEY=${TORRENTS_STREAM_DIRETO_BRAVE_KEY:-}
       - TORRENTS_STREAM_DIRETO_TERMOS=${TORRENTS_STREAM_DIRETO_TERMOS:-}
       - TORRENTS_STREAM_DIRETO_MAX_TERMOS=${TORRENTS_STREAM_DIRETO_MAX_TERMOS:-8}

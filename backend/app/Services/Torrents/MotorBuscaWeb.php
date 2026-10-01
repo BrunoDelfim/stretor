@@ -13,71 +13,37 @@ use Illuminate\Support\Facades\Log;
  * páginas estão é o motor de busca. Este serviço é a ponte — recebe um termo e
  * devolve os endereços que o motor apontou.
  *
- * A escolha do motor é deliberada: o **DuckDuckGo HTML/Lite** serve uma página
- * estática, sem JavaScript e sem chave de API, cujos resultados vêm em `<a>` com
- * a classe `result__a` (ou `result-link`, no Lite). É o mesmo caminho que o
- * Stremio usa por baixo dos panos quando não há addon para o conteúdo. O Google
- * e o Bing exigem chave ou bloqueiam scraping agressivamente; o DDG tolera bem e
- * é o que dá para usar sem cadastro.
+ * O motor é o **SearXNG interno do compose**, consultado em
+ * `http://searxng:8080/search` com `format=json`. Ele sobe junto com o stack, tem
+ * cota própria e devolve JSON limpo — não depende de instância pública nem de
+ * terceiros, e não sofre o bloqueio por IP que os buscadores comerciais aplicam
+ * aos containers. O DuckDuckGo HTML/Lite foi removido do projeto: além de
+ * bloquear o IP dos containers com status 202, exigia parsing de HTML e detecção
+ * de captcha que só existiam para contornar o bloqueio.
  *
- * O DDG, porém, não é infinitamente tolerante: sob uso repetido ele passa a
- * responder **202** (ou 200 com página de captcha) para toda consulta, e a busca
- * volta vazia. Por isso o serviço não depende de um motor só. Cada endereço em
- * `stream_direto_motores` é consultado por um **tipo** de motor, e o tipo decide
- * como montar a requisição e como ler a resposta:
+ * Cada endereço em `stream_direto_motores` é consultado por um **tipo** de motor,
+ * e o tipo decide como montar a requisição e como ler a resposta:
  *
- * - `ddg` — DuckDuckGo HTML/Lite (padrão). Resultados em `<a class="result__a">`.
- * - `searxng` — instância SearXNG pública, com `format=json`. Resultados em
- *   `results[].url`. É o socorro natural quando o DDG bloqueia: a instância é
- *   hospedada por terceiros e tem cota própria.
+ * - `searxng` — instância SearXNG (interna ou pública), com `format=json`.
+ *   Resultados em `results[].url`.
  * - `brave` — API oficial do Brave Search, exige chave (`stream_direto_brave_key`).
  *   Resultados em `web.results[].url`.
  *
  * O tipo é inferido do endereço quando não declarado explicitamente: um host com
- * `searx` vira `searxng`, um host com `brave` vira `brave`, e o resto é `ddg`.
- * Também dá para forçar o tipo com o prefixo `tipo:url` na lista de motores.
+ * `searx` vira `searxng`, um host com `brave` vira `brave`. Também dá para forçar
+ * o tipo com o prefixo `tipo:url` na lista de motores.
  *
  * Com mais de um endereço, o serviço **percorre todos** e junta o que cada um
  * devolveu: um motor que respondeu com poucos resultados não impede o outro de
- * contribuir. E um motor bloqueado não consome o orçamento dos termos seguintes —
+ * contribuir. E um motor que falha não consome o orçamento dos termos seguintes —
  * ele é apenas pulado, e o próximo endereço assume.
  *
- * A extração do DDG é por regex, e não por parser de DOM: o HTML é pequeno e
- * estável o bastante, e um parser completo (DomDocument) custaria memória e
- * tempo que o orçamento curto do fallback não tem. Os motores JSON usam
- * `json_decode`, que é barato.
+ * A leitura é sempre por `json_decode`, que é barato e não depende de parser de
+ * DOM: os motores devolvem JSON estruturado, então não há HTML para raspar.
  */
 class MotorBuscaWeb
 {
     use ConsultaComOrcamento;
-
-    /**
-     * Marcas de bloqueio/rate-limit no corpo da resposta do motor.
-     *
-     * O DDG responde 200 mesmo quando está bloqueando, com uma página de aviso no
-     * corpo. Sem esta checagem, o serviço leria a página de bloqueio como "zero
-     * resultados" e o log não distinguiria "não há resultado" de "fui barrado" —
-     * que são problemas com soluções diferentes.
-     */
-    private const MARCAS_DE_BLOQUEIO = [
-        'unusual traffic',
-        'tráfego incomum',
-        'too many requests',
-        'rate limit',
-        'captcha',
-        'anomaly',
-    ];
-
-    /**
-     * Status que denunciam bloqueio imediato do motor.
-     *
-     * O 202 é o caso do DuckDuckGo: ele aceita a requisição mas não devolve
-     * resultado nenhum — é o "aceito, mas ignore" que antecede o captcha. O 429 é
-     * o rate limit explícito. Tratar 202 como sucesso (o `failed()` do Laravel só
-     * pega 4xx/5xx) fazia o serviço ler uma página vazia como "zero resultados" e
-     * gastar o orçamento de termos sem trazer um link sequer.
-     */
-    private const STATUS_DE_BLOQUEIO = [202, 429];
 
     /**
      * Domínios que nunca têm vídeo extraível e só gastam orçamento.
@@ -108,12 +74,10 @@ class MotorBuscaWeb
     /**
      * Motores padrão, na ordem em que são tentados.
      *
-     * O SearXNG interno do compose vem primeiro porque o DuckDuckGo passou a
-     * bloquear o IP dos containers com status 202 (rate limit/anti-bot) tanto no
-     * HTML quanto no Lite — e um motor bloqueado não rende link nenhum. O SearXNG
-     * que sobe junto com o stack tem cota própria, devolve JSON limpo e não
-     * depende de terceiros: é o caminho que foge do bloqueio. O par DDG HTML +
-     * Lite fica como reserva, para quando o container estiver fora.
+     * O SearXNG interno do compose é o único motor padrão: ele sobe junto com o
+     * stack, tem cota própria, devolve JSON limpo e não depende de terceiros. Se
+     * um dia for preciso redundância, ela deve vir de outra instância SearXNG —
+     * nunca de um buscador comercial que bloqueia o IP dos containers.
      *
      * O endereço é só o endpoint de busca (`http://searxng:8080/search`) — a
      * query e o `format=json` entram na hora da requisição. O host interno
@@ -122,8 +86,6 @@ class MotorBuscaWeb
      */
     private const MOTORES_PADRAO = [
         'http://searxng:8080/search',
-        'https://html.duckduckgo.com/html/',
-        'https://lite.duckduckgo.com/lite/',
     ];
 
     public function __construct(
@@ -136,9 +98,9 @@ class MotorBuscaWeb
      * Busca um termo e devolve as URLs de resultado, na ordem em que vieram.
      *
      * Percorre todos os motores configurados e agrega os resultados. Um motor que
-     * falha (rede, bloqueio, HTML mudado) não impede os outros: a busca degrada,
-     * não quebra. Quando um motor bloqueia, o próximo assume — e o bloqueio não
-     * consome o orçamento dos termos seguintes.
+     * falha (rede, erro HTTP, JSON inválido) não impede os outros: a busca
+     * degrada, não quebra. Quando um motor falha, o próximo assume — e a falha
+     * não consome o orçamento dos termos seguintes.
      *
      * @return array<int, string>
      */
@@ -173,7 +135,7 @@ class MotorBuscaWeb
             /*
              * A espera vale entre consultas, não antes da primeira: atrasar a
              * abertura da busca só somaria latência sem proteger nada. Com mais
-             * de um motor, a rajada é justamente o que o DDG pune.
+             * de um motor, a rajada é o que os buscadores punem.
              */
             if (! $primeiraConsulta) {
                 $this->aguardarIntervalo();
@@ -190,7 +152,7 @@ class MotorBuscaWeb
             ]);
 
             /*
-             * Um motor bloqueado devolve zero links, mas não é o mesmo que "não
+             * Um motor que falhou devolve zero links, mas não é o mesmo que "não
              * achou nada": o próximo endereço da lista ainda pode responder. O
              * laço segue em frente em vez de parar — é o fallback entre motores.
              */
@@ -210,9 +172,9 @@ class MotorBuscaWeb
     /**
      * Consulta um motor e extrai os links de resultado.
      *
-     * O tipo do motor decide a rota: os motores JSON (SearXNG, Brave) montam a
-     * requisição de um jeito e leem a resposta de outro; o DDG lê HTML. Em todos
-     * os casos, um bloqueio devolve lista vazia e o chamador tenta o próximo.
+     * O tipo do motor decide a rota: o SearXNG e o Brave montam a requisição de
+     * um jeito e leem a resposta de outro, mas ambos devolvem JSON. Uma falha
+     * devolve lista vazia e o chamador tenta o próximo.
      *
      * @return array<int, string>
      */
@@ -261,63 +223,25 @@ class MotorBuscaWeb
         }
 
         /*
-         * O 202 é o bloqueio silencioso do DDG: a requisição é aceita, mas não há
-         * resultado. Sem esta checagem ele passaria como sucesso e o serviço
-         * gastaria o orçamento lendo uma página vazia.
+         * A validação do corpo é o próprio `json_decode`: um corpo que não é JSON
+         * (página de erro, HTML de bloqueio) já devolve lista vazia. Não há mais
+         * varredura por marcas de bloqueio nem tratamento de status 202 — isso
+         * existia só para o HTML do DuckDuckGo, que respondia 200 com página de
+         * captcha no corpo.
          */
-        if (in_array($resposta->status(), self::STATUS_DE_BLOQUEIO, true)) {
-            Log::warning('Stream direto: motor bloqueou a consulta (status de rate limit).', [
-                'motor' => $motor,
-                'tipo' => $tipo,
-                'termo' => $termo,
-                'status' => $resposta->status(),
-            ]);
-
-            return [];
-        }
-
-        $corpo = (string) $resposta->body();
-
-        /*
-         * A varredura por marcas de bloqueio só vale para o HTML do DDG, que
-         * responde 200 com uma página de aviso no corpo. O JSON do SearXNG/Brave
-         * carrega a palavra "captcha" na própria estrutura (o campo que diz se o
-         * motor pediu captcha), então a mesma varredura dava falso positivo e
-         * descartava uma resposta cheia de resultados. Para os motores JSON, a
-         * validação é o próprio `json_decode` — corpo inválido já devolve vazio.
-         */
-        if ($tipo === 'ddg' && $this->pareceBloqueio($corpo)) {
-            Log::warning('Stream direto: motor bloqueou a consulta (rate limit/captcha).', [
-                'motor' => $motor,
-                'tipo' => $tipo,
-                'termo' => $termo,
-                'status' => $resposta->status(),
-            ]);
-
-            return [];
-        }
-
-        return $tipo === 'ddg'
-            ? $this->extrairResultados($corpo)
-            : $this->extrairResultadosJson($corpo);
+        return $this->extrairResultadosJson((string) $resposta->body());
     }
 
     /**
      * Monta a requisição conforme o tipo do motor.
      *
-     * O DDG e o SearXNG recebem o termo por query string (`q`); o Brave também,
-     * mas exige o cabeçalho de chave. O SearXNG pede `format=json` para devolver
-     * JSON em vez de HTML.
+     * O SearXNG recebe o termo por query string (`q`) e pede `format=json` para
+     * devolver JSON em vez de HTML. O Brave também recebe `q`, mas exige o
+     * cabeçalho de chave.
      */
     private function requisitar(string $tipo, string $motor, string $termo, int $teto): ?Response
     {
         return match ($tipo) {
-            'searxng' => $this->cliente->get(
-                $motor,
-                ['q' => $termo, 'format' => 'json'],
-                $this->navegador(),
-                $teto
-            ),
             'brave' => $this->cliente->get(
                 $motor,
                 ['q' => $termo],
@@ -325,7 +249,12 @@ class MotorBuscaWeb
                 $teto,
                 $this->cabecalhosBrave()
             ),
-            default => $this->cliente->get($motor, ['q' => $termo], $this->navegador(), $teto),
+            default => $this->cliente->get(
+                $motor,
+                ['q' => $termo, 'format' => 'json'],
+                $this->navegador(),
+                $teto
+            ),
         };
     }
 
@@ -350,30 +279,27 @@ class MotorBuscaWeb
      *
      * O prefixo `tipo:url` vence sempre — é o jeito de forçar um tipo quando o
      * host não denuncia (uma instância SearXNG em domínio próprio, por exemplo).
-     * Sem prefixo, o host decide: `searx` vira SearXNG, `brave` vira Brave, e o
-     * resto é DuckDuckGo.
+     * Sem prefixo, o host decide: `searx` vira SearXNG, `brave` vira Brave. Um
+     * endereço que não casa com nenhum dos dois é tratado como SearXNG, que é o
+     * motor padrão do projeto.
      */
     private function tipoDoMotor(string $motor): string
     {
         if (str_contains($motor, ':')) {
             [$possivelTipo, $resto] = explode(':', $motor, 2);
 
-            if (in_array($possivelTipo, ['ddg', 'searxng', 'brave'], true) && $resto !== '') {
+            if (in_array($possivelTipo, ['searxng', 'brave'], true) && $resto !== '') {
                 return $possivelTipo;
             }
         }
 
         $host = strtolower((string) parse_url($motor, PHP_URL_HOST));
 
-        if (str_contains($host, 'searx')) {
-            return 'searxng';
-        }
-
         if (str_contains($host, 'brave')) {
             return 'brave';
         }
 
-        return 'ddg';
+        return 'searxng';
     }
 
     /**
@@ -381,7 +307,7 @@ class MotorBuscaWeb
      *
      * O SearXNG devolve `{"results": [{"url": "..."}]}`; o Brave devolve
      * `{"web": {"results": [{"url": "..."}]}}`. Os dois formatos são aceitos, e a
-     * lista negra de domínios vale igual — o filtro é o mesmo do HTML.
+     * lista negra de domínios vale igual.
      *
      * @return array<int, string>
      */
@@ -442,10 +368,10 @@ class MotorBuscaWeb
     /**
      * Espera um intervalo sorteado antes da próxima consulta ao motor.
      *
-     * O DDG bloqueia rajadas: consultar os termos em sequência, sem pausa, é o
-     * caminho mais curto para o rate limit. O atraso é sorteado entre o mínimo e
-     * o máximo a cada consulta — uma cadência fixa também é padrão de bot, e o
-     * sorteio imita o ritmo irregular de quem digita e clica.
+     * Buscadores bloqueiam rajadas: consultar os termos em sequência, sem pausa,
+     * é o caminho mais curto para o rate limit. O atraso é sorteado entre o
+     * mínimo e o máximo a cada consulta — uma cadência fixa também é padrão de
+     * bot, e o sorteio imita o ritmo irregular de quem digita e clica.
      *
      * A espera nunca ultrapassa o orçamento restante: se o que sobra é menor que
      * o intervalo sorteado, dormir até o fim só atrasaria a resposta sem ganhar
@@ -485,9 +411,8 @@ class MotorBuscaWeb
     /**
      * User-Agent de navegador comum para as consultas ao motor de busca.
      *
-     * O DDG HTML serve a página a qualquer agente, mas um User-Agent de robô
-     * (`GuzzleHttp/...`, `curl/...`) é o primeiro item que um filtro anti-bot
-     * olha. O valor vem da mesma chave dos provedores nativos
+     * Um User-Agent de robô (`GuzzleHttp/...`, `curl/...`) é o primeiro item que
+     * um filtro anti-bot olha. O valor vem da mesma chave dos provedores nativos
      * (`services.torrents.user_agent`), para não haver dois agentes diferentes
      * no mesmo processo.
      */
@@ -501,88 +426,6 @@ class MotorBuscaWeb
         return $agente !== ''
             ? $agente
             : 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
-    }
-
-    /**
-     * Diz se o corpo da resposta é uma página de bloqueio do motor.
-     */
-    private function pareceBloqueio(string $corpo): bool
-    {
-        if ($corpo === '') {
-            return false;
-        }
-
-        $alvo = mb_strtolower($corpo);
-
-        foreach (self::MARCAS_DE_BLOQUEIO as $marca) {
-            if (str_contains($alvo, $marca)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Extrai as URLs de resultado do HTML do motor de busca.
-     *
-     * O DDG HTML embrulha cada resultado num `<a class="result__a" href="...">`,
-     * e o Lite num `<a class="result-link" href="...">`. Os dois formatos são
-     * aceitos. O `href` do DDG costuma vir como link de redirecionamento
-     * (`//duckduckgo.com/l/?uddg=<url-encoded>`), então o alvo real precisa ser
-     * decodificado do parâmetro `uddg`; quando o link já é direto, ele passa como
-     * está.
-     *
-     * @return array<int, string>
-     */
-    private function extrairResultados(string $html): array
-    {
-        if ($html === '') {
-            return [];
-        }
-
-        $padrao = '#<a[^>]+class="[^"]*result(?:__a|-link)[^"]*"[^>]+href="([^"]+)"#i';
-
-        if (! preg_match_all($padrao, $html, $casamentos)) {
-            return [];
-        }
-
-        $urls = [];
-        $ignorados = [];
-
-        foreach ($casamentos[1] as $bruto) {
-            $url = $this->resolverDestino(html_entity_decode($bruto, ENT_QUOTES | ENT_HTML5));
-
-            if ($url === '') {
-                continue;
-            }
-
-            /*
-             * O descarte acontece aqui, antes de a URL virar candidata a página.
-             * Filtrar depois, no provedor, seria tarde: a página já teria entrado
-             * na lista de visitas e o orçamento curto do fallback seria gasto
-             * abrindo um catálogo que nunca tem vídeo.
-             */
-            if ($this->dominioIgnorado($url)) {
-                $ignorados[] = $url;
-
-                continue;
-            }
-
-            $urls[] = $url;
-        }
-
-        if ($ignorados !== []) {
-            Log::debug('Stream direto: domínios de catálogo ignorados.', [
-                'quantidade' => count($ignorados),
-                'dominios' => array_values(array_unique(array_map(
-                    static fn (string $url): string => (string) parse_url($url, PHP_URL_HOST),
-                    $ignorados
-                ))),
-            ]);
-        }
-
-        return array_values(array_unique($urls));
     }
 
     /**
@@ -611,53 +454,11 @@ class MotorBuscaWeb
     }
 
     /**
-     * Resolve o destino real de um link de resultado do DDG.
-     *
-     * O DDG embrulha o alvo em `//duckduckgo.com/l/?uddg=<url-encoded>&rut=...`.
-     * O parâmetro `uddg` carrega a URL de verdade, já codificada; decodificá-la
-     * devolve o endereço da página de streaming. Links que já vêm diretos (sem o
-     * embrulho) passam intactos.
-     */
-    private function resolverDestino(string $href): string
-    {
-        $href = trim($href);
-
-        if ($href === '') {
-            return '';
-        }
-
-        // Protocolo relativo do DDG: "//duckduckgo.com/l/?uddg=..."
-        if (str_starts_with($href, '//')) {
-            $href = 'https:'.$href;
-        }
-
-        if (! preg_match('#^https?://#i', $href)) {
-            return '';
-        }
-
-        $consulta = (string) parse_url($href, PHP_URL_QUERY);
-
-        if ($consulta !== '') {
-            parse_str($consulta, $parametros);
-
-            if (! empty($parametros['uddg'])) {
-                $alvo = urldecode((string) $parametros['uddg']);
-
-                if (preg_match('#^https?://#i', $alvo)) {
-                    return $alvo;
-                }
-            }
-        }
-
-        return $href;
-    }
-
-    /**
      * Motores de busca configurados, já normalizados.
      *
-     * A lista vem de `stream_direto_motores`. Vazia, cai no par padrão (DDG HTML
-     * e Lite). O Brave só entra se houver chave configurada — sem ela, o motor
-     * devolveria 401 e só gastaria orçamento.
+     * A lista vem de `stream_direto_motores`. Vazia, cai no motor padrão (o
+     * SearXNG interno). O Brave só entra se houver chave configurada — sem ela, o
+     * motor devolveria 401 e só gastaria orçamento.
      *
      * @return array<int, string>
      */

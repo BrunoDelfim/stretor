@@ -159,8 +159,9 @@ trait TermosStreamDireto
      *
      * Um episódio gera dezenas de termos: 4 grafias de numeração × 5 intenções,
      * mais as variações sem intenção e o título original. Cada termo é uma
-     * requisição ao motor de busca, e o DDG bloqueia quem dispara em rajada —
-     * consultar todos de uma vez é o caminho mais curto para o rate limit.
+     * requisição ao motor de busca, e buscadores bloqueiam quem dispara em
+     * rajada — consultar todos de uma vez é o caminho mais curto para o rate
+     * limit.
      *
      * A lista já vem ordenada do mais preciso ao mais amplo, então cortar a cauda
      * descarta justamente os termos genéricos, que são os que menos rendem. O

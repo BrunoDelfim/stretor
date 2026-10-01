@@ -264,8 +264,8 @@ class ClienteHttp
      * O User-Agent sozinho não basta: filtros anti-bot cruzam o agente com os
      * cabeçalhos de aceitação. Um `Accept-Language` ausente, ou um `Accept`
      * genérico, denuncia o robô mesmo com o agente certo. O `pt-BR` também tem
-     * efeito prático: o DDG devolve resultados na variante brasileira, que é o
-     * que o fallback procura.
+     * efeito prático: os motores de busca devolvem resultados na variante
+     * brasileira, que é o que o fallback procura.
      *
      * @return array<string, string>
      */

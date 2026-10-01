@@ -185,7 +185,7 @@ class TermosStreamDiretoTest extends TestCase
         $termos = $this->termos('termosDeStreaming', 'Donas de Casa Desesperadas', 1, 1);
 
         // Sem o corte, um episódio gera dezenas de termos — e cada um é uma
-        // requisição que o DDG pode punir como rajada.
+        // requisição que o buscador pode punir como rajada.
         $this->assertCount(3, $termos);
     }
 

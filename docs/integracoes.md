@@ -2608,67 +2608,60 @@ O fluxo tem quatro etapas, cada uma num arquivo próprio:
    `buscarComTitulos()`, e não só o primeiro.
 
 2. **O motor de busca** — [`MotorBuscaWeb`](../backend/app/Services/Torrents/MotorBuscaWeb.php:1)
-   resolve o termo em URLs de páginas. A escolha primária é o **SearXNG interno**
-   do compose (`http://searxng:8080/search`): um meta-buscador que sobe junto com
-   o stack, tem cota própria e devolve JSON limpo (`format=json`). Ele não depende
-   de instância pública nem do IP do container ser aceito por terceiros — é o
-   caminho que foge do bloqueio. O **DuckDuckGo HTML/Lite** fica como reserva:
-   página estática, sem JavaScript e sem chave de API, com os resultados em
-   `<a class="result__a">` (ou `result-link`, no Lite). O `href` do DDG costuma vir
-   embrulhado num redirecionamento (`//duckduckgo.com/l/?uddg=<url-encoded>`), e o
-   serviço decodifica o parâmetro `uddg` para chegar ao alvo real. A lista de
-   motores é configurável (`stream_direto_motores`). Com mais de um endereço, o
-   serviço **percorre todos e agrega** o que cada um devolveu — um motor que
-   respondeu com poucos resultados não impede o outro de contribuir. Antes o laço
-   parava no primeiro motor com resultado, o que desperdiçava os demais quando o
-   primeiro devolvia uma lista magra.
+   resolve o termo em URLs de páginas. O motor é o **SearXNG interno** do compose
+   (`http://searxng:8080/search`): um meta-buscador que sobe junto com o stack, tem
+   cota própria e devolve JSON limpo (`format=json`). Ele não depende de instância
+   pública nem do IP do container ser aceito por terceiros — é o caminho que foge
+   do bloqueio. A lista de motores é configurável (`stream_direto_motores`). Com
+   mais de um endereço, o serviço **percorre todos e agrega** o que cada um
+   devolveu — um motor que respondeu com poucos resultados não impede o outro de
+   contribuir. Antes o laço parava no primeiro motor com resultado, o que
+   desperdiçava os demais quando o primeiro devolvia uma lista magra.
 
-   O DDG responde 200 mesmo quando está bloqueando (rate limit, captcha), com uma
-   página de aviso no corpo. O serviço reconhece essas marcas e registra o
-   bloqueio no log — sem isso, "não há resultado" e "fui barrado" ficariam
-   indistinguíveis, e são problemas com soluções diferentes.
+   ##### O DuckDuckGo foi removido do projeto
 
-   ##### O 202 é bloqueio, não sucesso
+   A primeira versão usava o **DuckDuckGo HTML/Lite** como motor: página estática,
+   sem JavaScript e sem chave de API, com os resultados em `<a class="result__a">`
+   (ou `result-link`, no Lite), e o `href` embrulhado num redirecionamento
+   (`//duckduckgo.com/l/?uddg=<url-encoded>`) que o serviço decodificava. O DDG,
+   porém, passou a bloquear o IP dos containers com **status 202** (rate limit) e a
+   responder 200 com página de captcha no corpo — o que obrigava o serviço a
+   carregar um parser de HTML, uma varredura de marcas de bloqueio e um tratamento
+   especial de status que só existiam para contornar o bloqueio.
 
-   O caso mais traiçoeiro é o **status 202**: o DDG aceita a requisição mas não
-   devolve resultado nenhum — é o "aceito, mas ignore" que antecede o captcha. O
-   `failed()` do Laravel só pega 4xx/5xx, então o 202 passava como sucesso e o
-   serviço lia uma página vazia como "zero resultados", gastando o orçamento de
-   termos sem trazer um link sequer. O [`MotorBuscaWeb`](../backend/app/Services/Torrents/MotorBuscaWeb.php:80)
-   agora trata `202` e `429` (`STATUS_DE_BLOQUEIO`) como bloqueio explícito:
-   registra o aviso **"motor bloqueou a consulta (status de rate limit)"** e
-   devolve lista vazia, deixando o próximo motor assumir.
+   Com o SearXNG interno funcionando, todo esse aparato virou peso morto. O DDG foi
+   **removido de todas as camadas**: dos motores padrão, do `.env`, do
+   `config/services.php`, do `MotorBuscaWeb` (que perdeu o tipo `ddg`, o parsing de
+   HTML, o desembrulho do `uddg`, a varredura de bloqueio e o tratamento de 202) e
+   até de dentro do próprio SearXNG, no
+   [`docker/searxng/settings.yml`](../docker/searxng/settings.yml:1). Se um dia for
+   preciso redundância, ela deve vir de **outra instância SearXNG** — nunca de um
+   buscador comercial que bloqueia o IP dos containers.
 
-   ##### Mais de um motor: o bloqueio de um não derruba a busca
+   ##### Os tipos de motor que restaram
 
-   Depender de um único endpoint é frágil — quando ele bloqueia, a busca inteira
-   morre. O serviço aceita **três tipos de motor**, e o tipo decide como montar a
+   O serviço aceita **dois tipos de motor**, e o tipo decide como montar a
    requisição e ler a resposta:
 
    - `searxng` — SearXNG, com `format=json`. Resultados em `results[].url`. É o
-     **motor primário**: o container sobe junto com o stack, tem cota própria e
-     devolve JSON limpo — é o caminho que foge do bloqueio de HTML do DuckDuckGo.
-   - `ddg` — DuckDuckGo HTML/Lite. Resultados em `<a class="result__a">`. Fica
-     como **reserva**, para quando o container estiver fora.
+     **motor padrão**: o container sobe junto com o stack, tem cota própria e
+     devolve JSON limpo.
    - `brave` — API oficial do Brave Search, exige chave
      (`stream_direto_brave_key`). Resultados em `web.results[].url`.
 
-   O tipo é **inferido do endereço** quando não declarado: um host com `searx`
-   vira `searxng`, um host com `brave` vira `brave`, e o resto é `ddg`. O host
-   interno `searxng` contém `searx`, então o endereço do container é reconhecido
-   sem configuração extra. Também dá para forçar o tipo com o prefixo `tipo:url`
-   na lista de motores — útil para uma instância SearXNG em domínio próprio, que
-   não denuncia o tipo pelo host.
+   O tipo é **inferido do endereço** quando não declarado: um host com `brave`
+   vira `brave`, e qualquer outro endereço é tratado como `searxng` — que é o
+   padrão do projeto. O host interno `searxng` contém `searx`, então o endereço do
+   container é reconhecido sem configuração extra. Também dá para forçar o tipo
+   com o prefixo `tipo:url` na lista de motores — útil para uma instância SearXNG
+   em domínio próprio, que não denuncia o tipo pelo host.
 
-   O padrão é **SearXNG interno + DDG HTML + Lite**, nesta ordem. O SearXNG vem
-   primeiro porque o DuckDuckGo passou a bloquear o IP dos containers com 202
-   tanto no HTML quanto no Lite — e um motor bloqueado não rende link nenhum. O
-   endereço do SearXNG é só o endpoint de busca (`http://searxng:8080/search`); a
-   query (`q`) e o `format=json` são acrescentados na hora da requisição. Um motor
-   do tipo `brave` **sem chave é descartado da lista** antes de qualquer
-   requisição — a API responderia 401 e o endereço só gastaria uma volta do laço.
-   A lista negra de domínios vale igual para os motores JSON: o filtro é o mesmo
-   do HTML.
+   O padrão é **só o SearXNG interno**. O endereço é só o endpoint de busca
+   (`http://searxng:8080/search`); a query (`q`) e o `format=json` são
+   acrescentados na hora da requisição. Um motor do tipo `brave` **sem chave é
+   descartado da lista** antes de qualquer requisição — a API responderia 401 e o
+   endereço só gastaria uma volta do laço. A lista negra de domínios vale igual
+   para os motores JSON.
 
    ##### O SearXNG sobe junto com o stack
 
@@ -2694,18 +2687,6 @@ O fluxo tem quatro etapas, cada uma num arquivo próprio:
    ([`docker-compose.yml`](../docker-compose.yml:186)), pelo mesmo motivo que
    espera o FlareSolverr: subir apontando para um motor que ainda não responde só
    gastaria o orçamento do fallback à toa.
-
-   ##### A varredura de bloqueio vale para o HTML, não para o JSON
-
-   A checagem de marcas de bloqueio (`unusual traffic`, `captcha`, `rate limit`…)
-   nasceu para o DuckDuckGo, que responde 200 com uma página de aviso no corpo. Ela
-   varre o texto da resposta inteira — e o JSON do SearXNG carrega a palavra
-   `captcha` na própria estrutura (o campo que diz se o motor pediu captcha). O
-   resultado era um **falso positivo**: uma resposta com dezenas de resultados era
-   descartada como bloqueio, e o log acusava "motor bloqueou a consulta" com
-   `status: 200`. O [`MotorBuscaWeb`](../backend/app/Services/Torrents/MotorBuscaWeb.php:281)
-   agora só aplica a varredura quando o tipo é `ddg`; para os motores JSON, quem
-   valida é o próprio `json_decode` — corpo inválido já devolve lista vazia.
 
    ##### A lista negra de domínios: o catálogo não tem vídeo
 
@@ -2750,14 +2731,13 @@ O fluxo tem quatro etapas, cada uma num arquivo próprio:
    provedor consome os termos de cima para baixo e para quando junta páginas
    suficientes, a ordem é o que decide se o orçamento é gasto com o site certo.
 
-   ##### O teto de termos: a rajada é o que o DDG pune
+   ##### O teto de termos: a rajada é o que o buscador pune
 
    A query em camadas é boa para achar a página certa, mas cara: um episódio
    gera **dezenas** de termos — 4 grafias de numeração × 5 intenções, mais as
    variações sem intenção e o título original. Cada termo é uma requisição ao
    motor de busca, e disparar todas em sequência é o caminho mais curto para o
-   rate limit. O DuckDuckGo responde 202 (ou 200 com página de captcha) e a
-   busca volta com zero links.
+   rate limit — o buscador responde com bloqueio e a busca volta com zero links.
 
    [`TermosStreamDireto::limitarTermos()`](../backend/app/Services/Torrents/TermosStreamDireto.php:173)
    corta a cauda da lista em `stream_direto_max_termos` (padrão 8). O corte é
@@ -2906,7 +2886,7 @@ num modo conservador (`video`, que transcodifica) em vez de desistir.
 
 ```env
 TORRENTS_STREAM_DIRETO_HABILITADO=false
-TORRENTS_STREAM_DIRETO_MOTORES=https://searx.be/search,https://html.duckduckgo.com/html/,https://lite.duckduckgo.com/lite/
+TORRENTS_STREAM_DIRETO_MOTORES=http://searxng:8080/search
 TORRENTS_STREAM_DIRETO_BRAVE_KEY=
 TORRENTS_STREAM_DIRETO_TERMOS=
 TORRENTS_STREAM_DIRETO_MAX_TERMOS=8
@@ -2918,15 +2898,15 @@ TORRENTS_STREAM_DIRETO_ORCAMENTO=12
 ```
 
 `TORRENTS_STREAM_DIRETO_MOTORES` é a lista de motores de busca (separada por
-vírgula). O padrão começa pelo **SearXNG interno** do compose
+vírgula). O padrão é o **SearXNG interno** do compose
 (`http://searxng:8080/search`), que sobe junto com o stack e não depende de
-instância pública; o par DDG HTML + Lite fica como reserva. O endereço do SearXNG
-é só o endpoint de busca — a query e o `format=json` entram sozinhos. O tipo de
-cada motor é inferido do endereço (`searx` → SearXNG, `brave` → Brave, o resto →
-DuckDuckGo) ou forçado com o prefixo `tipo:url` (ex.:
-`searxng:https://busca.exemplo.com`). O host interno `searxng` contém `searx`,
-então é reconhecido sem prefixo. Para usar o Brave, basta preencher
-`TORRENTS_STREAM_DIRETO_BRAVE_KEY` — sem a chave, o motor é descartado da lista.
+instância pública nem de buscador comercial. O endereço do SearXNG é só o endpoint
+de busca — a query e o `format=json` entram sozinhos. O tipo de cada motor é
+inferido do endereço (`brave` → Brave, o resto → SearXNG) ou forçado com o prefixo
+`tipo:url` (ex.: `searxng:https://busca.exemplo.com`). O host interno `searxng`
+contém `searx`, então é reconhecido sem prefixo. Para usar o Brave, basta
+preencher `TORRENTS_STREAM_DIRETO_BRAVE_KEY` — sem a chave, o motor é descartado
+da lista.
 `TORRENTS_STREAM_DIRETO_TERMOS` sobrescreve as intenções de busca — vazio usa o
 padrão (`assistir online dublado`, `assistir online legendado`, `assistir
 online`). `TORRENTS_STREAM_DIRETO_MAX_PAGINAS` limita quantas páginas o scraper

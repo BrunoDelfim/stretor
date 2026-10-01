@@ -43,9 +43,9 @@ ui:
 
 # Os motores abaixo são os que respondem bem a consultas em português e não
 # exigem chave. O Google e o Bing entram porque são os que mais acham páginas
-# de streaming dublado; o DuckDuckGo entra como reforço, mas agora do lado de
-# dentro do SearXNG — o IP que fala com ele é o do container do SearXNG, não o
-# do backend, o que dilui o bloqueio por rajada.
+# de streaming dublado; o Brave entra como reforço. O DuckDuckGo foi removido do
+# projeto — inclusive daqui de dentro do SearXNG —, já que o backend não deve
+# depender dele em nenhuma camada.
 engines:
   - name: google
     engine: google
@@ -55,11 +55,6 @@ engines:
   - name: bing
     engine: bing
     shortcut: b
-    disabled: false
-
-  - name: duckduckgo
-    engine: duckduckgo
-    shortcut: ddg
     disabled: false
 
   - name: brave

@@ -9,8 +9,8 @@ use Tests\TestCase;
 /**
  * O motor de busca é a porta de entrada do scraper: se ele não devolve as URLs
  * certas, nenhuma página é aberta e o fallback morre na praia. O que importa
- * testar aqui é a leitura do HTML do DuckDuckGo — o formato dos links de
- * resultado e o desembrulho do redirecionamento `uddg`.
+ * testar aqui é a leitura do JSON do SearXNG e do Brave — o formato dos
+ * resultados e o descarte dos domínios de catálogo.
  */
 class MotorBuscaWebTest extends TestCase
 {
@@ -26,105 +26,37 @@ class MotorBuscaWebTest extends TestCase
         return $reflexao->invoke($servico, ...$argumentos);
     }
 
-    public function test_extrai_resultado_do_formato_html(): void
-    {
-        $html = <<<'HTML'
-        <div class="result">
-            <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fsite.com%2Ffilme">Filme</a>
-        </div>
-        HTML;
-
-        $urls = $this->invocar('extrairResultados', $html);
-
-        $this->assertSame(['https://site.com/filme'], $urls);
-    }
-
-    public function test_extrai_resultado_do_formato_lite(): void
-    {
-        $html = '<a class="result-link" href="https://outro.com/serie">Serie</a>';
-
-        $urls = $this->invocar('extrairResultados', $html);
-
-        $this->assertSame(['https://outro.com/serie'], $urls);
-    }
-
-    public function test_desembrulha_o_redirecionamento_uddg(): void
-    {
-        $destino = $this->invocar(
-            'resolverDestino',
-            '//duckduckgo.com/l/?uddg=https%3A%2F%2Fsite.com%2Fassistir%3Fid%3D7&rut=abc'
-        );
-
-        $this->assertSame('https://site.com/assistir?id=7', $destino);
-    }
-
-    public function test_link_direto_passa_intacto(): void
-    {
-        $destino = $this->invocar('resolverDestino', 'https://site.com/filme');
-
-        $this->assertSame('https://site.com/filme', $destino);
-    }
-
-    public function test_link_relativo_sem_protocolo_e_descartado(): void
-    {
-        $this->assertSame('', $this->invocar('resolverDestino', '/l/?uddg=qualquer'));
-    }
-
-    public function test_html_vazio_nao_devolve_resultado(): void
-    {
-        $this->assertSame([], $this->invocar('extrairResultados', ''));
-    }
-
-    public function test_html_sem_resultado_nao_devolve_nada(): void
-    {
-        $this->assertSame([], $this->invocar('extrairResultados', '<html><body>nada</body></html>'));
-    }
-
-    public function test_resultados_repetidos_sao_deduplicados(): void
-    {
-        $html = <<<'HTML'
-        <a class="result__a" href="https://site.com/filme">A</a>
-        <a class="result__a" href="https://site.com/filme">B</a>
-        HTML;
-
-        $this->assertSame(['https://site.com/filme'], $this->invocar('extrairResultados', $html));
-    }
-
     public function test_motores_padrao_quando_a_config_esta_vazia(): void
     {
         config()->set('services.torrents.stream_direto_motores', []);
 
-        // O SearXNG interno do compose vem primeiro porque o DuckDuckGo bloqueia
-        // o IP dos containers com 202 e as instâncias públicas vêm e vão; o par
-        // DDG HTML + Lite fica como reserva.
+        // O SearXNG interno do compose é o único motor padrão: sobe junto com o
+        // stack, tem cota própria e devolve JSON limpo. O DuckDuckGo foi
+        // removido do projeto.
         $this->assertSame(
-            [
-                'http://searxng:8080/search',
-                'https://html.duckduckgo.com/html/',
-                'https://lite.duckduckgo.com/lite/',
-            ],
+            ['http://searxng:8080/search'],
             $this->invocar('motores')
         );
     }
 
     public function test_motores_configurados_sao_respeitados(): void
     {
-        config()->set('services.torrents.stream_direto_motores', ['https://lite.duckduckgo.com/lite/']);
+        config()->set('services.torrents.stream_direto_motores', ['https://searx.be/search']);
 
-        $this->assertSame(['https://lite.duckduckgo.com/lite/'], $this->invocar('motores'));
+        $this->assertSame(['https://searx.be/search'], $this->invocar('motores'));
     }
 
     public function test_motor_brave_sem_chave_e_descartado(): void
     {
         config()->set('services.torrents.stream_direto_motores', [
-            'https://html.duckduckgo.com/html/',
+            'http://searxng:8080/search',
             'https://api.search.brave.com/res/v1/web/search',
         ]);
         config()->set('services.torrents.stream_direto_brave_key', '');
 
         // Sem chave, o Brave responderia 401 e só gastaria uma volta do laço.
         $this->assertSame(
-            ['https://html.duckduckgo.com/html/'],
+            ['http://searxng:8080/search'],
             $this->invocar('motores')
         );
     }
@@ -144,7 +76,6 @@ class MotorBuscaWebTest extends TestCase
 
     public function test_tipo_do_motor_e_inferido_do_host(): void
     {
-        $this->assertSame('ddg', $this->invocar('tipoDoMotor', 'https://html.duckduckgo.com/html/'));
         $this->assertSame('searxng', $this->invocar('tipoDoMotor', 'https://searx.be/search'));
         $this->assertSame('brave', $this->invocar('tipoDoMotor', 'https://api.search.brave.com/res/v1/web/search'));
     }
@@ -157,12 +88,19 @@ class MotorBuscaWebTest extends TestCase
         $this->assertSame('searxng', $this->invocar('tipoDoMotor', 'http://searxng:8080/search'));
     }
 
+    public function test_endereco_desconhecido_cai_no_searxng(): void
+    {
+        // Sem prefixo e sem host que denuncie, o motor é tratado como SearXNG —
+        // que é o padrão do projeto. O DuckDuckGo não é mais um destino possível.
+        $this->assertSame('searxng', $this->invocar('tipoDoMotor', 'https://busca.exemplo.com'));
+    }
+
     public function test_prefixo_forca_o_tipo_do_motor(): void
     {
         // Uma instância SearXNG em domínio próprio não denuncia o tipo pelo host;
         // o prefixo `tipo:url` é o jeito de forçá-lo.
         $this->assertSame('searxng', $this->invocar('tipoDoMotor', 'searxng:https://busca.exemplo.com'));
-        $this->assertSame('ddg', $this->invocar('tipoDoMotor', 'ddg:https://busca.exemplo.com'));
+        $this->assertSame('brave', $this->invocar('tipoDoMotor', 'brave:https://busca.exemplo.com'));
     }
 
     public function test_searxng_monta_a_query_com_format_json(): void
@@ -184,17 +122,6 @@ class MotorBuscaWebTest extends TestCase
         });
 
         $this->assertSame(['https://agregador.com/assistir/filme'], $resultados);
-    }
-
-    public function test_status_202_devolve_lista_vazia(): void
-    {
-        Http::fake([
-            'searx.be/*' => Http::response('', 202),
-        ]);
-
-        // O 202 é o bloqueio silencioso: sem tratá-lo, a página vazia passaria
-        // como "zero resultados" e o orçamento seria gasto à toa.
-        $this->assertSame([], $this->invocar('consultarMotor', 'https://searx.be/search', 'filme'));
     }
 
     public function test_extrai_resultados_do_json_do_searxng(): void
@@ -240,10 +167,8 @@ class MotorBuscaWebTest extends TestCase
     {
         /*
          * O SearXNG carrega a palavra "captcha" na própria estrutura do JSON (o
-         * campo que diz se o motor pediu captcha). A varredura de marcas de
-         * bloqueio, feita para o HTML do DDG, dava falso positivo aqui e
-         * descartava uma resposta cheia de resultados. O JSON tem estrutura
-         * própria: quem valida é o `json_decode`, não a varredura de texto.
+         * campo que diz se o motor pediu captcha). A leitura é por `json_decode`,
+         * não por varredura de texto, então o campo não derruba a resposta.
          */
         $json = json_encode([
             'results' => [
@@ -257,19 +182,6 @@ class MotorBuscaWebTest extends TestCase
             ['https://agregador.com/assistir/filme'],
             $this->invocar('extrairResultadosJson', $json)
         );
-    }
-
-    public function test_detecta_pagina_de_bloqueio(): void
-    {
-        $this->assertTrue($this->invocar('pareceBloqueio', '<html>Unusual traffic detected</html>'));
-        $this->assertTrue($this->invocar('pareceBloqueio', '<html>Too many requests</html>'));
-        $this->assertTrue($this->invocar('pareceBloqueio', '<html>Please solve the captcha</html>'));
-    }
-
-    public function test_pagina_normal_nao_e_bloqueio(): void
-    {
-        $this->assertFalse($this->invocar('pareceBloqueio', '<html><a class="result__a" href="x">y</a></html>'));
-        $this->assertFalse($this->invocar('pareceBloqueio', ''));
     }
 
     public function test_dominios_de_catalogo_sao_ignorados(): void
@@ -296,30 +208,34 @@ class MotorBuscaWebTest extends TestCase
         $this->assertFalse($this->invocar('dominioIgnorado', '/caminho/relativo'));
     }
 
-    public function test_extrair_resultados_descarta_dominios_de_catalogo(): void
+    public function test_extrair_resultados_json_descarta_dominios_de_catalogo(): void
     {
-        $html = <<<'HTML'
-        <a class="result__a" href="https://www.imdb.com/title/tt123">IMDb</a>
-        <a class="result__a" href="https://www.justwatch.com/br/filme/x">JustWatch</a>
-        <a class="result__a" href="https://agregador.com/assistir/filme">Agregador</a>
-        HTML;
+        $json = json_encode([
+            'results' => [
+                ['url' => 'https://www.imdb.com/title/tt123'],
+                ['url' => 'https://www.justwatch.com/br/filme/x'],
+                ['url' => 'https://agregador.com/assistir/filme'],
+            ],
+        ]);
 
         // Só o agregador sobrevive: os catálogos são descartados antes de virarem
         // candidatos a página, poupando o orçamento curto do fallback.
         $this->assertSame(
             ['https://agregador.com/assistir/filme'],
-            $this->invocar('extrairResultados', $html)
+            $this->invocar('extrairResultadosJson', $json)
         );
     }
 
-    public function test_extrair_resultados_so_com_catalogo_devolve_vazio(): void
+    public function test_extrair_resultados_json_so_com_catalogo_devolve_vazio(): void
     {
-        $html = <<<'HTML'
-        <a class="result__a" href="https://www.imdb.com/title/tt123">IMDb</a>
-        <a class="result__a" href="https://www.youtube.com/watch?v=abc">YouTube</a>
-        HTML;
+        $json = json_encode([
+            'results' => [
+                ['url' => 'https://www.imdb.com/title/tt123'],
+                ['url' => 'https://www.youtube.com/watch?v=abc'],
+            ],
+        ]);
 
-        $this->assertSame([], $this->invocar('extrairResultados', $html));
+        $this->assertSame([], $this->invocar('extrairResultadosJson', $json));
     }
 
     public function test_intervalo_zero_nao_espera(): void
