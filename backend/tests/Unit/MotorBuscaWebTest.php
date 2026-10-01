@@ -94,11 +94,12 @@ class MotorBuscaWebTest extends TestCase
     {
         config()->set('services.torrents.stream_direto_motores', []);
 
-        // O SearXNG vem primeiro porque o DuckDuckGo bloqueia o IP dos containers
-        // com 202; o par DDG HTML + Lite fica como reserva.
+        // O SearXNG interno do compose vem primeiro porque o DuckDuckGo bloqueia
+        // o IP dos containers com 202 e as instâncias públicas vêm e vão; o par
+        // DDG HTML + Lite fica como reserva.
         $this->assertSame(
             [
-                'https://searx.be/search',
+                'http://searxng:8080/search',
                 'https://html.duckduckgo.com/html/',
                 'https://lite.duckduckgo.com/lite/',
             ],
@@ -146,6 +147,14 @@ class MotorBuscaWebTest extends TestCase
         $this->assertSame('ddg', $this->invocar('tipoDoMotor', 'https://html.duckduckgo.com/html/'));
         $this->assertSame('searxng', $this->invocar('tipoDoMotor', 'https://searx.be/search'));
         $this->assertSame('brave', $this->invocar('tipoDoMotor', 'https://api.search.brave.com/res/v1/web/search'));
+    }
+
+    public function test_host_interno_do_searxng_e_reconhecido(): void
+    {
+        // O host `searxng` do compose contém `searx`, então é inferido como
+        // SearXNG sem precisar do prefixo `tipo:url` — é o que faz o endereço
+        // interno funcionar sem configuração extra.
+        $this->assertSame('searxng', $this->invocar('tipoDoMotor', 'http://searxng:8080/search'));
     }
 
     public function test_prefixo_forca_o_tipo_do_motor(): void
@@ -225,6 +234,29 @@ class MotorBuscaWebTest extends TestCase
     {
         $this->assertSame([], $this->invocar('extrairResultadosJson', 'não é json'));
         $this->assertSame([], $this->invocar('extrairResultadosJson', ''));
+    }
+
+    public function test_json_do_searxng_com_captcha_no_payload_nao_e_bloqueio(): void
+    {
+        /*
+         * O SearXNG carrega a palavra "captcha" na própria estrutura do JSON (o
+         * campo que diz se o motor pediu captcha). A varredura de marcas de
+         * bloqueio, feita para o HTML do DDG, dava falso positivo aqui e
+         * descartava uma resposta cheia de resultados. O JSON tem estrutura
+         * própria: quem valida é o `json_decode`, não a varredura de texto.
+         */
+        $json = json_encode([
+            'results' => [
+                ['url' => 'https://agregador.com/assistir/filme'],
+            ],
+            'unresponsive_engines' => [],
+            'captcha' => false,
+        ]);
+
+        $this->assertSame(
+            ['https://agregador.com/assistir/filme'],
+            $this->invocar('extrairResultadosJson', $json)
+        );
     }
 
     public function test_detecta_pagina_de_bloqueio(): void

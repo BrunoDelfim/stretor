@@ -143,6 +143,15 @@ Tudo é servido pelo Nginx na **porta 80**:
 - Media Service (direto): http://localhost:3000/health
 - Painel do Prowlarr: http://localhost:9696
 
+> **SearXNG interno:** o motor de busca do fallback de stream direto sobe junto
+> com o stack, mas **não expõe porta no host** — só o backend fala com ele, pela
+> rede interna, em `http://searxng:8080/search`. Não há nada para acessar nem
+> configurar: a imagem oficial sobe com o
+> [`docker/searxng/settings.yml`](../docker/searxng/settings.yml:1) versionado,
+> que liga a saída JSON (desligada por padrão) e desliga o `limiter`. O
+> healthcheck do container já testa a consulta com `format=json`, e o backend
+> espera o serviço ficar saudável antes de subir.
+
 ## Variáveis de ambiente
 
 O `.env.example` é um espelho fiel do `.env`: contém todas as chaves, mas sem os
@@ -179,6 +188,10 @@ valores reais. As variáveis que exigem atenção:
 | `MEDIA_TETO_PECAS_MS` | Não | Teto absoluto, em milissegundos, da espera por um trecho, independente de progresso (padrão `900000`, 15 min). Rede de segurança contra a fonte que pinga um byte a cada minuto e prenderia a sessão para sempre. |
 | `MEDIA_PEERS_ESCASSOS` | Não | A partir de quantos peers (inclusive) a malha é considerada escassa e a janela de leitura é ampliada (padrão `3`). |
 | `MEDIA_FATOR_JANELA_ESCASSOS` | Não | Multiplicador da janela de leitura quando há poucos peers (padrão `2`). Com mais peças elegíveis, o seletor do WebTorrent escolhe entre peers vizinhos em vez de depender de um único fornecedor do trecho. |
+| `TORRENTS_STREAM_DIRETO_HABILITADO` | Não | Liga o fallback de stream direto (MP4/HLS), a rede de segurança para conteúdo raro. Desligado por padrão. |
+| `TORRENTS_STREAM_DIRETO_MOTORES` | Não | Motores de busca do fallback, separados por vírgula. O padrão começa pelo **SearXNG interno** (`http://searxng:8080/search`), que sobe junto com o stack; o DDG HTML + Lite fica como reserva. O tipo é inferido do endereço (`searx` → SearXNG, `brave` → Brave, o resto → DDG) ou forçado com o prefixo `tipo:url`. |
+| `TORRENTS_STREAM_DIRETO_BRAVE_KEY` | Não | Chave da API oficial do Brave Search. Sem ela, um motor do tipo `brave` é descartado da lista antes de qualquer requisição. |
+| `SEARXNG_SECRET` | Não | Chave usada para assinar as requisições internas do SearXNG. Não é segredo de verdade: o serviço só é alcançável pela rede do compose. |
 | `FLARESOLVERR_URL` | Não | Endereço interno do FlareSolverr (padrão `http://flaresolverr:8191`). O backend o cadastra como proxy no Prowlarr e liga o 1337x a ele por tag. |
 | `FLARESOLVERR_DNS_OVER_HTTPS` | Não | Faz o Chromium do FlareSolverr resolver por DoH, fora do UDP/53 do provedor (padrão `true`). É o caminho que resta quando o resolver da operadora bloqueia o tracker. |
 | `FLARESOLVERR_LOG_LEVEL` | Não | Nível de log do serviço `flaresolverr` (padrão `info`). Use `debug` para investigar os desafios do CloudFlare. |

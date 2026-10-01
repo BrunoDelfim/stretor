@@ -164,6 +164,22 @@ services:
       # cascata percorre o registro inteiro, deixando cada provedor de lado só
       # depois que ele rendeu TORRENTS_FONTES_SUFICIENTES_POR_PROVEDOR fontes.
       - TORRENTS_BUSCAR_TODOS=${TORRENTS_BUSCAR_TODOS:-true}
+      # Fallback de stream direto (MP4/HLS). O motor de busca padrão é o SearXNG
+      # interno do compose (`http://searxng:8080/search`), e não uma instância
+      # pública: o DDG bloqueia o IP dos containers com status 202 e as
+      # instâncias públicas vêm e vão. O endereço é só o endpoint de busca — a
+      # query e o `format=json` entram na hora da requisição. O DDG fica como
+      # reserva, para quando o SearXNG interno estiver fora.
+      - TORRENTS_STREAM_DIRETO_HABILITADO=${TORRENTS_STREAM_DIRETO_HABILITADO:-false}
+      - TORRENTS_STREAM_DIRETO_MOTORES=${TORRENTS_STREAM_DIRETO_MOTORES:-http://searxng:8080/search,https://html.duckduckgo.com/html/,https://lite.duckduckgo.com/lite/}
+      - TORRENTS_STREAM_DIRETO_BRAVE_KEY=${TORRENTS_STREAM_DIRETO_BRAVE_KEY:-}
+      - TORRENTS_STREAM_DIRETO_TERMOS=${TORRENTS_STREAM_DIRETO_TERMOS:-}
+      - TORRENTS_STREAM_DIRETO_MAX_TERMOS=${TORRENTS_STREAM_DIRETO_MAX_TERMOS:-8}
+      - TORRENTS_STREAM_DIRETO_INTERVALO_MIN=${TORRENTS_STREAM_DIRETO_INTERVALO_MIN:-800}
+      - TORRENTS_STREAM_DIRETO_INTERVALO_MAX=${TORRENTS_STREAM_DIRETO_INTERVALO_MAX:-2200}
+      - TORRENTS_STREAM_DIRETO_MAX_PAGINAS=${TORRENTS_STREAM_DIRETO_MAX_PAGINAS:-6}
+      - TORRENTS_STREAM_DIRETO_TEMPO_LIMITE=${TORRENTS_STREAM_DIRETO_TEMPO_LIMITE:-10}
+      - TORRENTS_STREAM_DIRETO_ORCAMENTO=${TORRENTS_STREAM_DIRETO_ORCAMENTO:-12}
     depends_on:
       init:
         condition: service_completed_successfully
@@ -178,6 +194,11 @@ services:
       # enquanto o Chromium ainda está abrindo — quando o teste falha e o
       # indexador protegido acaba ficando inativo.
       flaresolverr:
+        condition: service_healthy
+      # O fallback de stream direto consulta o SearXNG interno. Esperar o
+      # healthcheck (que já testa a saída JSON) evita subir o backend apontando
+      # para um motor que ainda não responde.
+      searxng:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "php -r \"exit(@fsockopen('127.0.0.1', 9000) ? 0 : 1);\""]
@@ -403,6 +424,45 @@ services:
     healthcheck:
       # A imagem traz Python, então evitamos depender de curl/wget.
       test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8191/health').status == 200 else 1)"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - stretor
+
+  # Motor de busca do fallback de stream direto. O DuckDuckGo passou a bloquear o
+  # IP dos containers com status 202 (rate limit/anti-bot) e as instâncias
+  # públicas de SearXNG vêm e vão — nenhuma das duas é base confiável. Aqui o
+  # SearXNG roda dentro da rede do compose e é consultado só pelo backend, em
+  # `http://searxng:8080/search`. Não expõe porta no host: não há instância
+  # pública envolvida nem IP de container bloqueado por terceiros.
+  searxng:
+    image: searxng/searxng:latest
+    container_name: stretor_searxng
+    restart: unless-stopped
+    # O SearXNG resolve os domínios dos motores (Google, Bing, DDG) por conta
+    # própria. Sem DNS confiável, o resolver herdado da operadora devolve
+    # NXDOMAIN ou página de bloqueio e a busca interna volta vazia.
+    dns:
+      - ${DNS_PRIMARIO:-1.1.1.1}
+      - ${DNS_SECUNDARIO:-8.8.8.8}
+    volumes:
+      # O settings.yml versionado liga a saída JSON — sem ele, `format=json`
+      # responde 403 e o motor pareceria morto. É a única razão do arquivo.
+      - ./docker/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      - SEARXNG_BASE_URL=http://searxng:8080/
+      - SEARXNG_SECRET=${SEARXNG_SECRET:-stretor_searxng_interno}
+      - TZ=${TZ:-America/Sao_Paulo}
+    # Só a rede interna: o backend fala com ele por `http://searxng:8080`.
+    expose:
+      - "8080"
+    healthcheck:
+      # A imagem traz Python; evitamos depender de curl/wget. A consulta de
+      # busca com `format=json` é o teste real: se o JSON estiver desligado, o
+      # healthcheck falha e o backend não sobe esperando um motor quebrado.
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/search?q=teste&format=json').status == 200 else 1)"]
       interval: 15s
       timeout: 10s
       retries: 5

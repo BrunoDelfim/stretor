@@ -293,25 +293,26 @@ return [
          * próximo quando o primeiro bloqueia ou devolve zero resultados — a busca
          * degrada, não quebra.
          *
-         * O padrão começa pelo **SearXNG**, e não pelo DuckDuckGo: o DDG passou a
-         * bloquear o IP dos containers com status 202 (rate limit/anti-bot) tanto
-         * no HTML quanto no Lite, e um motor que bloqueia não rende link nenhum.
-         * O SearXNG é um meta-buscador hospedado por terceiros, com cota própria,
-         * e devolve JSON limpo (`format=json`) — é o caminho que foge do bloqueio.
-         * O DDG fica como reserva, para quando a instância pública estiver fora.
+         * O padrão começa pelo **SearXNG interno** do compose
+         * (`http://searxng:8080/search`), e não por uma instância pública nem pelo
+         * DuckDuckGo. O DDG passou a bloquear o IP dos containers com status 202
+         * (rate limit/anti-bot) tanto no HTML quanto no Lite, e as instâncias
+         * públicas de SearXNG vêm e vão — nenhuma das duas é base confiável. O
+         * SearXNG que sobe junto com o stack tem cota própria, devolve JSON limpo
+         * (`format=json`) e não depende de terceiros. O DDG fica como reserva,
+         * para quando o container estiver fora.
          *
          * O tipo de cada motor é inferido do endereço (`searx` → SearXNG,
          * `brave` → Brave, o resto → DuckDuckGo) ou forçado com o prefixo
-         * `tipo:url`. O endereço do SearXNG é só o endpoint de busca — a query
-         * (`q`) e o `format=json` são acrescentados na hora da requisição.
-         *
-         * As instâncias públicas vêm e vão; se uma cair, troque o endereço ou
-         * acrescente outra. O formato aceito é `https://instancia/search`.
+         * `tipo:url`. O host interno `searxng` contém `searx`, então é inferido
+         * como SearXNG sem precisar de prefixo. O endereço é só o endpoint de
+         * busca — a query (`q`) e o `format=json` são acrescentados na hora da
+         * requisição.
          */
         'stream_direto_motores' => $lista(
             env('TORRENTS_STREAM_DIRETO_MOTORES'),
             [
-                'https://searx.be/search',
+                'http://searxng:8080/search',
                 'https://html.duckduckgo.com/html/',
                 'https://lite.duckduckgo.com/lite/',
             ]

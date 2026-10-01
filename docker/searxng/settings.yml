@@ -1,0 +1,73 @@
+# Configuração do SearXNG auto-hospedado do Stretor.
+#
+# O SearXNG é o motor de busca do fallback de stream direto. Ele roda dentro da
+# rede do compose e é consultado só pelo backend, em `http://searxng:8080/search`
+# — não expõe porta no host, então não há instância pública envolvida nem IP de
+# container bloqueado por terceiros.
+#
+# O ponto que faz este arquivo existir: o SearXNG **desliga a saída JSON por
+# padrão**. Sem `json` na lista de formatos abaixo, toda consulta com
+# `format=json` responde 403 e o motor pareceria morto. É a única razão de
+# versionarmos um settings.yml em vez de subir a imagem crua.
+
+use_default_settings: true
+
+server:
+  # Chave usada para assinar as requisições internas. Não é segredo de verdade:
+  # o serviço só é alcançável pela rede do compose. Trocar aqui não muda nada
+  # para o backend, que fala HTTP direto com o endpoint de busca.
+  secret_key: "stretor_searxng_interno"
+  # O limiter bloqueia rajadas por IP — e o backend é um único IP (o do
+  # container). Como a busca dispara vários termos em sequência, o limiter
+  # derrubaria justamente o que queremos. Desligado porque o acesso já é
+  # restrito à rede interna.
+  limiter: false
+  public_instance: false
+  image_proxy: false
+
+search:
+  # O formato JSON é o que o MotorBuscaWeb consome. Sem ele, `format=json`
+  # devolve 403 e o fallback fica sem motor.
+  formats:
+    - html
+    - json
+  # Idioma padrão das consultas. O backend manda o termo já em PT-BR; isto só
+  # define o `language` quando a requisição não o informa.
+  default_lang: "pt-BR"
+  # Sem proteção contra bots: o único cliente é o backend, na rede interna.
+  safe_search: 0
+  autocomplete: ""
+
+ui:
+  static_use_hash: true
+
+# Os motores abaixo são os que respondem bem a consultas em português e não
+# exigem chave. O Google e o Bing entram porque são os que mais acham páginas
+# de streaming dublado; o DuckDuckGo entra como reforço, mas agora do lado de
+# dentro do SearXNG — o IP que fala com ele é o do container do SearXNG, não o
+# do backend, o que dilui o bloqueio por rajada.
+engines:
+  - name: google
+    engine: google
+    shortcut: g
+    disabled: false
+
+  - name: bing
+    engine: bing
+    shortcut: b
+    disabled: false
+
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+    disabled: false
+
+  - name: brave
+    engine: brave
+    shortcut: br
+    disabled: false
+
+  - name: wikipedia
+    engine: wikipedia
+    shortcut: wp
+    disabled: true

@@ -108,20 +108,20 @@ class MotorBuscaWeb
     /**
      * Motores padrão, na ordem em que são tentados.
      *
-     * O SearXNG vem primeiro porque o DuckDuckGo passou a bloquear o IP dos
-     * containers com status 202 (rate limit/anti-bot) tanto no HTML quanto no
-     * Lite — e um motor bloqueado não rende link nenhum. O SearXNG é um
-     * meta-buscador hospedado por terceiros, com cota própria, e devolve JSON
-     * limpo: é o caminho que foge do bloqueio. O par DDG HTML + Lite fica como
-     * reserva, para quando a instância pública estiver fora.
+     * O SearXNG interno do compose vem primeiro porque o DuckDuckGo passou a
+     * bloquear o IP dos containers com status 202 (rate limit/anti-bot) tanto no
+     * HTML quanto no Lite — e um motor bloqueado não rende link nenhum. O SearXNG
+     * que sobe junto com o stack tem cota própria, devolve JSON limpo e não
+     * depende de terceiros: é o caminho que foge do bloqueio. O par DDG HTML +
+     * Lite fica como reserva, para quando o container estiver fora.
      *
-     * As instâncias públicas vêm e vão; se a padrão cair, troque o endereço em
-     * `stream_direto_motores` ou acrescente outra. O formato é só o endpoint de
-     * busca (`https://instancia/search`) — a query e o `format=json` entram na
-     * hora da requisição.
+     * O endereço é só o endpoint de busca (`http://searxng:8080/search`) — a
+     * query e o `format=json` entram na hora da requisição. O host interno
+     * `searxng` contém `searx`, então `tipoDoMotor()` o reconhece como SearXNG
+     * sem precisar do prefixo `tipo:url`.
      */
     private const MOTORES_PADRAO = [
-        'https://searx.be/search',
+        'http://searxng:8080/search',
         'https://html.duckduckgo.com/html/',
         'https://lite.duckduckgo.com/lite/',
     ];
@@ -278,7 +278,15 @@ class MotorBuscaWeb
 
         $corpo = (string) $resposta->body();
 
-        if ($this->pareceBloqueio($corpo)) {
+        /*
+         * A varredura por marcas de bloqueio só vale para o HTML do DDG, que
+         * responde 200 com uma página de aviso no corpo. O JSON do SearXNG/Brave
+         * carrega a palavra "captcha" na própria estrutura (o campo que diz se o
+         * motor pediu captcha), então a mesma varredura dava falso positivo e
+         * descartava uma resposta cheia de resultados. Para os motores JSON, a
+         * validação é o próprio `json_decode` — corpo inválido já devolve vazio.
+         */
+        if ($tipo === 'ddg' && $this->pareceBloqueio($corpo)) {
             Log::warning('Stream direto: motor bloqueou a consulta (rate limit/captcha).', [
                 'motor' => $motor,
                 'tipo' => $tipo,
