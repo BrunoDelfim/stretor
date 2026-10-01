@@ -2717,8 +2717,8 @@ O fluxo tem quatro etapas, cada uma num arquivo próprio:
    O filtro passou a classificar o descarte em **três famílias**, cada uma com sua
    lista:
 
-   - `DOMINIOS_IGNORADOS` — catálogo/metadados, fóruns/Q&A/redes sociais e
-     buscadores. Casamento por host, como antes.
+   - `DOMINIOS_IGNORADOS` — catálogo/metadados, fóruns/Q&A/redes sociais,
+     buscadores e **consultas de CNPJ/CPF**. Casamento por host, como antes.
    - `TLDS_IGNORADOS` — sufixos de TLD que nunca hospedam vídeo PT-BR (`.jp`,
      `.cn`, `.kr`, `.ru`, `.ir`, `.vn`, `.th`, `.id`, `.tr`, `.pl`, `.ua`, `.kz`).
      É por **sufixo de TLD**, não por host: `.jp` cobre `news.yahoo.co.jp` e
@@ -2731,36 +2731,80 @@ O fluxo tem quatro etapas, cada uma num arquivo próprio:
      gastar uma requisição para descobrir isso.
 
    [`MotorBuscaWeb::motivoDoDescarte()`](../backend/app/Services/Torrents/MotorBuscaWeb.php:558)
-   classifica a URL em `extensao`, `dominio`, `tld` ou `null` (serve). A ordem das
-   checagens vai do mais barato ao mais caro — host vazio, extensão, domínio e,
-   por fim, TLD. O log de `debug` **"resultados irrelevantes ignorados"** agrupa os
-   descartes **por motivo**, com a quantidade e os hosts únicos de cada família:
-   muitos descartes por `tld` significam que a query está a alcançar acervo
-   estrangeiro; muitos por `dominio` significam que a lista negra está a segurar
-   fóruns. Sem essa separação, só se saberia que "algo" foi ignorado.
+   classifica a URL em `adulto`, `extensao`, `dominio`, `tld` ou `null` (serve). A
+   ordem das checagens vai do mais barato ao mais caro — host vazio, conteúdo
+   impróprio, extensão, domínio e, por fim, TLD. O log de `debug` **"resultados
+   irrelevantes ignorados"** agrupa os descartes **por motivo**, com a quantidade e
+   os hosts únicos de cada família: muitos descartes por `tld` significam que a
+   query está a alcançar acervo estrangeiro; muitos por `dominio` significam que a
+   lista negra está a segurar fóruns. Sem essa separação, só se saberia que "algo"
+   foi ignorado.
 
-   ##### A query ancora a busca em plataformas de vídeo
+   ##### A barreira de conteúdo impróprio: o vazamento do `xvideos-cdn.com`
 
-   A lista negra resolve o que chega, mas não o que é pedido. Além das intenções
-   genéricas, os termos agora abrem com **âncoras de plataforma** — o operador
-   `site:` apontado para domínios que de fato publicam vídeo:
+   O motor de busca é uma caixa preta: ele ranqueia por autoridade e relevância, e
+   para um título conhecido pode devolver, no meio dos agregadores de vídeo, um
+   link de site adulto que apenas compartilha uma palavra do nome. Foi o que
+   aconteceu com **"Donas de Casa Desesperadas"**: o resultado incluiu o domínio
+   `xvideos-cdn.com` — o CDN de mídia do xvideos, cujo host não carrega o nome
+   comercial e por isso passaria batido por uma lista que só olhasse o portal.
 
-   ```
-   site:tokyvideo.com
-   site:dailymotion.com
-   site:ok.ru
-   site:vimeo.com
-   ```
+   A defesa é em **duas camadas**, centralizadas em
+   [`FiltroConteudoAdulto`](../backend/app/Support/FiltroConteudoAdulto.php:1), e
+   as duas rodam **antes** de gastar orçamento:
 
-   A âncora é o termo **mais preciso** da lista: ela restringe o motor a um
-   domínio que hospeda o arquivo, sem depender do ranqueamento para trazer a
-   página do player às primeiras posições. Como o provedor consome os termos de
-   cima para baixo e para quando junta páginas suficientes, a âncora é a primeira
-   consulta — e a que mais rende por requisição. A lista é configurável em
-   `stream_direto_plataformas`; vazia, usa o padrão embutido.
+   - **Domínio** (`DOMINIOS_BLOQUEADOS`) — lista negra de hosts adultos conhecidos,
+     incluindo os CDNs (`xvideos-cdn.com`, `phncdn.com`, `rdtcdn.com`, `xhcdn.com`,
+     `ypncdn.com`, `youjizz-cdn.com`, `xnxx-cdn.com`). O casamento é por **sufixo de
+     host com o ponto à frente**, o mesmo cuidado do catálogo: `xvideos.com` barra
+     `www.xvideos.com` e `cdn.xvideos.com`, mas **não** um hipotético
+     `naoxvideos.com`.
+   - **Texto** (`PALAVRAS_BLOQUEADAS`) — palavras-chave proibidas procuradas na URL
+     e no título da página. É a rede de segurança para os domínios que ainda não
+     estão na lista: um link cujo caminho (`/porn-video-123`) ou título carrega um
+     termo adulto é descartado mesmo que o host seja desconhecido. A comparação é
+     sobre texto **normalizado** (minúsculo e sem acento, via `iconv`), então
+     "Pornô" e "porno" caem na mesma regra.
 
-   As intenções genéricas vêm **depois** das âncoras, na ordem em que valem a
-   consulta:
+   A barreira é aplicada em **três pontos** do fluxo, para que nenhuma porta fique
+   aberta:
+
+   1. **Na origem** — [`MotorBuscaWeb::motivoDoDescarte()`](../backend/app/Services/Torrents/MotorBuscaWeb.php:558)
+      classifica a URL como `adulto` e a descarta antes de ela virar candidata a
+      página. É a checagem mais barata e a que evita gastar orçamento.
+   2. **Na página** — [`ProvedorStreamDireto::rasparPagina()`](../backend/app/Services/Torrents/ProvedorStreamDireto.php:224)
+      revalida a URL da página e lê o `<title>` do HTML antes de extrair qualquer
+      vídeo. Um agregador legítimo que hospeda uma página adulta no meio do acervo
+      familiar cai aqui.
+   3. **No vídeo** — cada link extraído passa pela barreira antes de virar fonte: o
+      vídeo pode estar num CDN adulto mesmo que a página que o embute pareça
+      inocente.
+
+   O descarte é registrado em `warning` com a URL e o motivo, para o diagnóstico
+   ser acionável. A chave `TORRENTS_STREAM_DIRETO_FILTRO_ADULTO` (padrão `true`)
+   liga a barreira inteira — desligá-la só faz sentido para depurar um falso
+   positivo, e nesse caso o scraper volta a abrir qualquer página que o motor
+   devolver.
+
+   ##### A query é natural: a prova de mídia substituiu a âncora de domínio
+
+   A versão anterior ancorava cada termo num domínio fixo com o operador `site:`
+   (`site:tokyvideo.com`, `site:dailymotion.com`, `site:ok.ru`, `site:vimeo.com`).
+   O ganho de precisão era real, mas o preço era alto: a busca inteira ficava
+   refém de um punhado de domínios. Bastava o Tokyvideo sair do ar — ou bloquear
+   o IP do container — para o fallback inteiro parar de achar qualquer coisa,
+   mesmo com o Dailymotion e o Archive.org vivos e cheios do mesmo título.
+
+   A query agora é **natural**: o título, a numeração e a intenção de streaming,
+   sem operador de domínio. Quem decide se o resultado serve não é mais uma lista
+   fixa de domínios aceitos, e sim a **prova de mídia** — a página só é aceita se
+   a extração encontrar um player ou um link direto de vídeo. A separação é
+   deliberada: a query pergunta "onde está este vídeo?", a lista negra corta o
+   lixo grosso e a extração responde "aqui há vídeo de verdade". Trocar de
+   provedor deixa de exigir mexer na query, e um domínio novo passa a ser aceito
+   sem reescrever termo nenhum.
+
+   As intenções de streaming, na ordem em que valem a consulta:
 
    ```
    assistir online dublado
@@ -2772,7 +2816,83 @@ O fluxo tem quatro etapas, cada uma num arquivo próprio:
 
    Os dois últimos termos ("filme completo dublado", "serie completa dublada")
    são o que os sites de hospedagem de vídeo usam no próprio título da página —
-   diferente de "assistir online", que também aparece em catálogos.
+   diferente de "assistir online", que também aparece em catálogos. A lista é
+   configurável em `stream_direto_termos`; vazia, usa o padrão embutido.
+
+   ##### O título já chega numerado: a numeração não pode ser repetida
+
+   O fallback não recebe o título cru do usuário: ele recebe o título **já
+   numerado** por [`TermosBusca::episodio()`](../backend/app/Services/Torrents/TermosBusca.php:117),
+   que devolve algo como `Donas de Casa Desesperadas S01E01`. O problema é que
+   [`TermosStreamDireto::termosDeStreaming()`](../backend/app/Services/Torrents/TermosStreamDireto.php:181)
+   monta a numeração por conta própria — e, sem perceber que ela já estava lá,
+   colava a sua própria em cima. O termo saía como
+   `Donas de Casa Desesperadas S01E01 1x01 assistir online dublado`: uma
+   numeração dupla que não existe em página nenhuma. O buscador devolvia zero
+   links para o termo mais preciso da lista, e o orçamento inteiro era gasto
+   atrás de uma consulta que nunca ia casar.
+
+   A correção mora em
+   [`TermosStreamDireto::tituloSemNumeracao()`](../backend/app/Services/Torrents/TermosStreamDireto.php:88):
+   antes de numerar, o método pergunta a
+   [`TermosBusca::numeracaoDoTitulo()`](../backend/app/Services/Torrents/TermosBusca.php:579)
+   se o título já declara uma numeração. Se a numeração declarada for **a mesma
+   que foi pedida**, o título é limpo (as quatro grafias — `1x01`, `S01E01`,
+   `Temporada 1 Episódio 1`, `1ª Temporada Episódio 1` — são removidas) e a
+   numeração é remontada uma única vez. Se for de **outro episódio**, o título
+   é preservado como veio: quem pediu sabe o que quer, e o fallback não tem
+   autoridade para reescrever a numeração alheia.
+
+   A limpeza vale para **os dois títulos**, não só o principal. O
+   `TorrentService` monta a lista inteira com `TermosBusca::episodio()`, então o
+   título original ("Desperate Housewives S01E01") chega tão numerado quanto o
+   PT-BR. A primeira versão da correção só tratava o primeiro título; o
+   alternativo recebia a numeração de novo e o termo saía com duas grafias
+   ("... S01E01 dublado 1x01"), que nenhum motor casa. O bloco dos alternativos
+   passou a aplicar o mesmo `tituloSemNumeracao()` antes de anexar a numeração.
+
+   ##### A margem de orçamento: não começar o que não cabe
+
+   O sintoma que abriu esta investigação foi um log assim:
+
+   ```
+   fallback concluído. {"provedor":"stream_direto","fontes":0,"ms":12683}
+   ```
+
+   Doze segundos e meio — o orçamento inteiro do fallback — para devolver zero
+   fontes. A causa não era lentidão: era o loop começar uma consulta que não
+   cabia mais no relógio. O guarda antigo só perguntava `temOrcamento()`, ou
+   seja, "ainda resta algum tempo?". Com 1 segundo restante, a resposta é sim —
+   e o loop abria uma página que precisava de 10 segundos para ser lida. O
+   orçamento estourava no meio da requisição, a requisição era cancelada e o
+   trabalho já feito era jogado fora.
+
+   [`ConsultaComOrcamento::temTempoParaConsulta()`](../backend/app/Services/Torrents/ConsultaComOrcamento.php:79)
+   troca a pergunta: em vez de "resta algum tempo?", pergunta "resta tempo
+   **suficiente** para esta consulta?". O critério é **proporcional**: o
+   restante precisa cobrir uma fração mínima do teto (`$fracaoMinima`, padrão
+   metade), com piso de 1 s. Uma consulta de 10 s só é barrada quando restam
+   menos de 5 s — tempo insuficiente para valer a conexão. Sem busca em curso, o
+   teto próprio vale e nada é bloqueado. Com o piso, o loop para **antes** de
+   começar o que não termina — e o que já foi coletado é devolvido em vez de
+   perdido no cancelamento.
+
+   ###### A primeira tentativa era uma conta impossível
+
+   A versão inicial somava uma margem fixa ao teto: só começava se o restante
+   cobrisse `teto + margem`. Parecia razoável, mas era aritmética impossível
+   para o próprio fallback que a motivou. O orçamento do stream direto é de
+   **12 s** (`stream_direto_orcamento`) e o teto de cada consulta é de **10 s**
+   (`stream_direto_tempo_limite`). Com margem de 2 s, a conta "10 + 2 = 12"
+   fechava **apenas no instante zero**: assim que a primeira consulta consumisse
+   1 s, o restante caía para 11 s e nenhum termo seguinte era tentado. O
+   fallback parava depois do primeiro termo, com orçamento de sobra — o log
+   mostrava `termos_com_resultado: 1` e `paginas_visitadas: 0`.
+
+   A correção foi trocar a soma pela proporção. A margem deixa de ser um valor
+   somado ao teto e passa a ser o **piso proporcional** que separa "cabe" de
+   "não vale começar". O piso nunca é menor que 1 s, para que uma fração pequena
+   não vire zero e libere uma consulta sem tempo nenhum.
 
    ##### O teto de termos: a rajada é o que o buscador pune
 
@@ -2817,12 +2937,30 @@ O fluxo tem quatro etapas, cada uma num arquivo próprio:
    mandaria de verdade.
 
 3. **A extração** — [`ExtratorVideo`](../backend/app/Services/Torrents/ExtratorVideo.php:1)
-   abre o HTML da página e procura o vídeo em três camadas: as tags HTML5
+   abre o HTML da página e procura o vídeo em quatro camadas: as tags HTML5
    (`<video src>`, `<source src>`, `data-src`), a configuração dos players web
    (JW Player usa `file:`, Video.js/Plyr usam `sources: [{src:}]`, e há ainda
-   `hls:`, `dash:`, `playlist:`) e, por fim, URLs soltas no corpo com extensão de
-   vídeo (`.mp4`, `.m3u8`, `.mpd`, `.webm`, `.mkv`). O HTML dos players costuma
-   escapar as barras (`\/`, `\u002F`), então o extrator desescapa antes de validar.
+   `hls:`, `dash:`, `playlist:`), os **iframes de embed** de plataformas conhecidas
+   (YouTube, Vimeo, Dailymotion, OK.ru, Archive.org, Odysee, Streamtape, Doodstream,
+   entre outras) e, por fim, URLs soltas no corpo com extensão de vídeo (`.mp4`,
+   `.m3u8`, `.mpd`, `.webm`, `.mkv`). O HTML dos players costuma escapar as barras
+   (`\/`, `\u002F`), então o extrator desescapa antes de validar.
+
+   ##### A prova de mídia é o critério de aceitação
+
+   Com a âncora de domínio fora da query, a página pode vir de qualquer lugar da
+   web — e é a **extração** que decide se ela serve. Antes de varrer o HTML inteiro
+   atrás de links, o provedor chama
+   [`ExtratorVideo::temMidia()`](../backend/app/Services/Torrents/ExtratorVideo.php:181),
+   que responde uma pergunta só: **esta página tem um player ou um link direto de
+   vídeo?** A checagem aceita tanto um arquivo de vídeo (`.mp4`, `.m3u8`, ...)
+   quanto um iframe de embed de plataforma conhecida.
+
+   A página que não passa é descartada **antes** da extração completa, com um
+   `debug` **"página sem prova de mídia descartada"**. É o que substitui a
+   whitelist: em vez de aceitar por causa do domínio, o provedor aceita por causa
+   do **conteúdo** — um fórum ou uma página de catálogo que escapou da lista negra
+   não tem player e cai aqui.
 
 4. **A normalização** — o que sai do extrator passa por
    [`NormalizaFonte::montarFonteDireta()`](../backend/app/Services/Torrents/NormalizaFonte.php:96),
@@ -2988,13 +3126,16 @@ TORRENTS_STREAM_DIRETO_HABILITADO=false
 TORRENTS_STREAM_DIRETO_MOTORES=http://searxng:8080/search
 TORRENTS_STREAM_DIRETO_BRAVE_KEY=
 TORRENTS_STREAM_DIRETO_TERMOS=
-TORRENTS_STREAM_DIRETO_PLATAFORMAS=
 TORRENTS_STREAM_DIRETO_MAX_TERMOS=8
 TORRENTS_STREAM_DIRETO_INTERVALO_MIN=800
 TORRENTS_STREAM_DIRETO_INTERVALO_MAX=2200
 TORRENTS_STREAM_DIRETO_MAX_PAGINAS=6
+TORRENTS_STREAM_DIRETO_MAX_FONTES=2
 TORRENTS_STREAM_DIRETO_TEMPO_LIMITE=10
 TORRENTS_STREAM_DIRETO_ORCAMENTO=12
+TORRENTS_STREAM_DIRETO_FILTRO_ADULTO=true
+TORRENTS_BUSCA_POR_IDADE_HABILITADA=true
+TORRENTS_BUSCA_IDADE_LIMITE_ANOS=2
 ```
 
 `TORRENTS_STREAM_DIRETO_MOTORES` é a lista de motores de busca (separada por
@@ -3009,11 +3150,15 @@ preencher `TORRENTS_STREAM_DIRETO_BRAVE_KEY` — sem a chave, o motor é descart
 da lista.
 `TORRENTS_STREAM_DIRETO_TERMOS` sobrescreve as intenções de busca — vazio usa o
 padrão (`assistir online dublado`, `assistir online legendado`, `assistir
-online`). `TORRENTS_STREAM_DIRETO_PLATAFORMAS` sobrescreve as âncoras de
-plataforma (operadores `site:`) que abrem a lista de termos — vazio usa o padrão
-(`site:tokyvideo.com`, `site:dailymotion.com`, `site:ok.ru`, `site:vimeo.com`).
+online`). A query é natural: não há mais operador `site:` nem lista de plataformas
+a configurar. Quem filtra o resultado é a lista negra do `MotorBuscaWeb` e, na
+ponta, a prova de mídia da extração.
 `TORRENTS_STREAM_DIRETO_MAX_PAGINAS` limita quantas páginas o scraper abre por
-consulta.
+consulta. `TORRENTS_STREAM_DIRETO_MAX_FONTES` é o alvo de fontes distintas que
+encerra a varredura (padrão 2): assim que há este número de fontes na mão, o laço
+para, sem gastar o orçamento restante atrás de mais opções. É diferente do teto de
+páginas — uma página pode render várias fontes, e o que o usuário escolhe é a
+fonte. Zero ou negativo desliga o corte.
 
 O SearXNG interno é configurado por
 [`docker/searxng/settings.yml`](../docker/searxng/settings.yml:1), que liga a
@@ -3027,11 +3172,87 @@ busca (padrão 8); zero desliga o corte. `TORRENTS_STREAM_DIRETO_INTERVALO_MIN` 
 atraso sorteado entre consultas ao motor (padrão 800–2200). Os dois são a defesa
 contra o rate limit do DuckDuckGo: menos termos e cadência humana.
 
+`TORRENTS_STREAM_DIRETO_FILTRO_ADULTO` liga a barreira de conteúdo impróprio
+(padrão `true`). Com ela ligada, qualquer endereço de domínio adulto conhecido ou
+que carregue palavra-chave imprópria é descartado antes de a página ser aberta, e
+o título da página aberta também é conferido. Desligar só faz sentido para
+depurar um falso positivo — em produção, mantenha ligada.
+
 Desligado por padrão. Diferente da versão anterior, **não há mais API externa a
 configurar**: ligar a chave já basta para o scraper funcionar. Vale saber que o
 scraper depende de páginas de terceiros, então a taxa de acerto varia com o
 acervo — conteúdo muito raro pode não ter página nenhuma, e a lista continua
 vazia.
+
+### O canal de partida depende da idade da série
+
+O stream direto nasceu como fallback: só entrava depois de a cascata de torrents
+terminar vazia. Isso funciona para o conteúdo raro, mas tem um custo escondido —
+a cascata roda **primeiro**, e numa série antiga ela gasta o orçamento inteiro
+procurando um release que os indexadores já não têm. Quando o scraper finalmente
+começa, o relógio global já fechou. Era o timeout: o canal certo chegava por
+último, sem tempo.
+
+A correção inverte a ordem para quem precisa. O [`RoteadorBusca`] lê o ano de
+lançamento da série e decide o canal de partida:
+
+- **Série recente** (dentro do limiar, padrão 2 anos): torrents primeiro. É onde
+  o release fresco está, e o Torrentio responde em segundos.
+- **Série antiga** (fora do limiar): stream direto primeiro. O scraper é quem
+  acha o conteúdo que os indexadores perderam, e ele começa com o orçamento
+  inteiro à disposição.
+
+O critério é o ano de lançamento da **série**, não o da temporada. Uma série de
+2004 continua sendo "de 2004" na décima temporada — e é isso que se quer: o
+catálogo de torrents envelhece junto com a série, não com a temporada.
+
+#### O fallback cruzado: o canal oposto é o último recurso
+
+Inverter a ordem não podia significar perder o outro canal. Se o preferido não
+devolve nada, o oposto ainda pode ter a resposta: a série antiga que o scraper
+não achou pode ter um pack nos indexadores, e a série recente que os torrents não
+cobriram pode estar num agregador de vídeo. O cruzamento é o último recurso,
+nunca o primeiro — e só dispara com a lista **já ordenada e filtrada** vazia, que
+é o mesmo gatilho de antes.
+
+A montagem final, o corte de idioma e o censo são idênticos nos dois caminhos: a
+única coisa que muda é a ordem. Por isso os dois canais são métodos privados que
+devolvem a lista pronta, e não blocos duplicados dentro de `fontes()`.
+
+#### O alvo de fontes: parar quando já há o suficiente
+
+O laço do scraper tinha um defeito silencioso: o corte de "já tenho o bastante"
+comparava `count($fontes)` com o **teto de páginas** (`stream_direto_max_paginas`,
+padrão 6). São grandezas diferentes — uma página pode render várias fontes —, e o
+efeito era o laço só parar depois de abrir seis páginas, mesmo com duas fontes já
+na mão. O fallback é socorro, não catálogo: gastar o orçamento atrás de mais
+opções quando já há o suficiente para escolher só atrasa a resposta.
+
+A correção separa as duas coisas. `stream_direto_max_paginas` continua limitando
+quantas páginas são abertas; `stream_direto_max_fontes` (padrão 2) é o alvo de
+fontes distintas que encerra a varredura. O alvo é configurável porque
+"suficiente" é uma decisão de operação, não uma verdade do código — e zero ou
+negativo desliga o corte, devolvendo o comportamento antigo.
+
+#### Sem ano conhecido, a aposta é o fluxo normal
+
+Quando o catálogo não informa o ano, não há como medir idade. Tratar a ausência
+como "antiga" mandaria para o scraper uma série recente que os torrents
+resolveriam em um segundo — e o scraper é mais lento e menos preciso. A aposta
+segura é o fluxo normal: os provedores por identificador (Torrentio, addons
+Stremio) respondem pelo `imdb_id` e não dependem do ano.
+
+#### As chaves da estratégia
+
+`TORRENTS_BUSCA_POR_IDADE_HABILITADA` liga a estratégia (padrão `true`).
+Desligada, o roteador devolve sempre o canal de torrents e o fluxo volta a ser
+exatamente o de antes — a chave existe para poder desligar sem mexer no código,
+caso a estratégia se mostre ruim para algum catálogo.
+
+`TORRENTS_BUSCA_IDADE_LIMITE_ANOS` é o limiar, em anos, que separa recente de
+antiga (padrão 2). O limiar é **inclusivo**: com 2, uma série de dois anos ainda
+é recente e uma de três já é antiga. Zero ou negativo desliga o corte na prática,
+porque nenhuma série fica "fora" dele.
 
 ### Legendas — roadmap
 

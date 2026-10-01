@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Services\Torrents\CatalogoProvedores;
 use App\Services\Torrents\TermosBusca;
 use App\Support\MensagensTorrent;
+use App\Support\RoteadorBusca;
 use App\Enums\IdiomaFonte;
 use Illuminate\Support\Facades\Log;
 
@@ -56,37 +57,103 @@ class TorrentService
         $episodioDeSerie = $temporada !== null && $episodio !== null;
 
         /*
-         * A busca acontece em duas fases, e não numa lista única de títulos.
+         * O canal de partida depende da idade da série.
          *
-         * A primeira fase pergunta pelo título traduzido — é o que os trackers
-         * brasileiros publicam, e é a aposta certa na maioria dos casos. A segunda
-         * fase, pelo título original, só entra quando a primeira não juntou PT-BR
-         * suficiente: aí a tradução falhou em achar o release nacional e vale
-         * tentar o nome internacional. Antes as duas fases eram uma lista só, e o
-         * título original era consultado sempre — o que gastava orçamento e
-         * poluía a lista com releases em inglês mesmo quando o dublado já tinha
-         * vindo. Quem decide a segunda fase é `valeSegundaTentativa()`.
+         * Série recente tem release fresco nos indexadores e o Torrentio responde
+         * em segundos; série antiga é o oposto, e a cascata de torrents gasta o
+         * orçamento inteiro antes de o scraper web — que é quem acha o conteúdo
+         * raro — sequer começar. Quem decide é o [`RoteadorBusca`], a partir do
+         * ano de lançamento da série e do limiar configurado.
          */
+        $canal = RoteadorBusca::canalPreferido($ano);
+
+        Log::debug('Busca de torrents: canal preferido pelo roteador de idade.', [
+            'canal' => $canal,
+            'ano' => $ano,
+            'limiar_anos' => RoteadorBusca::limiarAnos(),
+            'temporada' => $temporada,
+            'episodio' => $episodio,
+        ]);
+
+        /*
+         * O canal preferido roda primeiro; o oposto é o fallback cruzado.
+         *
+         * A ordem é a única coisa que muda entre os dois caminhos — a montagem
+         * final, o corte de idioma e o censo são os mesmos. Por isso os dois
+         * canais são métodos privados que devolvem a lista já ordenada, e não
+         * blocos duplicados aqui dentro.
+         */
+        $titulos = [];
+
+        if ($canal === RoteadorBusca::CANAL_STREAM_DIRETO) {
+            $fontes = $this->buscarPeloStreamDireto($titulo, $ano, $imdbId, $tituloOriginal, $temporada, $episodio, $titulos);
+
+            if ($fontes === []) {
+                Log::debug('Busca de torrents: stream direto (canal preferido) vazio, acionando o fallback cruzado de torrents.');
+
+                $fontes = $this->buscarPelosTorrents($titulo, $ano, $imdbId, $tituloOriginal, $temporada, $episodio, $episodioDeSerie, $titulos);
+            }
+        } else {
+            $fontes = $this->buscarPelosTorrents($titulo, $ano, $imdbId, $tituloOriginal, $temporada, $episodio, $episodioDeSerie, $titulos);
+
+            if ($fontes === []) {
+                Log::debug('Busca de torrents: torrents (canal preferido) vazio, acionando o fallback cruzado de stream direto.');
+
+                $fontes = $this->buscarPeloStreamDireto($titulo, $ano, $imdbId, $tituloOriginal, $temporada, $episodio, $titulos);
+            }
+        }
+
+        /*
+         * O censo é contado dentro da cascata, antes da montagem final. Aqui ele é
+         * reconciliado com a lista que de fato saiu, para o relatório não dizer
+         * `com_fonte` de um provedor cujas fontes foram todas descartadas depois —
+         * era o caso do APIBay, que aparecia como `com_fonte` sem ter nada na
+         * lista. A leitura precisa ser imediatamente após `ordenar()`, enquanto o
+         * censo daquela busca ainda está de pé.
+         */
+        $this->catalogo->reconciliarCenso($fontes);
+
+        $this->registrar($fontes, $titulos, $ano, $imdbId);
+
+        return $fontes;
+    }
+
+    /**
+     * Cascata de torrents: as duas fases de título, a ordenação e o corte.
+     *
+     * A busca acontece em duas fases, e não numa lista única de títulos. A
+     * primeira pergunta pelo título traduzido — é o que os trackers brasileiros
+     * publicam, e é a aposta certa na maioria dos casos. A segunda, pelo título
+     * original, só entra quando a primeira não juntou PT-BR suficiente: aí a
+     * tradução falhou em achar o release nacional e vale tentar o nome
+     * internacional. Quem decide a segunda fase é `valeSegundaTentativa()`.
+     *
+     * A cascata roda mesmo quando a lista de títulos vem vazia. Antes havia um
+     * `return []` preventivo, e o usuário recebia "nenhuma fonte encontrada" sem
+     * que o Torrentio ou os indexadores tivessem sido ouvidos. Os provedores por
+     * identificador (Torrentio, addons Stremio) não dependem do termo — respondem
+     * pelo `imdb_id` —, então lista vazia não é motivo para não perguntar.
+     *
+     * A lista de títulos usados é acumulada em `$titulos` por referência, porque
+     * o registro final precisa dela mesmo quando o fallback cruzado assume.
+     *
+     * @param  array<int, string>  $titulos
+     * @return array<int, array<string, mixed>>
+     */
+    private function buscarPelosTorrents(
+        string $titulo,
+        ?int $ano,
+        ?string $imdbId,
+        ?string $tituloOriginal,
+        ?int $temporada,
+        ?int $episodio,
+        bool $episodioDeSerie,
+        array &$titulos,
+    ): array {
         $fasePtBr = $episodioDeSerie
             ? $this->titulosDeEpisodio($titulo, $temporada, $episodio)
             : $this->titulosDeBusca($titulo);
 
-        /*
-         * A cascata roda mesmo quando a lista de títulos vem vazia.
-         *
-         * Antes havia aqui um `return []` preventivo: sem termo, a busca era
-         * abortada antes de qualquer provedor ser consultado, e o usuário recebia
-         * "nenhuma fonte encontrada" sem que o Torrentio ou os indexadores
-         * tivessem sido ouvidos. Isso é errado por dois motivos. Primeiro, os
-         * provedores por identificador (Torrentio, addons Stremio) não dependem do
-         * termo — eles respondem pelo `imdb_id`, então uma lista de termos vazia
-         * não é motivo para não perguntar. Segundo, mesmo que a cascata volte
-         * vazia, o fallback de stream direto ainda tem o título original para
-         * trabalhar; abortar cedo matava essa última chance.
-         *
-         * A lista vazia é um caso legítimo (título em branco vindo do catálogo),
-         * não um erro que justifique desistir da busca inteira.
-         */
         $fontes = $this->catalogo->buscar($fasePtBr, $ano, $imdbId, $temporada, $episodio);
         $titulos = $fasePtBr;
 
@@ -105,72 +172,63 @@ class TorrentService
             }
         }
 
-        $fontes = $this->ordenar($fontes, $temporada, $episodio);
+        return $this->ordenar($fontes, $temporada, $episodio);
+    }
 
-        /*
-         * Fallback final: stream direto.
-         *
-         * O gatilho mora aqui, e não dentro da cascata, porque só depois de
-         * `ordenar()` se sabe o que de fato sobrou. A cascata pode ter recebido
-         * dezenas de fontes do Torrentio e o corte de idioma ter descartado todas
-         * — para o usuário, isso é lista vazia, e é exatamente aí que o socorro do
-         * conteúdo raro vale. Checar a lista bruta, antes do filtro, acionaria o
-         * fallback mesmo quando metade do que veio ainda ia ser aproveitada.
-         *
-         * A lista chega vazia aqui em dois casos, e os dois pedem o fallback: a
-         * cascata não achou nada, ou achou só release sem áudio PT-BR — que o
-         * `ordenar()` descarta, porque original não é resposta para quem pediu
-         * português. Antes o `ordenar()` devolvia a reserva em inglês nesse
-         * segundo caso, e era isso que impedia o fallback de disparar: a lista
-         * nunca ficava vazia.
-         *
-         * As fontes diretas entram já montadas e não voltam por `ordenar()`: elas
-         * são o último recurso, e reordená-las junto com os torrents só as
-         * misturaria a uma lista que, por definição, está vazia.
-         */
-        if ($fontes === []) {
-            /*
-             * O fallback recebe o título traduzido e o original, mesmo que a
-             * segunda fase não tenha rodado. A cascata só consulta o original
-             * quando `valeSegundaTentativa()` manda, mas o scraper web não tem
-             * esse custo: ele pergunta pelo nome que achar mais provável, e o
-             * título original é justamente o que funciona para o conteúdo raro
-             * ("Desperate Housewives" acha o que "Donas de Casa Desesperadas"
-             * não acha). Sem isto, um título cuja tradução não rendeu termo
-             * nenhum chegaria ao fallback sem nenhuma pista.
-             */
-            $titulosDoFallback = $titulos;
+    /**
+     * Canal de stream direto: o scraper web que extrai o vídeo da página.
+     *
+     * O gatilho do fallback mora aqui, e não dentro da cascata, porque só depois
+     * de `ordenar()` se sabe o que de fato sobrou. A cascata pode ter recebido
+     * dezenas de fontes do Torrentio e o corte de idioma ter descartado todas —
+     * para o usuário, isso é lista vazia, e é exatamente aí que o socorro do
+     * conteúdo raro vale.
+     *
+     * O scraper recebe o título traduzido e o original, mesmo que a segunda fase
+     * não tenha rodado. Ele não tem o custo da cascata: pergunta pelo nome que
+     * achar mais provável, e o título original é justamente o que funciona para o
+     * conteúdo raro ("Desperate Housewives" acha o que "Donas de Casa
+     * Desesperadas" não acha).
+     *
+     * As fontes diretas entram já montadas e não voltam por `ordenar()`: elas são
+     * o último recurso, e reordená-las junto com os torrents só as misturaria a
+     * uma lista que, por definição, está vazia.
+     *
+     * @param  array<int, string>  $titulos
+     * @return array<int, array<string, mixed>>
+     */
+    private function buscarPeloStreamDireto(
+        string $titulo,
+        ?int $ano,
+        ?string $imdbId,
+        ?string $tituloOriginal,
+        ?int $temporada,
+        ?int $episodio,
+        array &$titulos,
+    ): array {
+        $titulosDoFallback = $titulos;
 
-            $original = trim((string) $tituloOriginal);
-
-            if ($original !== '' && ! in_array($original, $titulosDoFallback, true)) {
-                $titulosDoFallback[] = $original;
-            }
-
-            Log::debug('Busca de torrents: lista pós-filtro vazia, acionando o fallback de stream direto.', [
-                'titulos' => $titulosDoFallback,
-                'temporada' => $temporada,
-                'episodio' => $episodio,
-            ]);
-
-            $fontes = $this->catalogo->buscarFallbackDireto($titulosDoFallback, $ano, $imdbId, $temporada, $episodio);
-
-            Log::debug('Busca de torrents: fallback de stream direto devolveu.', [
-                'fontes' => count($fontes),
-            ]);
+        if ($titulosDoFallback === []) {
+            $titulosDoFallback[] = $titulo;
         }
 
-        /*
-         * O censo é contado dentro da cascata, antes da montagem final. Aqui ele é
-         * reconciliado com a lista que de fato saiu, para o relatório não dizer
-         * `com_fonte` de um provedor cujas fontes foram todas descartadas depois —
-         * era o caso do APIBay, que aparecia como `com_fonte` sem ter nada na
-         * lista. A leitura precisa ser imediatamente após `ordenar()`, enquanto o
-         * censo daquela busca ainda está de pé.
-         */
-        $this->catalogo->reconciliarCenso($fontes);
+        $original = trim((string) $tituloOriginal);
 
-        $this->registrar($fontes, $titulos, $ano, $imdbId);
+        if ($original !== '' && ! in_array($original, $titulosDoFallback, true)) {
+            $titulosDoFallback[] = $original;
+        }
+
+        Log::debug('Busca de torrents: acionando o stream direto.', [
+            'titulos' => $titulosDoFallback,
+            'temporada' => $temporada,
+            'episodio' => $episodio,
+        ]);
+
+        $fontes = $this->catalogo->buscarFallbackDireto($titulosDoFallback, $ano, $imdbId, $temporada, $episodio);
+
+        Log::debug('Busca de torrents: stream direto devolveu.', [
+            'fontes' => count($fontes),
+        ]);
 
         return $fontes;
     }

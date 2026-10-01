@@ -51,59 +51,56 @@ class TermosStreamDiretoTest extends TestCase
         $this->assertContains('serie completa dublada', $intencoes);
     }
 
-    public function test_plataformas_padrao_ancoram_a_busca_em_sites_de_video(): void
-    {
-        config()->set('services.torrents.stream_direto_plataformas', []);
-
-        $plataformas = $this->termos('plataformasDeVideo');
-
-        // A âncora `site:` restringe o motor a domínios que de fato hospedam
-        // vídeo, tirando do resultado os catálogos e fóruns que a lista negra
-        // teria de descartar depois.
-        $this->assertSame('site:tokyvideo.com', $plataformas[0]);
-        $this->assertContains('site:dailymotion.com', $plataformas);
-        $this->assertContains('site:ok.ru', $plataformas);
-    }
-
-    public function test_plataformas_configuradas_substituem_o_padrao(): void
-    {
-        config()->set('services.torrents.stream_direto_plataformas', ['site:meusite.com']);
-
-        $plataformas = $this->termos('plataformasDeVideo');
-
-        $this->assertSame(['site:meusite.com'], $plataformas);
-    }
-
-    public function test_plataformas_vazias_sao_descartadas(): void
-    {
-        config()->set('services.torrents.stream_direto_plataformas', ['site:x.com', '', '   ']);
-
-        $plataformas = $this->termos('plataformasDeVideo');
-
-        $this->assertSame(['site:x.com'], $plataformas);
-    }
-
-    public function test_termo_ancorado_em_plataforma_vem_primeiro(): void
-    {
-        config()->set('services.torrents.stream_direto_max_termos', 0);
-
-        $termos = $this->termos('termosDeStreaming', 'Cidade de Deus');
-
-        // O termo ancorado numa plataforma de vídeo é o mais preciso: não depende
-        // do ranqueamento do motor para achar a página do player.
-        $this->assertSame('Cidade de Deus site:tokyvideo.com', $termos[0]);
-    }
-
-    public function test_episodio_ancora_a_plataforma_com_a_numeracao(): void
+    public function test_nenhum_termo_carrega_operador_de_dominio(): void
     {
         config()->set('services.torrents.stream_direto_max_termos', 0);
 
         $termos = $this->termos('termosDeStreaming', 'Donas de Casa Desesperadas', 1, 1);
 
-        // A numeração entra junto da âncora para o episódio não virar a série
-        // inteira na página da plataforma.
-        $this->assertContains('Donas de Casa Desesperadas 1x01 site:tokyvideo.com', $termos);
-        $this->assertContains('Donas de Casa Desesperadas S01E01 site:tokyvideo.com', $termos);
+        // A query é natural: a restrição de domínio saiu de cena para a busca não
+        // ficar refém de um punhado de sites. Quem filtra é a lista negra e a
+        // prova de mídia na extração, não o operador `site:`.
+        foreach ($termos as $termo) {
+            $this->assertStringNotContainsString('site:', $termo);
+        }
+    }
+
+    public function test_termo_mais_especifico_vem_primeiro(): void
+    {
+        config()->set('services.torrents.stream_direto_max_termos', 0);
+
+        $termos = $this->termos('termosDeStreaming', 'Cidade de Deus');
+
+        // Sem âncora de domínio, o termo mais preciso é o que junta título e
+        // intenção de streaming — é o que tem a maior chance de achar a página
+        // do player já na primeira consulta.
+        $this->assertSame('Cidade de Deus assistir online dublado', $termos[0]);
+    }
+
+    public function test_episodio_abre_com_titulo_numeracao_e_intencao(): void
+    {
+        config()->set('services.torrents.stream_direto_max_termos', 0);
+
+        $termos = $this->termos('termosDeStreaming', 'Donas de Casa Desesperadas', 1, 1);
+
+        // A numeração entra junto da intenção para o episódio não virar a série
+        // inteira na página encontrada.
+        $this->assertSame('Donas de Casa Desesperadas 1x01 assistir online dublado', $termos[0]);
+        $this->assertContains('Donas de Casa Desesperadas S01E01 assistir online dublado', $termos);
+    }
+
+    public function test_episodio_carrega_todas_as_grafias_de_numeracao(): void
+    {
+        config()->set('services.torrents.stream_direto_max_termos', 0);
+
+        $termos = $this->termos('termosDeStreaming', 'Donas de Casa Desesperadas', 1, 1);
+
+        // As quatro grafias de numeração precisam estar todas na lista: cada site
+        // usa uma, e mandar só uma deixaria páginas boas de fora.
+        $this->assertContains('Donas de Casa Desesperadas 1x01 assistir online dublado', $termos);
+        $this->assertContains('Donas de Casa Desesperadas S01E01 assistir online dublado', $termos);
+        $this->assertContains('Donas de Casa Desesperadas Temporada 1 Episódio 1 assistir online dublado', $termos);
+        $this->assertContains('Donas de Casa Desesperadas 1ª Temporada Episódio 1 assistir online dublado', $termos);
     }
 
     public function test_filme_usa_os_termos_de_agregador(): void
@@ -149,8 +146,8 @@ class TermosStreamDiretoTest extends TestCase
 
         // O provedor para assim que junta páginas suficientes, então o termo
         // mais específico precisa ser o primeiro da lista — e o mais específico
-        // é o ancorado numa plataforma de vídeo.
-        $this->assertSame('Donas de Casa Desesperadas 1x01 site:tokyvideo.com', $termos[0]);
+        // é o que junta título, numeração e intenção de streaming.
+        $this->assertSame('Donas de Casa Desesperadas 1x01 assistir online dublado', $termos[0]);
     }
 
     public function test_numeracao_de_dois_digitos_e_preservada(): void
@@ -261,11 +258,10 @@ class TermosStreamDiretoTest extends TestCase
         $termos = $this->termos('termosDeStreaming', 'Donas de Casa Desesperadas', 1, 1);
 
         // A lista vem do mais preciso ao mais amplo, então o corte descarta a
-        // cauda genérica e mantém as âncoras de plataforma — que são as que
-        // mais rendem página de player por consulta. A plataforma mais forte
-        // (Tokyvideo) vem primeiro, com todas as grafias de numeração.
-        $this->assertSame('Donas de Casa Desesperadas 1x01 site:tokyvideo.com', $termos[0]);
-        $this->assertSame('Donas de Casa Desesperadas S01E01 site:tokyvideo.com', $termos[1]);
+        // cauda genérica e mantém os termos que juntam numeração e intenção —
+        // que são os que mais rendem página de player por consulta.
+        $this->assertSame('Donas de Casa Desesperadas 1x01 assistir online dublado', $termos[0]);
+        $this->assertSame('Donas de Casa Desesperadas 1x01 assistir online legendado', $termos[1]);
     }
 
     public function test_teto_zero_desliga_o_corte(): void
@@ -283,7 +279,81 @@ class TermosStreamDiretoTest extends TestCase
 
         $termos = $this->termos('termosDeStreaming', 'Cidade de Deus');
 
-        // 4 âncoras de plataforma + 5 intenções de streaming.
-        $this->assertCount(9, $termos);
+        // Um filme gera só as 5 intenções de streaming: sem numeração, não há
+        // variação de episódio para multiplicar a lista.
+        $this->assertCount(5, $termos);
+    }
+
+    public function test_titulo_ja_numerado_nao_repete_a_numeracao(): void
+    {
+        config()->set('services.torrents.stream_direto_max_termos', 0);
+
+        // O `TorrentService` entrega o primeiro título já numerado, porque a
+        // mesma lista alimenta os provedores de torrent. O scraper montava a
+        // numeração de novo e produzia "... S01E01 1x01 ...", termo que nenhum
+        // motor casa e que ainda gastava orçamento antes dos termos úteis.
+        $termos = $this->termos('termosDeStreaming', 'Donas de Casa Desesperadas S01E01', 1, 1);
+
+        foreach ($termos as $termo) {
+            $this->assertStringNotContainsString('S01E01 1x01', $termo);
+            $this->assertStringNotContainsString('S01E01 S01E01', $termo);
+        }
+
+        $this->assertContains('Donas de Casa Desesperadas assistir online dublado', $termos);
+    }
+
+    public function test_titulo_numerado_de_outro_episodio_preserva_a_numeracao_pedida(): void
+    {
+        config()->set('services.torrents.stream_direto_max_termos', 0);
+
+        // A numeração declarada é de outro episódio: aí ela é informação nova e
+        // o título é usado como veio, com a numeração pedida anexada.
+        $termos = $this->termos('termosDeStreaming', 'Donas de Casa Desesperadas S01E05', 1, 1);
+
+        $this->assertContains('Donas de Casa Desesperadas S01E05 1x01 assistir online dublado', $termos);
+    }
+
+    public function test_titulo_numerado_em_outra_grafia_tambem_e_limpo(): void
+    {
+        config()->set('services.torrents.stream_direto_max_termos', 0);
+
+        // A limpeza cobre as grafias que os títulos de release usam, não só a
+        // canônica "S01E01".
+        $termos = $this->termos('termosDeStreaming', 'Donas de Casa Desesperadas 1x01', 1, 1);
+
+        $this->assertContains('Donas de Casa Desesperadas assistir online dublado', $termos);
+
+        foreach ($termos as $termo) {
+            $this->assertStringNotContainsString('1x01 1x01', $termo);
+        }
+    }
+
+    /**
+     * O título alternativo também chega numerado — e também precisa ser limpo.
+     *
+     * O `TorrentService` monta a lista inteira com `TermosBusca::episodio()`, então
+     * o título original ("Desperate Housewives S01E01") chega tão numerado quanto
+     * o principal. A limpeza só valia para o primeiro; o alternativo recebia a
+     * numeração de novo e o termo saía com duas grafias, que nenhum motor casa.
+     */
+    public function test_titulo_alternativo_numerado_nao_repete_a_numeracao(): void
+    {
+        config()->set('services.torrents.stream_direto_max_termos', 0);
+
+        $termos = $this->termos(
+            'termosDeStreaming',
+            'Donas de Casa Desesperadas S01E01',
+            1,
+            1,
+            ['Desperate Housewives S01E01']
+        );
+
+        foreach ($termos as $termo) {
+            $this->assertStringNotContainsString('S01E01 1x01', $termo);
+            $this->assertStringNotContainsString('S01E01 S01E01', $termo);
+        }
+
+        // O alternativo limpo entra como rede de segurança, sem numeração dupla.
+        $this->assertContains('Desperate Housewives', $termos);
     }
 }

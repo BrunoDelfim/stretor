@@ -118,4 +118,61 @@ class ProvedorStreamDiretoTest extends TestCase
     {
         $this->assertFalse($this->invocar('enderecoIndicaPortugues', 'https://site.com/script/concept'));
     }
+
+    public function test_titulo_da_pagina_e_extraido_do_html(): void
+    {
+        $html = '<html><head><title>Donas de Casa Desesperadas 1x01 Dublado</title></head><body></body></html>';
+
+        $this->assertSame(
+            'Donas de Casa Desesperadas 1x01 Dublado',
+            $this->invocar('tituloDaPagina', $html)
+        );
+    }
+
+    public function test_pagina_sem_title_devolve_titulo_vazio(): void
+    {
+        // Sem `<title>`, a checagem de conteúdo não bloqueia — a decisão fica com
+        // a URL e com os links de vídeo, validados em seguida.
+        $this->assertSame('', $this->invocar('tituloDaPagina', '<html><body>sem título</body></html>'));
+    }
+
+    public function test_titulo_com_entidades_e_limpo(): void
+    {
+        $html = '<title>Filme & S&#233;rie &#8211; Dublado</title>';
+
+        $this->assertSame('Filme & Série – Dublado', $this->invocar('tituloDaPagina', $html));
+    }
+
+    public function test_filtro_adulto_ativo_por_padrao(): void
+    {
+        config()->set('services.torrents.stream_direto_filtro_adulto', true);
+
+        $this->assertTrue($this->invocar('filtroAdultoAtivo'));
+    }
+
+    public function test_filtro_adulto_pode_ser_desligado(): void
+    {
+        config()->set('services.torrents.stream_direto_filtro_adulto', false);
+
+        $this->assertFalse($this->invocar('filtroAdultoAtivo'));
+    }
+
+    public function test_alvo_de_fontes_encerra_ao_atingir_o_numero(): void
+    {
+        // O alvo conta fontes, não páginas: com duas fontes na mão, o laço para.
+        $this->assertFalse($this->invocar('alvoAtingido', [], 2));
+        $this->assertFalse($this->invocar('alvoAtingido', [['id' => 'a']], 2));
+        $this->assertTrue($this->invocar('alvoAtingido', [['id' => 'a'], ['id' => 'b']], 2));
+        $this->assertTrue($this->invocar('alvoAtingido', [['id' => 'a'], ['id' => 'b'], ['id' => 'c']], 2));
+    }
+
+    public function test_alvo_zero_desliga_o_corte(): void
+    {
+        // Zero ou negativo devolve o comportamento antigo: só o teto de páginas e
+        // o orçamento encerram a varredura.
+        $fontes = [['id' => 'a'], ['id' => 'b'], ['id' => 'c']];
+
+        $this->assertFalse($this->invocar('alvoAtingido', $fontes, 0));
+        $this->assertFalse($this->invocar('alvoAtingido', $fontes, -1));
+    }
 }

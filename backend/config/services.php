@@ -328,18 +328,13 @@ return [
          * título (e à numeração do episódio) para formar a query. "assistir
          * online dublado" é o que os sites brasileiros usam no `<title>`;
          * "legendado" entra como reserva. Vazio usa o padrão embutido.
+         *
+         * A query é **natural**: não há mais operador `site:` amarrando a busca a
+         * um domínio fixo. Quem decide se o resultado serve é a prova de mídia na
+         * extração, não o domínio — assim, derrubar um provedor não derruba a
+         * busca.
          */
         'stream_direto_termos' => $lista(env('TORRENTS_STREAM_DIRETO_TERMOS'), []),
-
-        /*
-         * Plataformas de vídeo ancoradas na query, separadas por vírgula. Cada
-         * item é um operador `site:` (ex.: `site:tokyvideo.com`) que restringe a
-         * busca a um domínio que de fato hospeda vídeo. São os termos mais
-         * precisos da lista: entram antes das intenções genéricas, porque não
-         * dependem do ranqueamento do motor para achar a página do player. Vazio
-         * usa o padrão embutido.
-         */
-        'stream_direto_plataformas' => $lista(env('TORRENTS_STREAM_DIRETO_PLATAFORMAS'), []),
 
         /*
          * Teto de termos consultados por busca. Cada termo é uma requisição ao
@@ -369,6 +364,18 @@ return [
         'stream_direto_max_paginas' => (int) env('TORRENTS_STREAM_DIRETO_MAX_PAGINAS', 6),
 
         /*
+         * Alvo de fontes distintas que encerra a varredura. É diferente do teto de
+         * páginas: uma página pode render várias fontes, e o que o usuário escolhe
+         * é a fonte. Assim que há este número de fontes na mão, o laço para — não
+         * vale gastar o orçamento restante atrás de mais opções quando já há o
+         * suficiente para escolher.
+         *
+         * Zero ou negativo desliga o corte: aí o laço só para pelo teto de páginas
+         * ou pelo orçamento.
+         */
+        'stream_direto_max_fontes' => (int) env('TORRENTS_STREAM_DIRETO_MAX_FONTES', 2),
+
+        /*
          * Teto, em segundos, de cada requisição do fallback (motor de busca ou
          * página de streaming). Curto de propósito: o fallback roda depois do
          * orçamento principal e não pode empurrar a resposta além dos 60 s que o
@@ -382,6 +389,49 @@ return [
          * começa — sem este, uma página lenta seguraria a resposta sem limite.
          */
         'stream_direto_orcamento' => (int) env('TORRENTS_STREAM_DIRETO_ORCAMENTO', 12),
+
+        /*
+         * Barreira de conteúdo impróprio do scraper de stream direto.
+         *
+         * O buscador web é uma caixa preta: para um título conhecido, ele pode
+         * devolver, no meio dos agregadores de vídeo, um link de site adulto que
+         * apenas compartilha uma palavra do nome. Foi o que aconteceu com "Donas
+         * de Casa Desesperadas", cujo resultado incluiu o domínio
+         * `xvideos-cdn.com`. Com esta chave ligada, o [`MotorBuscaWeb`] descarta
+         * a URL na origem e o [`ProvedorStreamDireto`] revalida a página e cada
+         * link de vídeo antes de virar fonte — a lista negra vive em
+         * [`FiltroConteudoAdulto`].
+         *
+         * Desligar só faz sentido para depurar a própria barreira: sem ela, o
+         * scraper volta a abrir qualquer página que o motor devolver.
+         */
+        'stream_direto_filtro_adulto' => (bool) env('TORRENTS_STREAM_DIRETO_FILTRO_ADULTO', true),
+
+        /*
+         * Estratégia de roteamento por idade da série.
+         *
+         * Uma série recente tem release fresco nos indexadores de torrent e o
+         * Torrentio responde em segundos. Uma série antiga é o contrário: os
+         * indexadores devolvem pouco ou nada, e a cascata gasta o orçamento
+         * inteiro antes de o fallback de stream direto — que é quem acha o
+         * conteúdo raro — sequer começar. Com esta chave ligada, série fora do
+         * limiar começa pelo stream direto e só cai nos torrents se o scraper
+         * falhar (fallback cruzado).
+         *
+         * Desligar devolve o fluxo antigo: torrents primeiro, sempre.
+         */
+        'busca_por_idade_habilitada' => (bool) env('TORRENTS_BUSCA_POR_IDADE_HABILITADA', true),
+
+        /*
+         * Limiar, em anos, que separa série recente de série antiga. O critério é
+         * o ano de lançamento da **série**, não o da temporada: uma série de 2004
+         * continua sendo de 2004 na décima temporada, e é isso que se quer — o
+         * catálogo de torrents envelhece junto com a série.
+         *
+         * O limiar é inclusivo: com 2, uma série de dois anos ainda é recente e
+         * uma de três já é antiga. Zero ou negativo desliga o corte na prática.
+         */
+        'busca_idade_limite_anos' => (int) env('TORRENTS_BUSCA_IDADE_LIMITE_ANOS', 2),
 
         /*
          * Bypass do cache de consultas aos provedores. Com isto ligado, a busca

@@ -84,6 +84,10 @@ class SegundaTentativaTest extends TestCase
 
         $catalogo->shouldReceive('reconciliarCenso')->andReturnNull();
 
+        // Estes testes olham as fases de título, não o fallback: o stream direto
+        // devolve vazio para que a lista final reflita só o que a cascata juntou.
+        $catalogo->shouldReceive('buscarFallbackDireto')->andReturn([]);
+
         $catalogo->shouldReceive('ptBrSuficiente')->andReturnUsing(
             function (array $fontes): bool {
                 $ptBr = count(array_filter(

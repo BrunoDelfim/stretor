@@ -238,6 +238,19 @@ class MotorBuscaWebTest extends TestCase
         $this->assertFalse($this->invocar('dominioIgnorado', 'https://site.pt/filme'));
     }
 
+    public function test_consultas_de_cnpj_sao_ignoradas(): void
+    {
+        // A busca por um título com número ("S01E01") faz o motor devolver
+        // consultas de CNPJ: o padrão casa com o formato de inscrição que esses
+        // sites indexam. Nenhuma tem vídeo, e abrir cada uma consumia o orçamento
+        // curto do fallback — foi assim que três consultas zeraram a busca.
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://checacnpj.com.br/'));
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://cnpjcheck.com.br/'));
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://datapj.com.br/consultar-cnpj'));
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://www.cnpja.com/consulta'));
+        $this->assertSame('dominio', $this->invocar('motivoDoDescarte', 'https://checacnpj.com.br/'));
+    }
+
     public function test_extensao_de_arquivo_nao_video_e_ignorada(): void
     {
         // PDFs, planilhas e pacotes são material de referência *sobre* o título,
@@ -255,6 +268,53 @@ class MotorBuscaWebTest extends TestCase
         $this->assertSame('dominio', $this->invocar('motivoDoDescarte', 'https://www.imdb.com/title/tt1'));
         $this->assertSame('tld', $this->invocar('motivoDoDescarte', 'https://site.ru/filme'));
         $this->assertNull($this->invocar('motivoDoDescarte', 'https://agregador.com/assistir/filme'));
+    }
+
+    /**
+     * O caso que motivou a correção: o buscador indexou `xvideos-cdn.com` para
+     * "Donas de Casa Desesperadas". A URL precisa ser descartada na origem, antes
+     * de virar candidata a página e gastar orçamento.
+     */
+    public function test_dominio_adulto_e_descartado_na_origem(): void
+    {
+        $this->assertSame('adulto', $this->invocar('motivoDoDescarte', 'https://xvideos-cdn.com/video.mp4'));
+        $this->assertSame('adulto', $this->invocar('motivoDoDescarte', 'https://www.pornhub.com/view_video.php'));
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://xhamster.com/videos/x'));
+    }
+
+    public function test_url_com_palavra_chave_adulta_e_descartada(): void
+    {
+        // A palavra-chave pega o que a lista de domínios ainda não conhece.
+        $this->assertSame('adulto', $this->invocar('motivoDoDescarte', 'https://desconhecido.com/porn-video-123'));
+    }
+
+    public function test_extrair_resultados_json_descarta_conteudo_adulto(): void
+    {
+        $json = json_encode([
+            'results' => [
+                ['url' => 'https://xvideos-cdn.com/video.mp4'],
+                ['url' => 'https://desconhecido.com/porn-video'],
+                ['url' => 'https://agregador.com/assistir/filme'],
+            ],
+        ]);
+
+        // Só o agregador legítimo sobrevive: os links adultos caem antes de
+        // virarem candidatos a página.
+        $this->assertSame(
+            ['https://agregador.com/assistir/filme'],
+            $this->invocar('extrairResultadosJson', $json)
+        );
+    }
+
+    public function test_filtro_adulto_desligado_deixa_passar(): void
+    {
+        // A chave existe para depurar um falso positivo sem reverter código.
+        // O domínio usado aqui é adulto só para o `FiltroConteudoAdulto`: ele não
+        // está na lista negra geral do `MotorBuscaWeb`, então desligar a barreira
+        // é o que decide o resultado — sem isso, o descarte viria por `dominio`.
+        config()->set('services.torrents.stream_direto_filtro_adulto', false);
+
+        $this->assertNull($this->invocar('motivoDoDescarte', 'https://rule34.xxx/video.mp4'));
     }
 
     public function test_extrair_resultados_json_descarta_foruns_e_estrangeiros(): void

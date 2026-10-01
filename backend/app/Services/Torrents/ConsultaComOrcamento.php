@@ -57,4 +57,48 @@ trait ConsultaComOrcamento
     {
         return ! $this->orcamento->esgotado();
     }
+
+    /**
+     * Diz se o que resta do orçamento comporta uma consulta inteira.
+     *
+     * `temOrcamento()` responde "o prazo ainda não venceu?", mas não diz se dá
+     * para **começar** uma requisição. Uma consulta iniciada a 1 s do fim ainda
+     * espera o teto cheio (o `tempoDeConsulta()` encolhe para 1 s, mas a conexão
+     * já foi aberta) e, quando volta, o prazo venceu e o resultado é descartado —
+     * o provedor gastou o que restava sem entregar nada.
+     *
+     * A leitura aqui é **proporcional**, não aditiva. Exigir o teto cheio mais
+     * uma margem fixa quebrava o fallback do stream direto: ele abre 12 s de
+     * orçamento e consulta com teto de 10 s, então a conta "10 + 2 = 12" fechava
+     * apenas no instante zero — assim que a primeira consulta consumisse 1 s, o
+     * restante caía para 11 s e nenhum termo seguinte era tentado, mesmo com
+     * orçamento de sobra. O laço parava depois do primeiro termo.
+     *
+     * O critério correto é: o restante precisa cobrir uma **fração mínima** do
+     * teto (`$fracaoMinima`, padrão metade). Assim uma consulta de 10 s só é
+     * barrada quando restam menos de 5 s — tempo insuficiente para valer a
+     * conexão. A margem deixa de ser um valor somado e passa a ser o piso
+     * proporcional que separa "cabe" de "não vale começar".
+     *
+     * @param  int  $teto  Teto da consulta que se pretende iniciar, em segundos
+     * @param  float  $fracaoMinima  Fração mínima do teto que precisa restar (0–1)
+     */
+    protected function temTempoParaConsulta(int $teto, float $fracaoMinima = 0.5): bool
+    {
+        $restante = $this->orcamento->restante();
+
+        // Sem busca em curso não há prazo global: o teto próprio do provedor vale.
+        if ($restante === null) {
+            return true;
+        }
+
+        /*
+         * O piso é proporcional ao teto, mas nunca menor que 1 s: uma consulta
+         * de 10 s exige 5 s restantes; uma de 2 s exige 1 s. O `ceil` garante
+         * que a fração não vire zero e libere uma consulta sem tempo nenhum.
+         */
+        $piso = max(1, (int) ceil($teto * $fracaoMinima));
+
+        return $restante >= $piso;
+    }
 }

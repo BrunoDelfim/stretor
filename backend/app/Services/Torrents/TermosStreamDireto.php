@@ -14,7 +14,7 @@ namespace App\Services\Torrents;
  * A construção é em camadas, da mais específica para a mais ampla:
  *
  * 1. **Título + numeração + intenção.** "Donas de Casa Desesperadas 1x01 assistir
- *    online dublado" — é o termo que casa com a página certa na maioria dos casos.
+ *    online" — é o termo que casa com a página certa na maioria dos casos.
  * 2. **Título + numeração, sem intenção.** Alguns indexadores de streaming não
  *    repetem "assistir online" no título da página; o termo enxuto os alcança.
  * 3. **Título solto + intenção.** Último recurso para quando a numeração atrapalha
@@ -27,6 +27,24 @@ namespace App\Services\Torrents;
  *
  * A ordem importa: o provedor consome os termos de cima para baixo e para assim
  * que junta páginas suficientes, então o termo mais preciso é sempre o primeiro.
+ *
+ * ## Por que não há mais `site:` na query
+ *
+ * A versão anterior ancorava cada termo num domínio fixo (`site:tokyvideo.com`)
+ * para forçar o motor a devolver páginas de player. O ganho de precisão era real,
+ * mas o preço era alto: a busca inteira ficava refém de um punhado de domínios.
+ * Bastava o Tokyvideo sair do ar — ou bloquear o IP do container — para o fallback
+ * inteiro parar de achar qualquer coisa, mesmo com o Dailymotion e o Archive.org
+ * vivos e cheios do mesmo título.
+ *
+ * A query agora é **natural**: o título, a numeração e a intenção de streaming,
+ * sem operador de domínio. Quem decide se o resultado serve não é mais uma lista
+ * fixa de domínios aceitos, e sim a **prova de mídia**: o [`MotorBuscaWeb`] aplica
+ * uma lista negra ampla (fóruns, Q&A, suporte, redes sociais, PDFs, adultos) para
+ * descartar o lixo grosso, e o [`ProvedorStreamDireto`] só aceita a página se a
+ * extração encontrar um player ou um link direto de mídia. A separação é
+ * deliberada — a query pergunta "onde está este vídeo?", e a extração responde
+ * "aqui há vídeo de verdade". Trocar de provedor deixa de exigir mexer na query.
  */
 trait TermosStreamDireto
 {
@@ -54,38 +72,48 @@ trait TermosStreamDireto
     }
 
     /**
-     * Plataformas de vídeo conhecidas, alvo explícito da busca.
+     * Devolve o título sem a numeração do episódio, quando ela já está nele.
      *
-     * O SearXNG agrega a web inteira e, para um título conhecido, as primeiras
-     * posições são de catálogo, fórum e enciclopédia — nada disso hospeda o
-     * arquivo. Ancorar a consulta numa plataforma que **de fato** publica vídeo
-     * (`site:tokyvideo.com`) faz o motor devolver páginas de player em vez de
-     * páginas *sobre* o título, e o orçamento curto do fallback rende mais.
+     * O `TorrentService` entrega o primeiro título já numerado ("Donas de Casa
+     * Desesperadas S01E01"), porque a mesma lista alimenta os provedores de
+     * torrent, que precisam da numeração. O scraper web, porém, monta a própria
+     * numeração — e anexá-la a um título que já a traz gerava termos com duas
+     * grafias ("... S01E01 1x01 ..."), que nenhum motor casa.
      *
-     * A ordem é de propósito: primeiro as plataformas com acervo PT-BR forte
-     * (Tokyvideo, Dailymotion, OK.ru), depois as que hospedam vídeo mas em
-     * qualquer idioma. A normalização posterior ainda filtra o idioma — aqui o
-     * objetivo é só trazer candidatos que o extrator consiga abrir.
-     *
-     * @return array<int, string>
+     * A remoção só acontece quando a numeração declarada é **a mesma** pedida:
+     * um título que declare outro episódio é preservado como veio, porque aí a
+     * numeração pedida é informação nova. Sem numeração reconhecível, o título
+     * volta intacto.
      */
-    protected function plataformasDeVideo(): array
+    private function tituloSemNumeracao(string $titulo, ?int $temporada, ?int $episodio): string
     {
-        $configuradas = config('services.torrents.stream_direto_plataformas', []);
-
-        if (is_array($configuradas) && $configuradas !== []) {
-            return array_values(array_filter(
-                array_map(static fn ($termo): string => trim((string) $termo), $configuradas),
-                static fn (string $termo): bool => $termo !== ''
-            ));
+        if ($temporada === null || $episodio === null) {
+            return $titulo;
         }
 
-        return [
-            'site:tokyvideo.com',
-            'site:dailymotion.com',
-            'site:ok.ru',
-            'site:vimeo.com',
+        $declarada = TermosBusca::numeracaoDoTitulo($titulo);
+
+        if ($declarada === null
+            || $declarada['temporada'] !== $temporada
+            || $declarada['episodio'] !== $episodio) {
+            return $titulo;
+        }
+
+        /*
+         * A remoção cobre as mesmas grafias que `numeracoesDoEpisodio()` gera,
+         * mais as variantes que os títulos de release usam ("S01.E01", "s1e1").
+         * O espaço extra que sobra é colapsado para o termo não sair com buraco.
+         */
+        $padroes = [
+            '/\b\d{1,2}x\d{1,3}\b/iu',
+            '/\bs\d{1,2}[\s._-]*e\d{1,3}\b/iu',
+            '/\btemporada\s*\d{1,2}\s*epis[oó]dio\s*\d{1,3}\b/iu',
+            '/\b\d{1,2}ª\s*temporada\s*epis[oó]dio\s*\d{1,3}\b/iu',
         ];
+
+        $limpo = preg_replace($padroes, ' ', $titulo) ?? $titulo;
+
+        return trim((string) preg_replace('/\s+/u', ' ', $limpo));
     }
 
     /**
@@ -130,11 +158,16 @@ trait TermosStreamDireto
     /**
      * Monta a lista de termos de busca, do mais preciso ao mais amplo.
      *
-     * A lista abre com os termos **ancorados em plataformas de vídeo**
-     * (`site:tokyvideo.com`): são os que têm a maior chance de devolver uma
-     * página de player já na primeira consulta, porque restringem o motor a
-     * domínios que de fato hospedam o arquivo. Só depois vêm as intenções
-     * genéricas, que dependem do ranqueamento do motor e por isso rendem menos.
+     * A lista abre com o termo **mais específico possível**: título, numeração e
+     * intenção de streaming juntos. É o que tem a maior chance de devolver a
+     * página do episódio certo já na primeira consulta. Só depois vêm as
+     * variações — sem intenção, sem numeração, com o título original —, que
+     * dependem mais do ranqueamento do motor e por isso rendem menos.
+     *
+     * Nenhum termo carrega operador `site:`. A restrição de domínio saiu da query:
+     * a busca pergunta pela web inteira, a lista negra do [`MotorBuscaWeb`] corta o
+     * lixo grosso e a prova de mídia na extração decide o que serve. Assim,
+     * derrubar um provedor não derruba a busca.
      *
      * `$titulosAlternativos` são as outras grafias do nome (tipicamente o título
      * original). Elas entram **por último**, e só na forma genérica — sem a
@@ -159,22 +192,28 @@ trait TermosStreamDireto
 
         $termos = [];
         $intencoes = $this->intencoesDeStreaming();
-        $plataformas = $this->plataformasDeVideo();
 
-        // A âncora de plataforma vem primeiro: é o termo que casa com a página
-        // certa sem depender do ranqueamento do motor. A numeração entra quando
-        // existe, para o episódio não virar a série inteira.
-        foreach ($plataformas as $plataforma) {
-            if ($temporada !== null && $episodio !== null) {
-                foreach ($this->numeracoesDoEpisodio($temporada, $episodio) as $numeracao) {
-                    $termos[] = "{$titulo} {$numeracao} {$plataforma}";
-                }
-            } else {
-                $termos[] = "{$titulo} {$plataforma}";
-            }
-        }
+        /*
+         * O título pode chegar já numerado. O `TorrentService` monta os termos de
+         * episódio com `TermosBusca::episodio()`, então o primeiro título da lista
+         * que chega ao fallback é "Donas de Casa Desesperadas S01E01" — a
+         * numeração já está lá. Anexá-la de novo produzia "Donas de Casa
+         * Desesperadas S01E01 1x01 assistir online dublado": um termo com duas
+         * numerações que nenhum motor casa, e que ainda gastava orçamento antes de
+         * os termos úteis serem tentados.
+         *
+         * Quando o título já declara a numeração pedida, ela sai do termo e a
+         * numeração não é reanexada — o título vira a base limpa ("Donas de Casa
+         * Desesperadas") e as variações de intenção continuam valendo. Se a
+         * numeração declarada for de outro episódio, o título é usado como veio:
+         * aí a numeração pedida é informação nova, não repetição.
+         */
+        $tituloBase = $this->tituloSemNumeracao($titulo, $temporada, $episodio);
+        $jaNumerado = $tituloBase !== $titulo;
 
-        if ($temporada !== null && $episodio !== null) {
+        if ($temporada !== null && $episodio !== null && ! $jaNumerado) {
+            // O termo mais preciso primeiro: título + numeração + intenção. É o
+            // que casa com a página do episódio sem depender do ranqueamento.
             foreach ($this->numeracoesDoEpisodio($temporada, $episodio) as $numeracao) {
                 foreach ($intencoes as $intencao) {
                     $termos[] = "{$titulo} {$numeracao} {$intencao}";
@@ -188,21 +227,40 @@ trait TermosStreamDireto
             }
         }
 
+        /*
+         * Quando o título já vinha numerado, a base limpa assume o lugar dele: os
+         * termos de intenção passam a ser "Donas de Casa Desesperadas assistir
+         * online dublado", sem a numeração repetida. O título original numerado
+         * continua entrando como rede de segurança mais abaixo.
+         */
+        $titulo = $jaNumerado ? $tituloBase : $titulo;
+
         // O título solto com intenção fecha a lista: é o termo que acha a página
         // da série/filme inteira quando a numeração não aparece no título.
         foreach ($intencoes as $intencao) {
             $termos[] = "{$titulo} {$intencao}";
         }
 
-        // Por último, as grafias alternativas (título original), sem intenção de
-        // idioma: é a rede de segurança para quando o acervo PT-BR não tem página.
+        /*
+         * Por último, as grafias alternativas (título original), sem intenção de
+         * idioma: é a rede de segurança para quando o acervo PT-BR não tem página.
+         *
+         * O alternativo também pode chegar numerado — o `TorrentService` monta a
+         * lista inteira com `TermosBusca::episodio()`, então "Desperate Housewives
+         * S01E01" é tão comum quanto o título principal. Sem a mesma limpeza
+         * aplicada acima, a numeração era anexada de novo e o termo saía com duas
+         * grafias ("... S01E01 dublado 1x01"), que nenhum motor casa.
+         */
         foreach ($this->titulosLimpos($titulosAlternativos) as $alternativo) {
-            if ($temporada !== null && $episodio !== null) {
+            $alternativoBase = $this->tituloSemNumeracao($alternativo, $temporada, $episodio);
+            $alternativoJaNumerado = $alternativoBase !== $alternativo;
+
+            if ($temporada !== null && $episodio !== null && ! $alternativoJaNumerado) {
                 foreach ($this->numeracoesDoEpisodio($temporada, $episodio) as $numeracao) {
                     $termos[] = "{$alternativo} {$numeracao}";
                 }
             } else {
-                $termos[] = $alternativo;
+                $termos[] = $alternativoJaNumerado ? $alternativoBase : $alternativo;
             }
         }
 

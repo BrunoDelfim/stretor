@@ -18,13 +18,25 @@ namespace App\Services\Torrents;
  * 2. **Configuração de player.** `file:`, `src:`, `source:`, `sources: [...]`,
  *    `hls:`, `dash:` — as chaves que os players JS usam para apontar o vídeo.
  *    O JW Player, por exemplo, recebe `{ file: "https://.../video.m3u8" }`.
- * 3. **URLs soltas.** Qualquer `https://...mp4` ou `.m3u8` no corpo, inclusive
+ * 3. **Iframes de embed.** `<iframe src="...">` apontando para um player
+ *    incorporado (YouTube, Dailymotion, Vimeo, OK.ru, Streamable...). O iframe
+ *    não é o arquivo, mas é **prova de que a página tem player** — e é o que
+ *    separa uma página de streaming de um fórum que só fala do título.
+ * 4. **URLs soltas.** Qualquer `https://...mp4` ou `.m3u8` no corpo, inclusive
  *    dentro de strings JavaScript escapadas (`https:\/\/...`). É a rede de
  *    segurança para players que montam a URL por concatenação.
  *
  * O resultado é deduplicado e filtrado por extensão: só sai daqui o que o
  * media-service consegue abrir. Um link que não é vídeo (um `.jpg`, um `.css`)
  * é descartado em vez de oferecido ao player.
+ *
+ * ## A prova de mídia é o critério de aceitação
+ *
+ * [`temMidia()`] responde à pergunta que o [`ProvedorStreamDireto`] faz antes de
+ * aceitar uma página: "aqui tem player?". A resposta não depende do domínio — um
+ * site desconhecido que embuta um iframe de player ou um `.m3u8` passa; um
+ * agregador famoso que devolva só texto não passa. É essa prova, e não uma lista
+ * fixa de domínios, que decide o que vira fonte.
  */
 class ExtratorVideo
 {
@@ -66,6 +78,74 @@ class ExtratorVideo
     ];
 
     /**
+     * Hosts de player que aparecem embutidos por iframe.
+     *
+     * Um `<iframe>` não entrega o arquivo, mas entrega a **prova** de que a
+     * página tem player. É o sinal mais confiável para separar uma página de
+     * streaming de uma página *sobre* o título: fórum e enciclopédia não
+     * embutem player, e um agregador — mesmo desconhecido — embute.
+     *
+     * A lista cobre os players incorporáveis mais comuns. O casamento é por
+     * sufixo de host, então `www.youtube.com` e `youtube-nocookie.com` entram
+     * sem precisar de duas entradas.
+     *
+     * @var array<int, string>
+     */
+    private const HOSTS_DE_EMBED = [
+        'youtube.com',
+        'youtube-nocookie.com',
+        'youtu.be',
+        'player.vimeo.com',
+        'vimeo.com',
+        'dailymotion.com',
+        'dai.ly',
+        'ok.ru',
+        'vk.com',
+        'vkvideo.ru',
+        'archive.org',
+        'odysee.com',
+        'lbry.tv',
+        'streamable.com',
+        'sendvid.com',
+        'doodstream.com',
+        'dood.to',
+        'streamtape.com',
+        'streamtape.to',
+        'mixdrop.co',
+        'mixdrop.to',
+        'vidoza.net',
+        'voe.sx',
+        'filemoon.sx',
+        'upstream.to',
+        'vidmoly.to',
+        'mp4upload.com',
+        'rutube.ru',
+        'bilibili.com',
+        'nicovideo.jp',
+        'youku.com',
+        'iqiyi.com',
+        'rumble.com',
+        'bitchute.com',
+        'veoh.com',
+        'metacafe.com',
+        'facebook.com',
+        'fb.watch',
+        'redgifs.com',
+        'jwplayer.com',
+        'jwplatform.com',
+        'brightcove.net',
+        'kaltura.com',
+        'wistia.com',
+        'wistia.net',
+        'vidyard.com',
+        'loom.com',
+        'sproutvideo.com',
+        'vzaar.com',
+        'twitch.tv',
+        'kick.com',
+    ];
+
+    /**
      * Extrai todas as URLs de vídeo de um HTML.
      *
      * @return array<int, string>
@@ -83,6 +163,32 @@ class ExtratorVideo
         );
 
         return $this->normalizar($urls);
+    }
+
+    /**
+     * Diz se o HTML tem prova de mídia — player, iframe de embed ou arquivo.
+     *
+     * É a pergunta que o [`ProvedorStreamDireto`] faz antes de aceitar uma
+     * página: "aqui tem player?". A resposta **não** olha o domínio. Um site
+     * desconhecido que embuta um iframe de player ou traga um `.m3u8` passa; um
+     * agregador famoso que devolva só texto não passa. É essa prova que substitui
+     * a lista fixa de domínios como critério de aceitação.
+     *
+     * A checagem é barata de propósito: primeiro procura um arquivo de vídeo
+     * (o sinal mais forte), depois um iframe de player conhecido. Se nenhum dos
+     * dois aparece, a página não tem mídia e o orçamento não deve ser gasto nela.
+     */
+    public function temMidia(string $html): bool
+    {
+        if (trim($html) === '') {
+            return false;
+        }
+
+        if ($this->extrair($html) !== []) {
+            return true;
+        }
+
+        return $this->dosIframesDeEmbed($html) !== [];
     }
 
     /**
@@ -146,7 +252,52 @@ class ExtratorVideo
     }
 
     /**
-     * Camada 3: URLs soltas no corpo, inclusive escapadas.
+     * Camada 3: iframes de embed que apontam para um player conhecido.
+     *
+     * O iframe não entrega o arquivo, mas entrega a prova de que a página tem
+     * player. É o sinal que separa uma página de streaming de uma discussão
+     * *sobre* o título: fórum e enciclopédia não embutem player.
+     *
+     * O casamento é pelo host do `src`, por sufixo — `www.youtube.com` casa com
+     * `youtube.com` sem precisar de entrada própria.
+     *
+     * @return array<int, string>
+     */
+    private function dosIframesDeEmbed(string $html): array
+    {
+        if (! preg_match_all('#<iframe\b[^>]*\bsrc\s*=\s*["\']([^"\']+)["\']#i', $html, $casamentos)) {
+            return [];
+        }
+
+        $embeds = [];
+
+        foreach ($casamentos[1] as $src) {
+            $src = $this->desescapar(trim((string) $src));
+
+            if (! preg_match('#^https?://#i', $src)) {
+                continue;
+            }
+
+            $host = strtolower((string) parse_url($src, PHP_URL_HOST));
+
+            if ($host === '') {
+                continue;
+            }
+
+            foreach (self::HOSTS_DE_EMBED as $conhecido) {
+                if ($host === $conhecido || str_ends_with($host, '.'.$conhecido)) {
+                    $embeds[] = $src;
+
+                    break;
+                }
+            }
+        }
+
+        return array_values(array_unique($embeds));
+    }
+
+    /**
+     * Camada 4: URLs soltas no corpo, inclusive escapadas.
      *
      * A regex aceita `https://` e `https:\/\/` (barra escapada em JSON/JS) e
      * captura até a extensão de vídeo, parando antes de aspas, espaço ou `)`.

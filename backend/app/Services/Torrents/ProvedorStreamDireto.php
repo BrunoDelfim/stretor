@@ -3,6 +3,7 @@
 namespace App\Services\Torrents;
 
 use App\Contracts\ProvedorTorrents;
+use App\Support\FiltroConteudoAdulto;
 use App\Support\IndiciosPtBr;
 use Illuminate\Support\Facades\Log;
 
@@ -143,9 +144,30 @@ class ProvedorStreamDireto implements ProvedorTorrents
         $tetoPaginas = (int) config('services.torrents.stream_direto_max_paginas', 6);
         $termosComResultado = 0;
 
+        /*
+         * O alvo de fontes é diferente do teto de páginas, e antes os dois eram a
+         * mesma variável — o que fazia o laço parar só depois de abrir seis
+         * páginas, mesmo com duas fontes já na mão. O fallback é socorro, não
+         * catálogo: assim que há fontes suficientes para o usuário escolher, parar
+         * é o certo. O alvo é configurável porque "suficiente" é uma decisão de
+         * operação, não uma verdade do código.
+         */
+        $alvoFontes = (int) config('services.torrents.stream_direto_max_fontes', 2);
+
+        /*
+         * O teto de cada consulta ao motor e a margem de segurança que impede
+         * começar uma requisição que não caberia no orçamento. Sem a margem, o
+         * fallback iniciava a última consulta a 1 s do fim, esperava o teto cheio
+         * e devolvia zero — o orçamento inteiro gasto sem nada entregue.
+         */
+        $tetoConsulta = (int) config('services.torrents.stream_direto_tempo_limite', 10);
+
         foreach ($termos as $termo) {
-            if (! $this->temOrcamento()) {
-                Log::debug('Stream direto: orçamento esgotado antes do termo.', ['termo' => $termo]);
+            if (! $this->temTempoParaConsulta($tetoConsulta)) {
+                Log::debug('Stream direto: orçamento insuficiente para o próximo termo.', [
+                    'termo' => $termo,
+                    'restante' => $this->orcamento->restante(),
+                ]);
 
                 break;
             }
@@ -155,7 +177,7 @@ class ProvedorStreamDireto implements ProvedorTorrents
              * não catálogo. Uma vez que há links tocáveis, gastar o orçamento
              * restante em mais termos só atrasaria a resposta.
              */
-            if (count($fontes) >= $tetoPaginas) {
+            if ($this->alvoAtingido($fontes, $alvoFontes)) {
                 break;
             }
 
@@ -168,8 +190,23 @@ class ProvedorStreamDireto implements ProvedorTorrents
             $termosComResultado++;
 
             foreach ($candidatas as $pagina) {
-                if (! $this->temOrcamento() || count($fontes) >= $tetoPaginas) {
+                if (! $this->temTempoParaConsulta($tetoConsulta) || $this->alvoAtingido($fontes, $alvoFontes)) {
                     break 2;
+                }
+
+                /*
+                 * A barreira de conteúdo impróprio roda antes de qualquer
+                 * requisição: um link adulto que escapou do motor de busca é
+                 * descartado aqui, sem gastar orçamento nem abrir a página. É a
+                 * segunda linha de defesa — o [`MotorBuscaWeb`] já filtra na
+                 * origem, mas o provedor não confia cegamente no que recebe.
+                 */
+                if ($this->filtroAdultoAtivo() && FiltroConteudoAdulto::urlBloqueada($pagina)) {
+                    Log::warning('Stream direto: página imprópria descartada.', [
+                        'pagina' => $pagina,
+                    ]);
+
+                    continue;
                 }
 
                 // A mesma página pode aparecer em vários termos; não vale abri-la
@@ -210,6 +247,21 @@ class ProvedorStreamDireto implements ProvedorTorrents
         }
 
         return $unicas;
+    }
+
+    /**
+     * Diz se já há fontes suficientes para encerrar a varredura.
+     *
+     * O alvo é o número de fontes distintas, não de páginas abertas — uma página
+     * pode render várias fontes, e o que o usuário escolhe é a fonte. Alvo zero ou
+     * negativo desliga o corte: aí o laço só para pelo teto de páginas ou pelo
+     * orçamento, que é o comportamento antigo.
+     *
+     * @param  array<int, array<string, mixed>>  $fontes
+     */
+    private function alvoAtingido(array $fontes, int $alvo): bool
+    {
+        return $alvo > 0 && count($fontes) >= $alvo;
     }
 
     /**
@@ -255,10 +307,71 @@ class ProvedorStreamDireto implements ProvedorTorrents
             return [];
         }
 
-        $urls = $this->extrator->extrair((string) $resposta->body());
+        $corpo = (string) $resposta->body();
+
+        /*
+         * A terceira linha de defesa: mesmo que a URL da página tenha passado
+         * limpa, o **título** dela pode denunciar o conteúdo. Um agregador
+         * legítimo que hospeda uma página adulta no meio do acervo familiar cai
+         * aqui — o título é lido do HTML e confrontado com a lista de palavras
+         * proibidas antes de qualquer extração.
+         */
+        $tituloPagina = $this->tituloDaPagina($corpo);
+
+        if ($this->filtroAdultoAtivo() && $tituloPagina !== '' && FiltroConteudoAdulto::textoBloqueado($tituloPagina)) {
+            Log::warning('Stream direto: página com título impróprio descartada.', [
+                'pagina' => $pagina,
+                'titulo' => $tituloPagina,
+            ]);
+
+            return [];
+        }
+
+        /*
+         * A prova de mídia é o critério de aceitação. Antes de gastar a extração
+         * completa, a página precisa provar que tem player: um arquivo de vídeo
+         * ou um iframe de embed conhecido. É o que substitui a lista fixa de
+         * domínios — um site desconhecido com player passa, um agregador famoso
+         * sem player não passa. Sem essa prova, a página é descartada aqui.
+         */
+        if (! $this->extrator->temMidia($corpo)) {
+            Log::debug('Stream direto: página sem prova de mídia descartada.', ['pagina' => $pagina]);
+
+            return [];
+        }
+
+        $urls = $this->extrator->extrair($corpo);
 
         if ($urls === []) {
             Log::debug('Stream direto: página sem vídeo extraível.', ['pagina' => $pagina]);
+
+            return [];
+        }
+
+        /*
+         * Cada link de vídeo passa pela barreira antes de virar fonte: o vídeo
+         * pode estar hospedado num CDN adulto (`xvideos-cdn.com`) mesmo que a
+         * página que o embute pareça inocente. O descarte é silencioso no log de
+         * erro e registrado em `debug` para não poluir a saída.
+         */
+        $urls = array_values(array_filter(
+            $urls,
+            function (string $url) use ($pagina): bool {
+                if (! $this->filtroAdultoAtivo() || ! FiltroConteudoAdulto::urlBloqueada($url)) {
+                    return true;
+                }
+
+                Log::warning('Stream direto: vídeo de origem imprópria descartado.', [
+                    'pagina' => $pagina,
+                    'video' => $url,
+                ]);
+
+                return false;
+            }
+        ));
+
+        if ($urls === []) {
+            Log::debug('Stream direto: página só tinha vídeo impróprio.', ['pagina' => $pagina]);
 
             return [];
         }
@@ -279,6 +392,39 @@ class ProvedorStreamDireto implements ProvedorTorrents
         }
 
         return $fontes;
+    }
+
+    /**
+     * Lê o `<title>` da página para a checagem de conteúdo impróprio.
+     *
+     * O título é a pista mais barata que o HTML oferece: ele já vem no `<head>`,
+     * antes do corpo, e é o que o site escreveu para descrever a página. Um
+     * `<title>` com termo adulto é prova suficiente para descartar a fonte sem
+     * nem varrer o resto do HTML atrás de vídeo.
+     *
+     * A leitura é tolerante: sem `<title>`, devolve string vazia e a checagem
+     * simplesmente não bloqueia — a decisão fica com a URL e com os links de
+     * vídeo, que são validados em seguida.
+     */
+    private function tituloDaPagina(string $html): string
+    {
+        if (! preg_match('#<title\b[^>]*>(.*?)</title>#is', $html, $casamento)) {
+            return '';
+        }
+
+        return $this->limparTexto($casamento[1]);
+    }
+
+    /**
+     * Diz se a barreira de conteúdo impróprio está ligada.
+     *
+     * A chave é a mesma que o [`MotorBuscaWeb`] consulta, para que ligar ou
+     * desligar a barreira valha para o fluxo inteiro — não faz sentido filtrar
+     * na origem e deixar passar na extração, nem o contrário.
+     */
+    private function filtroAdultoAtivo(): bool
+    {
+        return (bool) config('services.torrents.stream_direto_filtro_adulto', true);
     }
 
     /**

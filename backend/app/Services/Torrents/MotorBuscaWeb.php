@@ -2,6 +2,7 @@
 
 namespace App\Services\Torrents;
 
+use App\Support\FiltroConteudoAdulto;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Log;
 
@@ -40,6 +41,20 @@ use Illuminate\Support\Facades\Log;
  *
  * A leitura é sempre por `json_decode`, que é barato e não depende de parser de
  * DOM: os motores devolvem JSON estruturado, então não há HTML para raspar.
+ *
+ * ## A lista negra é a peneira grossa; a prova é a extração
+ *
+ * Aqui só se descarta o que **sabidamente** nunca tem vídeo: fórum, Q&A, suporte
+ * de fabricante, rede social, PDF, site adulto. É uma peneira grossa de
+ * propósito — ela existe para o orçamento não vazar com páginas que jamais
+ * teriam player, e não para decidir o que é "site de vídeo".
+ *
+ * A decisão de aceitar uma página é da **extração**, não do domínio. Um domínio
+ * desconhecido que devolva um `<video>`, um `.mp4`/`.m3u8` ou um iframe de embed
+ * é tão válido quanto um agregador famoso; um domínio famoso que não devolva
+ * nada é descartado do mesmo jeito. Amarrar a aceitação a uma lista fixa de
+ * domínios deixaria de fora justamente o acervo variado que o fallback existe
+ * para alcançar.
  */
 class MotorBuscaWeb
 {
@@ -84,24 +99,67 @@ class MotorBuscaWeb
         'filmow.com',
         'thetvdb.com',
         'trakt.tv',
-        // Fóruns, Q&A e redes sociais.
+        'sensacine.com',
+        'papodecinema.com.br',
+        // Fóruns e comunidades de discussão.
         'reddit.com',
-        'quora.com',
-        'zhihu.com',
+        'lowyat.net',
+        'forumeiros.com',
+        'forumfree.it',
+        'hardmob.com.br',
+        'adrenaline.com.br',
+        'clubedohardware.com.br',
+        'htforum.com',
+        'outerspace.com.br',
+        'neogaf.com',
+        'resetera.com',
+        'gamefaqs.gamespot.com',
         'stackexchange.com',
         'stackoverflow.com',
+        'superuser.com',
+        'serverfault.com',
+        'askubuntu.com',
         'medium.com',
-        'tumblr.com',
-        'pinterest.com',
+        'dev.to',
+        'hashnode.dev',
+        // Perguntas e respostas e suporte de fabricante.
+        'quora.com',
+        'zhihu.com',
+        'answers.yahoo.com',
+        'br.answers.yahoo.com',
+        'answers.microsoft.com',
+        'support.microsoft.com',
+        'learn.microsoft.com',
+        'docs.microsoft.com',
+        'support.google.com',
+        'support.apple.com',
+        'discussions.apple.com',
+        'wikihow.com',
+        'ehow.com',
+        'allexperts.com',
+        'justanswer.com',
+        'brainly.com.br',
+        'brainly.com',
+        // Redes sociais e mensageria.
         'facebook.com',
+        'fb.com',
+        'fb.watch',
         'instagram.com',
         'twitter.com',
         'x.com',
         'tiktok.com',
         'linkedin.com',
-        'vk.com',
+        'pinterest.com',
+        'tumblr.com',
+        'snapchat.com',
+        'threads.net',
+        'mastodon.social',
+        'bsky.app',
         't.me',
         'telegram.me',
+        'whatsapp.com',
+        'discord.com',
+        'discord.gg',
         // Buscadores e agregadores de link.
         'google.com',
         'bing.com',
@@ -111,6 +169,165 @@ class MotorBuscaWeb
         'baidu.com',
         'search.yahoo.com',
         'br.search.yahoo.com',
+        'yahoo.com',
+        'ecosia.org',
+        'startpage.com',
+        'qwant.com',
+        'mojeek.com',
+        'ask.com',
+        'lycos.com',
+        'aol.com',
+        // Lojas, streamings oficiais e serviços.
+        'amazon.com',
+        'amazon.com.br',
+        'mercadolivre.com.br',
+        'shopee.com.br',
+        'aliexpress.com',
+        'ebay.com',
+        'olx.com.br',
+        'enjoei.com.br',
+        'americanas.com.br',
+        'magazineluiza.com.br',
+        'submarino.com.br',
+        'netflix.com',
+        'primevideo.com',
+        'disneyplus.com',
+        'max.com',
+        'hbomax.com',
+        'globoplay.globo.com',
+        'paramountplus.com',
+        'starplus.com',
+        'deezer.com',
+        'spotify.com',
+        'soundcloud.com',
+        // Enciclopédias, notícias e portais.
+        'britannica.com',
+        'g1.globo.com',
+        'uol.com.br',
+        'terra.com.br',
+        'folha.uol.com.br',
+        'estadao.com.br',
+        'oglobo.globo.com',
+        'bbc.com',
+        'cnnbrasil.com.br',
+        'nytimes.com',
+        'theguardian.com',
+        'wired.com',
+        'tecmundo.com.br',
+        'canaltech.com.br',
+        'olhardigital.com.br',
+        'techtudo.com.br',
+        'showmetech.com.br',
+        // Repositórios, documentação e acadêmico.
+        'github.com',
+        'gitlab.com',
+        'bitbucket.org',
+        'sourceforge.net',
+        'readthedocs.io',
+        'gitbook.io',
+        'notion.so',
+        'scribd.com',
+        'slideshare.net',
+        'academia.edu',
+        'researchgate.net',
+        'scielo.br',
+        'scholar.google.com',
+        'jstor.org',
+        // Consultas de CNPJ, CPF e dados de empresas.
+        //
+        // A busca por um título que contém um número ("S01E01") faz o motor
+        // devolver consultas de CNPJ: o padrão "S01E01" casa com o formato de
+        // inscrição que esses sites indexam. Nenhuma delas tem vídeo, e abrir cada
+        // uma custa segundos do orçamento curto do fallback — foi assim que três
+        // consultas de CNPJ consumiram a janela inteira e a busca terminou com
+        // zero fontes.
+        'checacnpj.com.br',
+        'cnpjcheck.com.br',
+        'datapj.com.br',
+        'cnpj.biz',
+        'cnpj.info',
+        'consultacnpj.com',
+        'consultacnpj.com.br',
+        'cnpja.com',
+        'casadosdados.com.br',
+        'econodata.com.br',
+        'cnpjservices.com.br',
+        'meucnpj.com.br',
+        'situacaocadastral.com.br',
+        'cnpjagora.com.br',
+        'cnpjfacil.com.br',
+        'empresascnpj.com',
+        'cnpjs.com.br',
+        'cnpj.rocks',
+        'cnpj.io',
+        'receitaws.com.br',
+        'serpro.gov.br',
+        'gov.br',
+        // Dicionários e tradução.
+        'dictionary.com',
+        'cambridge.org',
+        'merriam-webster.com',
+        'linguee.com.br',
+        'reverso.net',
+        'wordreference.com',
+        'dicio.com.br',
+        'significados.com.br',
+        'priberam.org',
+        'infopedia.pt',
+        // Sites adultos conhecidos (reforço da barreira de conteúdo).
+        'xvideos.com',
+        'xvideos-cdn.com',
+        'pornhub.com',
+        'phncdn.com',
+        'xhamster.com',
+        'xhcdn.com',
+        'redtube.com',
+        'rdtcdn.com',
+        'youporn.com',
+        'ypncdn.com',
+        'spankbang.com',
+        'beeg.com',
+        'brazzers.com',
+        'onlyfans.com',
+        'chaturbate.com',
+        'livejasmin.com',
+        'cam4.com',
+        'bongacams.com',
+        'stripchat.com',
+        'erome.com',
+        'motherless.com',
+        'tnaflix.com',
+        'tube8.com',
+        'porntrex.com',
+        'hqporner.com',
+        'eporner.com',
+        'txxx.com',
+        'hclips.com',
+        'upornia.com',
+        'porn300.com',
+        'sex.com',
+        'xnxx.com',
+        'xnxx-cdn.com',
+        'youjizz.com',
+        'pornhd.com',
+        'porn.com',
+        'pornone.com',
+        'pornhat.com',
+        'porn00.com',
+        'pornolab.net',
+        'pornolab.cc',
+        'pornolab.biz',
+        'pornolab.org',
+        'pornolab.me',
+        'pornolab.tv',
+        'pornolab.ws',
+        'pornolab.io',
+        'pornolab.to',
+        'pornolab.se',
+        'pornolab.nu',
+        'pornolab.su',
+        'pornolab.ru',
+        'pornolab.com',
     ];
 
     /**
@@ -546,6 +763,18 @@ class MotorBuscaWeb
     }
 
     /**
+     * Diz se a barreira de conteúdo impróprio está ligada.
+     *
+     * A chave existe para poder desligar a barreira sem reverter código — útil
+     * ao depurar um falso positivo. Ligada por padrão: o custo é uma comparação
+     * de strings por resultado, e o benefício é não abrir uma página adulta.
+     */
+    private function filtroAdultoAtivo(): bool
+    {
+        return (bool) config('services.torrents.stream_direto_filtro_adulto', true);
+    }
+
+    /**
      * Classifica por que uma URL foi descartada, ou `null` se ela serve.
      *
      * Separar o motivo permite um log útil: saber que 12 links caíram por TLD
@@ -553,7 +782,12 @@ class MotorBuscaWeb
      * checagens vai do mais barato ao mais caro — host vazio, extensão, domínio
      * e, por fim, TLD.
      *
-     * @return string|null `extensao`, `dominio`, `tld` ou `null`
+     * A checagem de conteúdo adulto vem **primeiro**, antes de qualquer outra:
+     * um link impróprio não pode nem ser classificado como "domínio de catálogo"
+     * no log, e o descarte precisa ser inequívoco. É a barreira que impede o
+     * `xvideos-cdn.com` de virar candidato a página.
+     *
+     * @return string|null `adulto`, `extensao`, `dominio`, `tld` ou `null`
      */
     private function motivoDoDescarte(string $url): ?string
     {
@@ -561,6 +795,10 @@ class MotorBuscaWeb
 
         if ($host === '') {
             return null;
+        }
+
+        if ($this->filtroAdultoAtivo() && FiltroConteudoAdulto::urlBloqueada($url)) {
+            return 'adulto';
         }
 
         $caminho = strtolower((string) parse_url($url, PHP_URL_PATH));
