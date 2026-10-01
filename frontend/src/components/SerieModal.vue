@@ -63,6 +63,15 @@ const carregandoEpisodios = ref(false)
 const temporadas = computed(() => props.serie?.temporadas ?? [])
 
 /**
+ * Arte da série, repassada à lista de episódios como reserva.
+ *
+ * O TMDB nem sempre tem o `still` do episódio; quando falta, a linha repete a
+ * arte da série em vez de mostrar a moldura vazia. A capa (pôster) vem primeiro
+ * porque é a imagem mais reconhecível; o backdrop entra como segunda opção.
+ */
+const arteDaSerie = computed(() => props.serie?.capa || props.serie?.backdrop || null)
+
+/**
  * Troca a temporada ativa avisando o pai.
  *
  * O estado é do pai, então não escrevemos na prop: emitimos a intenção e
@@ -401,6 +410,7 @@ onUnmounted(() => {
                 <ListaEpisodios
                   :episodios="episodios"
                   :carregando="carregandoEpisodios"
+                  :capa-serie="arteDaSerie"
                   @assistir="assistirEpisodio"
                 />
               </div>

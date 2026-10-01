@@ -71,6 +71,10 @@ class MontagemFinalTest extends TestCase
     {
         $catalogo = Mockery::mock(CatalogoProvedores::class);
         $catalogo->shouldReceive('buscar')->andReturn($fontes);
+        // O fallback direto é dublado vazio: estes testes olham a montagem dos
+        // torrents, e um caso deles termina com a lista final vazia — sem esta
+        // expectativa, o gatilho do `TorrentService` chamaria o método real.
+        $catalogo->shouldReceive('buscarFallbackDireto')->andReturn([]);
         $catalogo->shouldReceive('reconciliarCenso')->andReturnNull();
         $catalogo->shouldReceive('temDublado')->andReturnUsing(
             fn (array $lista): bool => collect($lista)->contains(
@@ -105,12 +109,17 @@ class MontagemFinalTest extends TestCase
     }
 
     /**
-     * O invariante da diretriz: uma fonte com seeds > 0 e magnet válido não pode
-     * ser descartada pela montagem final só por não ser PT-BR quando **não há**
-     * PT-BR nenhum. Sem isso, a lista ficaria vazia e o player não teria o que
-     * tentar.
+     * O corte duro de idioma não abre exceção para a reserva: sem PT-BR nenhum,
+     * a lista sai **vazia**, mesmo com fontes vivas (seeds > 0, magnet válido).
+     *
+     * Antes, o `ordenar()` revertia o corte e devolvia o original/legendado "para
+     * o player não ficar sem nada" — e era isso que impedia o fallback de stream
+     * direto de disparar, porque a lista nunca ficava vazia. A reserva em inglês
+     * não é resposta para quem pediu português: quem resolve o conteúdo raro é o
+     * stream direto, acionado por [`TorrentService::fontes()`] ao ver a lista
+     * vazia. A reserva só volta com `somente_pt_br_ou_legendado = false`.
      */
-    public function test_fonte_com_seeds_sobrevive_quando_nao_ha_pt_br(): void
+    public function test_lista_sai_vazia_quando_nao_ha_pt_br(): void
     {
         $servico = $this->servicoComFontes([
             $this->fonte('original1', 'apibay', IdiomaFonte::ORIGINAL->value, 5),
@@ -119,11 +128,7 @@ class MontagemFinalTest extends TestCase
 
         $fontes = $servico->fontes('American Horror Story', 2011, 'tt1320771', null, 1, 1);
 
-        $this->assertCount(2, $fontes, 'Sem PT-BR, a reserva volta para não deixar a lista vazia.');
-        // A ordem é por idioma antes de provedor: o legendado (prioridade 2) vem
-        // antes do original (prioridade 3), mesmo com menos seeds.
-        $this->assertSame('legendado1', $fontes[0]['id'], 'O legendado vem antes do original.');
-        $this->assertSame('original1', $fontes[1]['id']);
+        $this->assertCount(0, $fontes, 'Sem PT-BR, a lista sai vazia para o fallback direto assumir.');
     }
 
     /**
@@ -164,11 +169,13 @@ class MontagemFinalTest extends TestCase
     }
 
     /**
-     * O pack de idioma não provado é o socorro da série antiga: sem PT-BR nenhum
-     * na lista, ele entra pela exceção de `packs_qualquer_idioma`. É este caminho
-     * que sustenta o pack compactado que não declara idioma no nome.
+     * O pack de idioma não provado sobrevive ao **filtro** de `packs_qualquer_idioma`
+     * — ele não é descartado por não declarar PT-BR. Mas o corte duro de idioma
+     * continua valendo depois: sem nenhuma fonte PT-BR, a lista sai vazia e o
+     * fallback direto assume. A exceção do pack abre a porta do filtro, não a da
+     * lista final.
      */
-    public function test_pack_sem_pt_br_e_socorro_quando_nao_ha_dublado(): void
+    public function test_pack_sem_pt_br_nao_segura_a_lista_sozinho(): void
     {
         $servico = $this->servicoComFontes([
             $this->fonte('pack_original', 'torrentio', IdiomaFonte::ORIGINAL->value, 20, pack: true),
@@ -176,8 +183,7 @@ class MontagemFinalTest extends TestCase
 
         $fontes = $servico->fontes('American Horror Story', 2011, 'tt1320771', null, 1, 1);
 
-        $this->assertCount(1, $fontes, 'Sem PT-BR, o pack de idioma não provado entra como socorro.');
-        $this->assertSame('pack_original', $fontes[0]['id']);
+        $this->assertCount(0, $fontes, 'O pack sem PT-BR não segura a lista: o corte de idioma a esvazia.');
     }
 
     /**

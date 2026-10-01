@@ -125,6 +125,37 @@ release nenhum. Por isso
 detecta a tag e cada provedor (APIBay, BT4G, TrackersBr, Torznab) só completa o
 termo quando ele ainda não a traz.
 
+#### O título original é a segunda tentativa, não a primeira
+
+A busca de filme e de episódio montava uma **lista única** de títulos com o
+traduzido e o original, e consultava os dois sempre. O título original entrava
+como segunda tentativa porque algumas traduções ficam curtas demais para o
+buscador do site ("Homem-Aranha" devolve o desenho, "Spider-Man" devolve o
+filme) — mas, na prática, ele era consultado mesmo quando o dublado já tinha
+vindo, gastando orçamento e enchendo a lista de releases em inglês.
+
+A correção foi separar a busca em **duas fases**. A primeira pergunta só pelo
+título traduzido; a segunda, só pelo original, e apenas quando a primeira ficou
+abaixo da meta PT-BR. Quem decide é
+[`TorrentService::valeSegundaTentativa()`](../backend/app/Services/TorrentService.php:152),
+que fecha a passagem em três casos: a chave
+`TORRENTS_TITULO_ORIGINAL_SEGUNDA_TENTATIVA` desligada, a ausência de um título
+original distinto do traduzido e a coleta já suficiente. A leitura da
+suficiência é pública no catálogo
+([`CatalogoProvedores::ptBrSuficiente()`](../backend/app/Services/Torrents/CatalogoProvedores.php:733)),
+que é quem conhece a meta.
+
+As fontes das duas fases são fundidas por
+[`TorrentService::mesclarFontes()`](../backend/app/Services/TorrentService.php:180),
+sem repetir: a mesma fonte pode voltar nas duas buscas (um release nacional que
+casa os dois nomes), e a chave é o `id` (infohash), que identifica o torrent de
+verdade. A primeira fase fica na frente, porque é a aposta PT-BR.
+
+Como cada fase pergunta por um título só,
+[`titulosDeBusca()`](../backend/app/Services/TorrentService.php:213) e
+[`titulosDeEpisodio()`](../backend/app/Services/TorrentService.php:241) deixaram
+de receber o par traduzido/original e passaram a receber um título.
+
 #### Provedores por identificador são consultados uma única vez
 
 Com as variações dubladas, o termo de episódio passou a render quatro entradas
@@ -2462,6 +2493,420 @@ gerava o caminho duplicado `/api/media/api/media/sessao`, e o Express respondia
 sequência ([`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:223)),
 o erro se repetia uma vez por fonte — daí a rajada de requisições com o mesmo
 404.
+
+### Stream direto (MP4/HLS) — o socorro do conteúdo raro
+
+A cascata de torrents resolve bem o conteúdo com seeders, mas falha justamente
+onde o acervo PT-BR é mais frágil: lançamentos antigos, novelas, filmes de
+catálogo. Nesses casos o torrent morreu e nenhuma quantidade de termos de busca
+o ressuscita. O **stream direto** é a rede de segurança para esse cenário — o
+equivalente ao comportamento de apps como Lumigo/Stremio, que buscam um link de
+vídeo pronto (MP4 ou HLS) em vez de uma malha P2P.
+
+#### O provedor é um fallback, não um degrau
+
+[`ProvedorStreamDireto`](../backend/app/Services/Torrents/ProvedorStreamDireto.php:1)
+implementa o mesmo contrato `ProvedorTorrents` dos demais, mas **não** entra na
+cascata normal. O gatilho mora em
+[`TorrentService::fontes()`](../backend/app/Services/TorrentService.php:96), e não
+dentro do catálogo: ele dispara **depois** de `ordenar()`. O caminho comum
+(torrent PT-BR vivo) não paga nenhum custo extra — a consulta direta nem chega a
+acontecer.
+
+O momento importa. A cascata pode receber dezenas de fontes do Torrentio e o
+filtro de idioma (`ePtBr`) descartar todas: para o usuário, isso é lista vazia, e
+é aí que o socorro vale. Checar a lista **bruta**, antes do filtro, acionaria o
+fallback mesmo quando metade do que veio ainda ia ser aproveitada — e o provedor
+direto gastaria orçamento à toa. Por isso a checagem é pela lista que
+[`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:372)
+devolveu, não pela que o catálogo recolheu.
+
+O critério é **"a lista final ficou vazia"**, e o `ordenar()` garante que isso
+signifique "não sobrou áudio PT-BR". O corte duro de idioma
+(`somente_pt_br_ou_legendado`) não abre exceção para a reserva: quando só veio
+release em inglês, o `ordenar()` devolve **lista vazia**, e não o original como
+consolação. Antes ele revertia o corte e devolvia a reserva "para o player não
+ficar sem nada" — e era exatamente isso que impedia o fallback de disparar, porque
+a lista nunca ficava vazia. A reserva em inglês não é resposta para quem pediu
+português: o que resolve o conteúdo raro é o stream direto. A reserva só volta
+quando o corte está desligado (`somente_pt_br_ou_legendado = false`), aí sim o
+usuário aceita qualquer idioma. Se o provedor direto não achar nada, a lista
+permanece vazia — o cliente mostra "sem fontes" em vez de oferecer um release que
+o usuário não pediu.
+
+O acionamento passa por
+[`CatalogoProvedores::buscarFallbackDireto()`](../backend/app/Services/Torrents/CatalogoProvedores.php:473),
+que é público justamente para ser chamado de fora da cascata. As fontes diretas
+entram já montadas e **não** voltam por `ordenar()`: são o último recurso, e
+reordená-las junto com os torrents só as misturaria a uma lista que, por
+definição, está vazia.
+
+O fallback abre um **orçamento próprio** (`TORRENTS_STREAM_DIRETO_ORCAMENTO`,
+padrão 12 s) porque o orçamento global já foi consumido pelos três degraus. Sem
+isso, a consulta direta nasceria sem tempo para responder.
+
+##### A cascata não aborta com a lista de títulos vazia
+
+Havia em `fontes()` um `return []` preventivo: quando
+[`titulosDeBusca()`](../backend/app/Services/TorrentService.php:238) ou
+[`titulosDeEpisodio()`](../backend/app/Services/TorrentService.php:267) devolviam
+lista vazia (título em branco vindo do catálogo), a busca era encerrada **antes**
+de qualquer provedor ser consultado. O usuário recebia "nenhuma fonte encontrada"
+sem que o Torrentio ou os indexadores tivessem sido ouvidos.
+
+Isso estava errado por dois motivos. Primeiro, os provedores por identificador
+(Torrentio, addons Stremio) respondem pelo `imdb_id`, não pelo termo — uma lista
+de termos vazia não é motivo para não perguntar. Segundo, mesmo que a cascata
+voltasse vazia, o fallback de stream direto ainda teria o título original para
+trabalhar; abortar cedo matava essa última chance. A lista vazia é um caso
+legítimo, não um erro que justifique desistir da busca inteira. O
+[`CatalogoProvedores::buscar()`](../backend/app/Services/Torrents/CatalogoProvedores.php:210)
+já trata o caso com segurança: a rodada de abertura só roda se houver um primeiro
+título, os laços sobre lista vazia não iteram e o YTS recebe string vazia e se
+abstém.
+
+##### O fallback recebe o título traduzido e o original
+
+A cascata só consulta o título original quando
+[`valeSegundaTentativa()`](../backend/app/Services/TorrentService.php:177) manda —
+é uma segunda fase que custa orçamento. O scraper web não tem esse custo: ele
+pergunta pelo nome mais provável, e o título original é justamente o que funciona
+para o conteúdo raro ("Desperate Housewives" acha o que "Donas de Casa
+Desesperadas" não acha). Por isso, ao montar a lista que vai ao fallback, o
+`fontes()` acrescenta o título original ao traduzido, sem duplicar quando ele já
+entrou pela segunda fase. Sem isso, um título cuja tradução não rendeu termo
+nenhum chegaria ao fallback sem nenhuma pista.
+
+#### O scraper é autónomo: não há API de agregação
+
+A primeira versão do provedor esperava uma API externa configurada em
+`TORRENTS_STREAM_DIRETO_FONTES` — um endereço que devolvesse JSON com links
+prontos. O problema é que essa API não existe de graça: ou é paga, ou é instável,
+ou simplesmente não cobre o acervo PT-BR que motiva o fallback. O provedor virou,
+então, um **scraper web autónomo**: ele mesmo procura a página de streaming e
+extrai o vídeo dela, sem depender de terceiros.
+
+O fluxo tem quatro etapas, cada uma num arquivo próprio:
+
+1. **A query** — [`TermosStreamDireto`](../backend/app/Services/Torrents/TermosStreamDireto.php:1)
+   monta o termo de busca. O provedor de torrents pergunta pelo nome do release
+   ("Titulo S01E01 1080p"); o scraper pergunta outra coisa, porque quem publica
+   página de streaming escreve o título como o usuário digita no Google — sem tag
+   de qualidade, sem codec, sem grupo. Os termos são montados em camadas, do mais
+   preciso ao mais amplo: título + numeração + intenção ("Donas de Casa
+   Desesperadas 1x01 assistir online dublado"), depois título + numeração, e por
+   fim título solto + intenção. A numeração é perguntada em quatro grafias
+   (`1x01`, `S01E01`, `Temporada 1 Episódio 1`, `1ª Temporada Episódio 1`) porque
+   cada site usa uma. A ordem importa: o provedor consome os termos de cima para
+   baixo e para assim que junta páginas suficientes.
+
+   A última camada é a **rede de segurança**: quando o acervo PT-BR não tem
+   página nenhuma, o título original entra na busca — "Desperate Housewives
+   S01E01" — **sem** a intenção de idioma. A ideia é achar qualquer página de
+   vídeo e deixar a normalização posterior decidir o que serve. O catálogo passa
+   a lista inteira de títulos (o principal e as variações) via
+   `buscarComTitulos()`, e não só o primeiro.
+
+2. **O motor de busca** — [`MotorBuscaWeb`](../backend/app/Services/Torrents/MotorBuscaWeb.php:1)
+   resolve o termo em URLs de páginas. A escolha primária é o **DuckDuckGo
+   HTML/Lite**: página estática, sem JavaScript e sem chave de API, com os
+   resultados em `<a class="result__a">` (ou `result-link`, no Lite). É o mesmo
+   caminho que o Stremio usa por baixo dos panos quando não há addon. O Google e o
+   Bing exigem chave ou bloqueiam scraping; o DDG tolera. O `href` costuma vir
+   embrulhado num redirecionamento (`//duckduckgo.com/l/?uddg=<url-encoded>`), e o
+   serviço decodifica o parâmetro `uddg` para chegar ao alvo real. A lista de
+   motores é configurável (`stream_direto_motores`) porque o DDG muda de layout de
+   tempos em tempos. Com mais de um endereço, o serviço **percorre todos e agrega**
+   o que cada um devolveu — um motor que respondeu com poucos resultados não
+   impede o outro de contribuir. Antes o laço parava no primeiro motor com
+   resultado, o que desperdiçava os demais quando o primeiro devolvia uma lista
+   magra.
+
+   O DDG responde 200 mesmo quando está bloqueando (rate limit, captcha), com uma
+   página de aviso no corpo. O serviço reconhece essas marcas e registra o
+   bloqueio no log — sem isso, "não há resultado" e "fui barrado" ficariam
+   indistinguíveis, e são problemas com soluções diferentes.
+
+   ##### O 202 é bloqueio, não sucesso
+
+   O caso mais traiçoeiro é o **status 202**: o DDG aceita a requisição mas não
+   devolve resultado nenhum — é o "aceito, mas ignore" que antecede o captcha. O
+   `failed()` do Laravel só pega 4xx/5xx, então o 202 passava como sucesso e o
+   serviço lia uma página vazia como "zero resultados", gastando o orçamento de
+   termos sem trazer um link sequer. O [`MotorBuscaWeb`](../backend/app/Services/Torrents/MotorBuscaWeb.php:80)
+   agora trata `202` e `429` (`STATUS_DE_BLOQUEIO`) como bloqueio explícito:
+   registra o aviso **"motor bloqueou a consulta (status de rate limit)"** e
+   devolve lista vazia, deixando o próximo motor assumir.
+
+   ##### Mais de um motor: o bloqueio de um não derruba a busca
+
+   Depender de um único endpoint é frágil — quando ele bloqueia, a busca inteira
+   morre. O serviço aceita **três tipos de motor**, e o tipo decide como montar a
+   requisição e ler a resposta:
+
+   - `searxng` — instância SearXNG pública, com `format=json`. Resultados em
+     `results[].url`. É o **motor primário**: a instância é hospedada por
+     terceiros, tem cota própria e devolve JSON limpo — é o caminho que foge do
+     bloqueio de HTML do DuckDuckGo.
+   - `ddg` — DuckDuckGo HTML/Lite. Resultados em `<a class="result__a">`. Fica
+     como **reserva**, para quando a instância pública estiver fora.
+   - `brave` — API oficial do Brave Search, exige chave
+     (`stream_direto_brave_key`). Resultados em `web.results[].url`.
+
+   O tipo é **inferido do endereço** quando não declarado: um host com `searx`
+   vira `searxng`, um host com `brave` vira `brave`, e o resto é `ddg`. Também dá
+   para forçar o tipo com o prefixo `tipo:url` na lista de motores — útil para uma
+   instância SearXNG em domínio próprio, que não denuncia o tipo pelo host.
+
+   O padrão é **SearXNG + DDG HTML + Lite**, nesta ordem. O SearXNG vem primeiro
+   porque o DuckDuckGo passou a bloquear o IP dos containers com 202 tanto no HTML
+   quanto no Lite — e um motor bloqueado não rende link nenhum. O endereço do
+   SearXNG é só o endpoint de busca (`https://searx.be/search`); a query (`q`) e o
+   `format=json` são acrescentados na hora da requisição. As instâncias públicas
+   vêm e vão: se a padrão cair, troque o endereço em `stream_direto_motores` ou
+   acrescente outra. Um motor do tipo `brave` **sem chave é descartado da lista**
+   antes de qualquer requisição — a API responderia 401 e o endereço só gastaria
+   uma volta do laço. A lista negra de domínios vale igual para os motores JSON: o
+   filtro é o mesmo do HTML.
+
+   ##### A lista negra de domínios: o catálogo não tem vídeo
+
+   Para um título conhecido, o motor de busca ordena por relevância e empurra
+   **catálogos e metadados** para o topo: JustWatch, IMDb, Plex, YouTube oficial,
+   Wikipédia, TMDB. Essas páginas respondem 200, abrem rápido e não têm vídeo
+   nenhum para extrair — o orçamento curto do fallback (12s) era gasto abrindo
+   páginas que nunca iam render fonte.
+
+   O [`MotorBuscaWeb`](../backend/app/Services/Torrents/MotorBuscaWeb.php:69)
+   mantém uma lista negra (`DOMINIOS_IGNORADOS`) e descarta essas URLs **na
+   extração dos resultados**, antes de elas virarem candidatas a página. Filtrar
+   depois, no provedor, seria tarde: a URL já teria entrado na fila de visitas.
+
+   O casamento é pelo **host inteiro**, com o ponto à frente
+   (`str_ends_with($host, '.'.$dominio)`), para casar subdomínios (`www.imdb.com`)
+   sem casar domínios que apenas terminam com o mesmo texto (`naoimdb.com`). URLs
+   sem host válido não são descartadas aqui — quem decide se servem é o extrator.
+
+   O descarte é registrado em `debug` **"domínios de catálogo ignorados"**, com a
+   quantidade e a lista de hosts únicos. É o log que mostra que o filtro está
+   trabalhando, e não que a busca simplesmente não achou nada.
+
+   ##### A query prioriza agregadores de vídeo
+
+   A lista negra resolve o que chega, mas não o que é pedido. Os termos padrão de
+   [`TermosStreamDireto::intencoesDeStreaming()`](../backend/app/Services/Torrents/TermosStreamDireto.php:75)
+   foram reordenados para puxar **agregadores de vídeo** para as primeiras
+   posições, em vez de páginas genéricas:
+
+   ```
+   assistir online dublado
+   assistir online legendado
+   assistir online
+   filme completo dublado
+   serie completa dublada
+   ```
+
+   Os dois últimos termos ("filme completo dublado", "serie completa dublada")
+   são o que os sites de hospedagem de vídeo usam no próprio título da página —
+   diferente de "assistir online", que também aparece em catálogos. Como o
+   provedor consome os termos de cima para baixo e para quando junta páginas
+   suficientes, a ordem é o que decide se o orçamento é gasto com o site certo.
+
+   ##### O teto de termos: a rajada é o que o DDG pune
+
+   A query em camadas é boa para achar a página certa, mas cara: um episódio
+   gera **dezenas** de termos — 4 grafias de numeração × 5 intenções, mais as
+   variações sem intenção e o título original. Cada termo é uma requisição ao
+   motor de busca, e disparar todas em sequência é o caminho mais curto para o
+   rate limit. O DuckDuckGo responde 202 (ou 200 com página de captcha) e a
+   busca volta com zero links.
+
+   [`TermosStreamDireto::limitarTermos()`](../backend/app/Services/Torrents/TermosStreamDireto.php:173)
+   corta a cauda da lista em `stream_direto_max_termos` (padrão 8). O corte é
+   seguro porque a lista **já vem ordenada do mais preciso ao mais amplo**: o
+   que sobra são os termos que casam com a página certa, e o que cai são os
+   genéricos, que rendem menos. Zero ou negativo desliga o corte.
+
+   ##### O intervalo entre consultas: cadência de gente, não de robô
+
+   Mesmo com menos termos, consultas em rajada ainda denunciam o bot. Entre uma
+   consulta e a seguinte, [`MotorBuscaWeb::aguardarIntervalo()`](../backend/app/Services/Torrents/MotorBuscaWeb.php:227)
+   dorme um tempo **sorteado** entre `stream_direto_intervalo_min` e
+   `stream_direto_intervalo_max` (padrão 800–2200 ms). O sorteio é de propósito:
+   um intervalo fixo também é padrão de robô.
+
+   A espera vale **entre** consultas, não antes da primeira — atrasar a abertura
+   da busca só somaria latência sem proteger nada. E ela é limitada pelo
+   orçamento restante: se o fallback está no fim do prazo, a espera encolhe em
+   vez de estourá-lo. O intervalo é registrado em `debug` **"aguardando intervalo
+   entre consultas"**, com os milissegundos sorteados.
+
+   ##### Os cabeçalhos: tráfego de navegador, não de cliente HTTP
+
+   O [`ClienteHttp`](../backend/app/Services/Torrents/ClienteHttp.php:258) passou
+   a enviar cabeçalhos de navegador comum em toda requisição: `Accept` de
+   documento HTML, `Accept-Language: pt-BR,pt;q=0.9,en;q=0.8`, `Cache-Control` e
+   `Pragma` de navegação, os `Sec-Fetch-*` e `Upgrade-Insecure-Requests`. O
+   `User-Agent` vem de `services.torrents.user_agent` (o mesmo dos provedores
+   nativos), com um Chrome como padrão — um agente de robô (`GuzzleHttp/...`,
+   `curl/...`) é o primeiro item que um filtro anti-bot olha.
+
+   O `Accept-Language` em PT-BR não é só cosmético: ele alinha a resposta do
+   motor com o acervo que o fallback procura, e é o que um navegador brasileiro
+   mandaria de verdade.
+
+3. **A extração** — [`ExtratorVideo`](../backend/app/Services/Torrents/ExtratorVideo.php:1)
+   abre o HTML da página e procura o vídeo em três camadas: as tags HTML5
+   (`<video src>`, `<source src>`, `data-src`), a configuração dos players web
+   (JW Player usa `file:`, Video.js/Plyr usam `sources: [{src:}]`, e há ainda
+   `hls:`, `dash:`, `playlist:`) e, por fim, URLs soltas no corpo com extensão de
+   vídeo (`.mp4`, `.m3u8`, `.mpd`, `.webm`, `.mkv`). O HTML dos players costuma
+   escapar as barras (`\/`, `\u002F`), então o extrator desescapa antes de validar.
+
+4. **A normalização** — o que sai do extrator passa por
+   [`NormalizaFonte::montarFonteDireta()`](../backend/app/Services/Torrents/NormalizaFonte.php:96),
+   exatamente como antes. O scraper não inventa um contrato novo: ele só troca a
+   origem do link.
+
+O provedor para de raspar quando atinge o teto de páginas
+(`stream_direto_max_paginas`, padrão 6) ou quando o orçamento acaba. Páginas já
+visitadas não são abertas de novo, e as fontes são deduplicadas por URL.
+
+#### Diagnóstico: onde a busca parou
+
+A busca web é frágil por natureza — o motor bloqueia, o HTML muda, o acervo não
+cobre. Quando a lista sai vazia, o log diz exatamente onde parou, em vez de
+deixar um "zero fontes" mudo:
+
+- `debug` **"iniciando busca"** — título, variações, temporada/episódio e a lista
+  completa de termos que serão consultados.
+- `debug` **"consultando motores de busca"** — o termo e os motores da vez.
+- `debug` **"motor respondeu"** — quantos links aquele motor devolveu.
+- `debug` **"domínios de catálogo ignorados"** — quantas URLs da lista negra
+  (JustWatch, IMDb, Plex, YouTube, Wikipédia, TMDB) foram descartadas e quais
+  hosts. É o que separa "o filtro barrou o lixo" de "a busca não achou nada".
+- `debug` **"domínios consultados"** — os hosts únicos das páginas que passaram
+  pelo filtro e foram efetivamente abertas. É o par do log acima: um diz o que
+  foi barrado, o outro diz para onde o orçamento foi de fato.
+- `debug` **"aguardando intervalo entre consultas"** — os milissegundos
+  sorteados antes da próxima consulta ao motor. É o que mostra que o throttle
+  está trabalhando, e não que a busca travou.
+- `warning` **"motor bloqueou a consulta"** — rate limit/captcha detectado.
+- `warning` **"motor devolveu erro HTTP"** / **"não respondeu"** — falha de rede
+  ou status ruim.
+- `debug` **"vídeos extraídos da página"** — quantos links de vídeo saíram do HTML.
+- `debug` **"página sem vídeo extraível"** — a página abriu, mas não tinha vídeo.
+- `debug` **"busca concluída"** — termos com resultado, páginas visitadas e total
+  de fontes.
+- `info` **"nenhuma fonte encontrada"** — o resumo final quando nada saiu.
+
+Para ver esse rastro, suba o nível do canal para `debug` (`LOG_LEVEL=debug` no
+`.env`). Em produção o padrão é `error`, então só os `warning`/`info` de falha
+aparecem.
+
+##### O rastro do gatilho: por que o fallback não rodou
+
+O rastro acima começa **dentro** do scraper. Se ele nunca aparece, o problema é
+antes: o fallback não chegou a ser acionado. Para esse caso há um segundo rastro,
+no gatilho e na entrada do provedor:
+
+- `debug` **"lista pós-filtro vazia, acionando o fallback de stream direto"** —
+  em [`TorrentService::fontes()`](../backend/app/Services/TorrentService.php:131),
+  com os títulos que serão passados. É a prova de que o gatilho disparou.
+- `debug` **"fallback de stream direto devolveu"** — quantas fontes voltaram.
+- `debug` **"fallback acionado"** — em
+  [`CatalogoProvedores::buscarFallbackDireto()`](../backend/app/Services/Torrents/CatalogoProvedores.php:473),
+  com títulos, ano, `imdb_id` e temporada/episódio.
+- `info` **"fallback desligado, provedor não consultado"** — a chave
+  `TORRENTS_STREAM_DIRETO_HABILITADO` está `false`. **Este é o log que explica o
+  silêncio**: sem ele, um fallback desligado era indistinguível de um fallback que
+  rodou e não achou nada — os dois terminam com a lista vazia e o mesmo aviso
+  "Nenhuma fonte de torrent encontrada" no frontend.
+- `info` **"fallback sem título para buscar, provedor não consultado"** — a lista
+  de títulos chegou vazia.
+- `debug` **"fallback concluído"** — fontes devolvidas e tempo gasto.
+
+A ordem de leitura é: se o `debug` "acionando o fallback" aparece mas o
+`debug` "fallback acionado" não, o problema está entre o `TorrentService` e o
+catálogo. Se o `info` "fallback desligado" aparece, é configuração — ligue
+`TORRENTS_STREAM_DIRETO_HABILITADO=true` e rode `php artisan config:clear`, porque
+`config()` pode estar servindo o valor antigo do cache.
+
+#### O contrato da fonte direta
+
+Uma fonte direta carrega dois campos que a distinguem de um torrent:
+
+| Campo | Torrent | Direto |
+| --- | --- | --- |
+| `tipo` | `torrent` | `direto` |
+| `magnet` | link magnet | vazio |
+| `stream` | vazio | URL MP4/HLS |
+
+A montagem fica em
+[`NormalizaFonte::montarFonteDireta()`](../backend/app/Services/Torrents/NormalizaFonte.php:96).
+Como não há malha, a fonte usa `SEEDS_NAO_MEDIDOS` (1) para sobreviver ao filtro
+de `seeds <= 0` em [`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:347),
+que ganhou um ramo próprio para `tipo === 'direto'` — sem ele, o filtro
+`magnet === ''` descartaria toda fonte direta.
+
+#### O media-service converte a URL para HLS
+
+O player não sabe a diferença: ele consome a mesma playlist HLS. Quem faz a
+ponte é o endpoint `POST /sessao-direta`
+([`media.js`](../media-service/src/routes/media.js:80)), que cria uma sessão
+direta em [`sessoes.js`](../media-service/src/services/sessoes.js:340). O FFmpeg
+lê a URL remota diretamente — num MP4 progressivo ele usa requisições `Range`
+para buscar o índice e as amostras; num HLS ele segue a playlist de origem — e
+publica os segmentos conforme os bytes chegam, exatamente como no caminho do
+torrent.
+
+A sondagem (`ffprobe`) também aceita URL, mas é tolerante a falha: um servidor
+que não responde ao ffprobe ainda pode ser lido pelo FFmpeg, então a sessão cai
+num modo conservador (`video`, que transcodifica) em vez de desistir.
+
+#### Configuração
+
+```env
+TORRENTS_STREAM_DIRETO_HABILITADO=false
+TORRENTS_STREAM_DIRETO_MOTORES=https://searx.be/search,https://html.duckduckgo.com/html/,https://lite.duckduckgo.com/lite/
+TORRENTS_STREAM_DIRETO_BRAVE_KEY=
+TORRENTS_STREAM_DIRETO_TERMOS=
+TORRENTS_STREAM_DIRETO_MAX_TERMOS=8
+TORRENTS_STREAM_DIRETO_INTERVALO_MIN=800
+TORRENTS_STREAM_DIRETO_INTERVALO_MAX=2200
+TORRENTS_STREAM_DIRETO_MAX_PAGINAS=6
+TORRENTS_STREAM_DIRETO_TEMPO_LIMITE=10
+TORRENTS_STREAM_DIRETO_ORCAMENTO=12
+```
+
+`TORRENTS_STREAM_DIRETO_MOTORES` é a lista de motores de busca (separada por
+vírgula). O padrão começa pelo **SearXNG** (`https://searx.be/search`), que foge
+do bloqueio de HTML do DuckDuckGo; o par DDG HTML + Lite fica como reserva. O
+endereço do SearXNG é só o endpoint de busca — a query e o `format=json` entram
+sozinhos. O tipo de cada motor é inferido do endereço (`searx` → SearXNG, `brave`
+→ Brave, o resto → DuckDuckGo) ou forçado com o prefixo `tipo:url` (ex.:
+`searxng:https://busca.exemplo.com`). Para usar o Brave, basta preencher
+`TORRENTS_STREAM_DIRETO_BRAVE_KEY` — sem a chave, o motor é descartado da lista.
+`TORRENTS_STREAM_DIRETO_TERMOS` sobrescreve as intenções de busca — vazio usa o
+padrão (`assistir online dublado`, `assistir online legendado`, `assistir
+online`). `TORRENTS_STREAM_DIRETO_MAX_PAGINAS` limita quantas páginas o scraper
+abre por consulta.
+
+As instâncias públicas de SearXNG vêm e vão. Se a padrão cair, troque o endereço
+em `TORRENTS_STREAM_DIRETO_MOTORES` ou acrescente outra — o formato aceito é
+`https://instancia/search`.
+
+`TORRENTS_STREAM_DIRETO_MAX_TERMOS` limita quantos termos são consultados por
+busca (padrão 8); zero desliga o corte. `TORRENTS_STREAM_DIRETO_INTERVALO_MIN` e
+`TORRENTS_STREAM_DIRETO_INTERVALO_MAX` definem a janela, em milissegundos, do
+atraso sorteado entre consultas ao motor (padrão 800–2200). Os dois são a defesa
+contra o rate limit do DuckDuckGo: menos termos e cadência humana.
+
+Desligado por padrão. Diferente da versão anterior, **não há mais API externa a
+configurar**: ligar a chave já basta para o scraper funcionar. Vale saber que o
+scraper depende de páginas de terceiros, então a taxa de acerto varia com o
+acervo — conteúdo muito raro pode não ter página nenhuma, e a lista continua
+vazia.
 
 ### Legendas — roadmap
 

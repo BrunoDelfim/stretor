@@ -11,6 +11,7 @@ use App\Services\Torrents\ProvedorAddonStremio;
 use App\Services\Torrents\ProvedorApibay;
 use App\Services\Torrents\ProvedorBt4g;
 use App\Services\Torrents\ProvedorKnaben;
+use App\Services\Torrents\ProvedorStreamDireto;
 use App\Services\Torrents\ProvedorTorrentio;
 use App\Services\Torrents\ProvedorTorznab;
 use App\Services\Torrents\ProvedorTrackersBr;
@@ -74,6 +75,7 @@ class CacheBypassTest extends TestCase
             $this->duble(ProvedorYts::class, 'yts'),
             Mockery::mock(InspecaoPack::class),
             new OrcamentoBusca(),
+            $this->duble(ProvedorStreamDireto::class, 'stream_direto'),
         );
     }
 

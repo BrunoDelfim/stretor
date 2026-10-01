@@ -73,6 +73,20 @@ flowchart TD
     F --> G[Plyr reproduz]
 ```
 
+Quando a cascata de torrents termina **sem nenhuma fonte PT-BR**, o backend
+aciona o fallback de **stream direto**: um scraper web autónomo que monta uma
+query de busca, resolve páginas de streaming por um motor de busca leve
+(DuckDuckGo HTML/Lite) e extrai o link MP4/HLS do HTML da página. O gatilho fica
+no `TorrentService`, **depois** da montagem final (`ordenar()`), e o critério é
+"a lista final ficou vazia". O `ordenar()` garante que isso signifique "não
+sobrou áudio PT-BR": o corte duro de idioma não abre exceção para a reserva,
+então quando só veio release em inglês a lista sai vazia — antes ele devolvia o
+original como consolação, e era isso que impedia o fallback de disparar. A fonte
+resultante não tem magnet — carrega uma URL no campo `stream` — e o media-service
+a converte para HLS pelo endpoint `POST /sessao-direta`, sem passar pelo
+WebTorrent. O player consome a mesma playlist e não distingue os dois caminhos.
+Detalhes em [Integrações](integracoes.md).
+
 Os segmentos HLS são servidos pelo Nginx com `proxy_buffering off`, para que o
 player receba cada segmento assim que a conversão o produz.
 

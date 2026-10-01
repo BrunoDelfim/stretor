@@ -53,19 +53,112 @@ class TorrentService
         // Quando temporada e episódio vêm preenchidos, a busca é de um episódio
         // de série: o termo passa a ser "Titulo S01E02" em vez do título solto.
         // Sem eles, o fluxo de filme segue exatamente como antes.
-        $titulos = ($temporada !== null && $episodio !== null)
-            ? $this->titulosDeEpisodio($titulo, $tituloOriginal, $temporada, $episodio)
-            : $this->titulosDeBusca($titulo, $tituloOriginal);
+        $episodioDeSerie = $temporada !== null && $episodio !== null;
 
-        if (empty($titulos)) {
-            return [];
+        /*
+         * A busca acontece em duas fases, e não numa lista única de títulos.
+         *
+         * A primeira fase pergunta pelo título traduzido — é o que os trackers
+         * brasileiros publicam, e é a aposta certa na maioria dos casos. A segunda
+         * fase, pelo título original, só entra quando a primeira não juntou PT-BR
+         * suficiente: aí a tradução falhou em achar o release nacional e vale
+         * tentar o nome internacional. Antes as duas fases eram uma lista só, e o
+         * título original era consultado sempre — o que gastava orçamento e
+         * poluía a lista com releases em inglês mesmo quando o dublado já tinha
+         * vindo. Quem decide a segunda fase é `valeSegundaTentativa()`.
+         */
+        $fasePtBr = $episodioDeSerie
+            ? $this->titulosDeEpisodio($titulo, $temporada, $episodio)
+            : $this->titulosDeBusca($titulo);
+
+        /*
+         * A cascata roda mesmo quando a lista de títulos vem vazia.
+         *
+         * Antes havia aqui um `return []` preventivo: sem termo, a busca era
+         * abortada antes de qualquer provedor ser consultado, e o usuário recebia
+         * "nenhuma fonte encontrada" sem que o Torrentio ou os indexadores
+         * tivessem sido ouvidos. Isso é errado por dois motivos. Primeiro, os
+         * provedores por identificador (Torrentio, addons Stremio) não dependem do
+         * termo — eles respondem pelo `imdb_id`, então uma lista de termos vazia
+         * não é motivo para não perguntar. Segundo, mesmo que a cascata volte
+         * vazia, o fallback de stream direto ainda tem o título original para
+         * trabalhar; abortar cedo matava essa última chance.
+         *
+         * A lista vazia é um caso legítimo (título em branco vindo do catálogo),
+         * não um erro que justifique desistir da busca inteira.
+         */
+        $fontes = $this->catalogo->buscar($fasePtBr, $ano, $imdbId, $temporada, $episodio);
+        $titulos = $fasePtBr;
+
+        if ($this->valeSegundaTentativa($fontes, $titulo, $tituloOriginal)) {
+            $faseOriginal = $episodioDeSerie
+                ? $this->titulosDeEpisodio($tituloOriginal, $temporada, $episodio)
+                : $this->titulosDeBusca($tituloOriginal);
+
+            if ($faseOriginal !== []) {
+                $fontes = $this->mesclarFontes(
+                    $fontes,
+                    $this->catalogo->buscar($faseOriginal, $ano, $imdbId, $temporada, $episodio)
+                );
+
+                $titulos = array_merge($titulos, $faseOriginal);
+            }
         }
 
-        $fontes = $this->ordenar(
-            $this->catalogo->buscar($titulos, $ano, $imdbId, $temporada, $episodio),
-            $temporada,
-            $episodio
-        );
+        $fontes = $this->ordenar($fontes, $temporada, $episodio);
+
+        /*
+         * Fallback final: stream direto.
+         *
+         * O gatilho mora aqui, e não dentro da cascata, porque só depois de
+         * `ordenar()` se sabe o que de fato sobrou. A cascata pode ter recebido
+         * dezenas de fontes do Torrentio e o corte de idioma ter descartado todas
+         * — para o usuário, isso é lista vazia, e é exatamente aí que o socorro do
+         * conteúdo raro vale. Checar a lista bruta, antes do filtro, acionaria o
+         * fallback mesmo quando metade do que veio ainda ia ser aproveitada.
+         *
+         * A lista chega vazia aqui em dois casos, e os dois pedem o fallback: a
+         * cascata não achou nada, ou achou só release sem áudio PT-BR — que o
+         * `ordenar()` descarta, porque original não é resposta para quem pediu
+         * português. Antes o `ordenar()` devolvia a reserva em inglês nesse
+         * segundo caso, e era isso que impedia o fallback de disparar: a lista
+         * nunca ficava vazia.
+         *
+         * As fontes diretas entram já montadas e não voltam por `ordenar()`: elas
+         * são o último recurso, e reordená-las junto com os torrents só as
+         * misturaria a uma lista que, por definição, está vazia.
+         */
+        if ($fontes === []) {
+            /*
+             * O fallback recebe o título traduzido e o original, mesmo que a
+             * segunda fase não tenha rodado. A cascata só consulta o original
+             * quando `valeSegundaTentativa()` manda, mas o scraper web não tem
+             * esse custo: ele pergunta pelo nome que achar mais provável, e o
+             * título original é justamente o que funciona para o conteúdo raro
+             * ("Desperate Housewives" acha o que "Donas de Casa Desesperadas"
+             * não acha). Sem isto, um título cuja tradução não rendeu termo
+             * nenhum chegaria ao fallback sem nenhuma pista.
+             */
+            $titulosDoFallback = $titulos;
+
+            $original = trim((string) $tituloOriginal);
+
+            if ($original !== '' && ! in_array($original, $titulosDoFallback, true)) {
+                $titulosDoFallback[] = $original;
+            }
+
+            Log::debug('Busca de torrents: lista pós-filtro vazia, acionando o fallback de stream direto.', [
+                'titulos' => $titulosDoFallback,
+                'temporada' => $temporada,
+                'episodio' => $episodio,
+            ]);
+
+            $fontes = $this->catalogo->buscarFallbackDireto($titulosDoFallback, $ano, $imdbId, $temporada, $episodio);
+
+            Log::debug('Busca de torrents: fallback de stream direto devolveu.', [
+                'fontes' => count($fontes),
+            ]);
+        }
 
         /*
          * O censo é contado dentro da cascata, antes da montagem final. Aqui ele é
@@ -110,39 +203,95 @@ class TorrentService
     }
 
     /**
+     * Diz se vale disparar a segunda fase, pelo título original.
+     *
+     * A segunda fase existe para o caso em que a tradução não acha o release
+     * nacional — "Homem-Aranha" devolve o desenho, "Spider-Man" devolve o filme.
+     * Mas ela custa orçamento e traz releases em inglês, então só entra quando a
+     * primeira fase ficou abaixo da meta PT-BR. Três portas fecham a passagem:
+     * a chave desligada, a ausência de um título original distinto e a coleta já
+     * suficiente. A leitura da suficiência é do catálogo, que conhece a meta.
+     *
+     * @param  array<int, array<string, mixed>>  $fontes
+     */
+    private function valeSegundaTentativa(array $fontes, string $titulo, ?string $tituloOriginal): bool
+    {
+        if (! config('services.torrents.titulo_original_segunda_tentativa', true)) {
+            return false;
+        }
+
+        $original = trim((string) $tituloOriginal);
+
+        if ($original === '' || $original === trim($titulo)) {
+            return false;
+        }
+
+        return ! $this->catalogo->ptBrSuficiente($fontes);
+    }
+
+    /**
+     * Junta as fontes das duas fases, sem repetir.
+     *
+     * A mesma fonte pode voltar nas duas buscas — um release nacional que casa
+     * tanto o título traduzido quanto o original. A chave é o `id` (o infohash),
+     * que é o que identifica o torrent de verdade; comparar por título deixaria
+     * passar duplicata com nome ligeiramente diferente. A primeira fase fica na
+     * frente: ela é a aposta PT-BR e deve manter a prioridade na ordenação.
+     *
+     * @param  array<int, array<string, mixed>>  $primeira
+     * @param  array<int, array<string, mixed>>  $segunda
+     * @return array<int, array<string, mixed>>
+     */
+    private function mesclarFontes(array $primeira, array $segunda): array
+    {
+        $vistos = [];
+
+        foreach ($primeira as $fonte) {
+            $vistos[(string) ($fonte['id'] ?? '')] = true;
+        }
+
+        foreach ($segunda as $fonte) {
+            $chave = (string) ($fonte['id'] ?? '');
+
+            if ($chave !== '' && isset($vistos[$chave])) {
+                continue;
+            }
+
+            $vistos[$chave] = true;
+            $primeira[] = $fonte;
+        }
+
+        return $primeira;
+    }
+
+    /**
      * Monta a lista de títulos a tentar, sem repetir.
      *
-     * O TMDB é consultado em PT-BR, então o título traduzido é o que os trackers
-     * brasileiros publicam. O título original entra como segunda tentativa porque
-     * algumas traduções ficam curtas demais para o buscador do site ("Homem-
-     * Aranha" devolve o desenho, "Spider-Man" devolve o filme).
+     * Recebe um título só porque a busca virou duas fases: o traduzido e o
+     * original são consultados em momentos diferentes, não numa lista única. O
+     * TMDB é consultado em PT-BR, então o título traduzido é o que os trackers
+     * brasileiros publicam; o original é a segunda tentativa, disparada por
+     * `valeSegundaTentativa()` quando a primeira não basta.
      *
      * @return array<int, string>
      */
-    private function titulosDeBusca(string $titulo, ?string $tituloOriginal): array
+    private function titulosDeBusca(string $titulo): array
     {
-        $titulos = [];
+        $titulo = trim($titulo);
 
-        foreach ([$titulo, $tituloOriginal] as $candidato) {
-            $candidato = trim((string) $candidato);
-
-            if ($candidato !== '' && ! in_array($candidato, $titulos, true)) {
-                $titulos[] = $candidato;
-            }
-        }
-
-        return $titulos;
+        return $titulo !== '' ? [$titulo] : [];
     }
 
     /**
      * Monta os termos de busca de um episódio, sem repetir.
      *
      * Cada episódio é um release próprio, então o termo precisa da numeração
-     * "SxxExx". Tentamos o título traduzido e o original, como na busca de filme,
-     * porque o tracker nacional publica pelo nome em PT-BR e os indexadores
-     * internacionais pelo original.
+     * "SxxExx". Recebe um título só porque a busca virou duas fases: o traduzido
+     * e o original são consultados em momentos diferentes, não numa lista única.
+     * O tracker nacional publica pelo nome em PT-BR e os indexadores
+     * internacionais pelo original — cada fase pergunta pelo seu.
      *
-     * Além do termo puro, cada título rende as variações dubladas
+     * Além do termo puro, o título rende as variações dubladas
      * ("... S01E01 dublado", "... S01E01 dual áudio"). Sem elas a cascata nunca
      * pergunta pelo release nacional: o termo puro devolve dezenas de lançamentos
      * em inglês e o dublado fica fora da primeira página dos provedores por nome.
@@ -157,19 +306,14 @@ class TorrentService
      */
     private function titulosDeEpisodio(
         string $titulo,
-        ?string $tituloOriginal,
         int $temporada,
         int $episodio,
     ): array {
         $titulos = [];
 
-        foreach ([$titulo, $tituloOriginal] as $candidato) {
-            $candidato = trim((string) $candidato);
+        $candidato = trim($titulo);
 
-            if ($candidato === '') {
-                continue;
-            }
-
+        if ($candidato !== '') {
             $termo = TermosBusca::episodio($candidato, $temporada, $episodio);
 
             if (! in_array($termo, $titulos, true)) {
@@ -191,23 +335,15 @@ class TorrentService
          * achou nada — que é exatamente o caso das séries antigas, cujos
          * episódios isolados já não têm seeds.
          */
-        if (config('services.torrents.packs_habilitados', true)) {
-            foreach ([$titulo, $tituloOriginal] as $candidato) {
-                $candidato = trim((string) $candidato);
+        if (config('services.torrents.packs_habilitados', true) && $candidato !== '') {
+            $packs = array_merge(
+                TermosBusca::packTemporada($candidato, $temporada),
+                TermosBusca::packTemporadaDublado($candidato, $temporada),
+            );
 
-                if ($candidato === '') {
-                    continue;
-                }
-
-                $packs = array_merge(
-                    TermosBusca::packTemporada($candidato, $temporada),
-                    TermosBusca::packTemporadaDublado($candidato, $temporada),
-                );
-
-                foreach ($packs as $pack) {
-                    if (! in_array($pack, $titulos, true)) {
-                        $titulos[] = $pack;
-                    }
+            foreach ($packs as $pack) {
+                if (! in_array($pack, $titulos, true)) {
+                    $titulos[] = $pack;
                 }
             }
         }
@@ -232,24 +368,16 @@ class TorrentService
          * episódio é o que deixa o pack nacional aparecer na busca em lote. O
          * parser interno valida o episódio e classifica o idioma depois.
          */
-        if (config('services.torrents.termos_serie_habilitados', true)) {
-            foreach ([$titulo, $tituloOriginal] as $candidato) {
-                $candidato = trim((string) $candidato);
-
-                if ($candidato === '') {
-                    continue;
+        if (config('services.torrents.termos_serie_habilitados', true) && $candidato !== '') {
+            foreach (TermosBusca::serieDublado($candidato, $temporada) as $serie) {
+                if (! in_array($serie, $titulos, true)) {
+                    $titulos[] = $serie;
                 }
+            }
 
-                foreach (TermosBusca::serieDublado($candidato, $temporada) as $serie) {
-                    if (! in_array($serie, $titulos, true)) {
-                        $titulos[] = $serie;
-                    }
-                }
-
-                foreach (TermosBusca::serieAmpla($candidato, $temporada) as $ampla) {
-                    if (! in_array($ampla, $titulos, true)) {
-                        $titulos[] = $ampla;
-                    }
+            foreach (TermosBusca::serieAmpla($candidato, $temporada) as $ampla) {
+                if (! in_array($ampla, $titulos, true)) {
+                    $titulos[] = $ampla;
                 }
             }
         }
@@ -289,6 +417,15 @@ class TorrentService
         $packsQualquerIdioma = (bool) config('services.torrents.packs_qualquer_idioma', true);
 
         $fontes = array_values(array_filter($fontes, function (array $fonte) use ($packsQualquerIdioma, $temporada, $episodio): bool {
+            /*
+             * A fonte direta (MP4/HLS) não tem magnet nem malha para medir: o
+             * filtro de torrent não se aplica a ela. O que a valida é ter uma URL
+             * de vídeo — sem ela, não há o que o media-service possa tocar.
+             */
+            if (($fonte['tipo'] ?? 'torrent') === 'direto') {
+                return ($fonte['stream'] ?? '') !== '';
+            }
+
             if (($fonte['seeds'] ?? 0) <= 0 || ($fonte['magnet'] ?? '') === '') {
                 return false;
             }
@@ -354,12 +491,17 @@ class TorrentService
          * O teto de fontes é um corte (`array_slice`), nunca uma cota a preencher
          * — se houver menos que ele, a lista sai menor e está correta assim.
          *
-         * O corte só vale se sobrar alguma fonte PT-BR. Sem nenhuma, ele é
-         * revertido e a reserva volta: uma lista vazia não é "só PT-BR", é o
-         * player sem nada para tentar. Nesse caso o sistema entrega o que existe,
-         * mesmo que seja legendado ou original.
+         * Sem nenhuma fonte PT-BR, a lista sai **vazia** — e não com a reserva.
+         * Antes, o corte era revertido e o original voltava para o player "não
+         * ficar sem nada"; o efeito colateral era o fallback de stream direto
+         * nunca disparar, porque a lista nunca ficava vazia. A reserva em inglês
+         * não é resposta para quem pediu português: o que resolve o conteúdo raro
+         * é o stream direto, e é o `TorrentService::fontes()` que o aciona logo
+         * depois, ao ver a lista vazia. A reserva só volta quando o corte está
+         * desligado (`somente_pt_br_ou_legendado = false`), aí sim o usuário
+         * aceita qualquer idioma.
          */
-        if ($somentePtBr && $ptBr !== []) {
+        if ($somentePtBr) {
             return array_slice($ptBr, 0, $limite);
         }
 
@@ -387,6 +529,9 @@ class TorrentService
             'bt4g' => 5,
             'torznab' => 6,
             'yts' => 7,
+            // O stream direto é o último recurso: só existe quando nenhum torrent
+            // sobreviveu, então fica atrás de todos na desempate por provedor.
+            'stream_direto' => 8,
         ];
     }
 
@@ -426,6 +571,13 @@ class TorrentService
             return true;
         }
 
+        /*
+         * A fonte direta não passa pelo gate da cascata, então não carrega a
+         * etiqueta `pt_br`. O idioma dela é deduzido do rótulo do agregador e
+         * basta para a montagem: sem esta leitura, um link direto dublado cairia
+         * na reserva e o corte de idioma o descartaria — justamente a fonte que o
+         * fallback achou para o conteúdo raro.
+         */
         return in_array(
             $fonte['idioma'] ?? '',
             [IdiomaFonte::DUBLADO->value, IdiomaFonte::DUAL_AUDIO->value],

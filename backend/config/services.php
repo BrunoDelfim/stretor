@@ -269,6 +269,111 @@ return [
         'cache_ttl' => (int) env('TORRENTS_CACHE_TTL', 1800),
 
         /*
+         * --- Fallback: stream direto (MP4/HLS) ---
+         *
+         * O último recurso para conteúdo antigo ou raro em PT-BR, onde os
+         * torrents já morreram. Quando a cascata inteira termina sem nenhuma
+         * fonte aproveitável, o [`ProvedorStreamDireto`] **raspa a web** atrás de
+         * um link de vídeo tocável (MP4 ou HLS) e devolve uma fonte com
+         * `tipo=direto` — o player a reproduz pelo media-service, que faz o
+         * proxy/remux, sem WebTorrent.
+         *
+         * A descoberta é autônoma: o provedor monta a query, consulta um motor de
+         * busca leve e extrai o vídeo do HTML das páginas. Não há mais dependência
+         * de uma API externa estática.
+         *
+         * É opt-in: desligado, o comportamento é exatamente o de antes e nenhuma
+         * requisição extra acontece.
+         */
+        'stream_direto_habilitado' => (bool) env('TORRENTS_STREAM_DIRETO_HABILITADO', false),
+
+        /*
+         * Motores de busca usados para resolver o termo em páginas candidatas,
+         * separados por vírgula. Com mais de um endereço, o provedor tenta o
+         * próximo quando o primeiro bloqueia ou devolve zero resultados — a busca
+         * degrada, não quebra.
+         *
+         * O padrão começa pelo **SearXNG**, e não pelo DuckDuckGo: o DDG passou a
+         * bloquear o IP dos containers com status 202 (rate limit/anti-bot) tanto
+         * no HTML quanto no Lite, e um motor que bloqueia não rende link nenhum.
+         * O SearXNG é um meta-buscador hospedado por terceiros, com cota própria,
+         * e devolve JSON limpo (`format=json`) — é o caminho que foge do bloqueio.
+         * O DDG fica como reserva, para quando a instância pública estiver fora.
+         *
+         * O tipo de cada motor é inferido do endereço (`searx` → SearXNG,
+         * `brave` → Brave, o resto → DuckDuckGo) ou forçado com o prefixo
+         * `tipo:url`. O endereço do SearXNG é só o endpoint de busca — a query
+         * (`q`) e o `format=json` são acrescentados na hora da requisição.
+         *
+         * As instâncias públicas vêm e vão; se uma cair, troque o endereço ou
+         * acrescente outra. O formato aceito é `https://instancia/search`.
+         */
+        'stream_direto_motores' => $lista(
+            env('TORRENTS_STREAM_DIRETO_MOTORES'),
+            [
+                'https://searx.be/search',
+                'https://html.duckduckgo.com/html/',
+                'https://lite.duckduckgo.com/lite/',
+            ]
+        ),
+
+        /*
+         * Chave da API oficial do Brave Search. Sem ela, um motor do tipo `brave`
+         * é descartado da lista antes de qualquer requisição — a API responde 401
+         * e o endereço só gastaria uma volta do laço.
+         */
+        'stream_direto_brave_key' => env('TORRENTS_STREAM_DIRETO_BRAVE_KEY', ''),
+
+        /*
+         * Termos de intenção de streaming, separados por vírgula. São colados ao
+         * título (e à numeração do episódio) para formar a query. "assistir
+         * online dublado" é o que os sites brasileiros usam no `<title>`;
+         * "legendado" entra como reserva. Vazio usa o padrão embutido.
+         */
+        'stream_direto_termos' => $lista(env('TORRENTS_STREAM_DIRETO_TERMOS'), []),
+
+        /*
+         * Teto de termos consultados por busca. Cada termo é uma requisição ao
+         * motor de busca, e o DDG bloqueia quem dispara em rajada: um episódio
+         * gera dezenas de termos (4 grafias de numeração × 5 intenções, mais as
+         * variações sem intenção e o título original), e consultar todos de uma
+         * vez é o caminho mais curto para o rate limit. O corte mantém os termos
+         * mais precisos — que são os primeiros da lista — e descarta a cauda.
+         */
+        'stream_direto_max_termos' => (int) env('TORRENTS_STREAM_DIRETO_MAX_TERMOS', 8),
+
+        /*
+         * Intervalo, em milissegundos, entre duas consultas ao motor de busca. O
+         * atraso é sorteado entre o mínimo e o máximo a cada consulta, para que a
+         * cadência não seja um relógio fixo — que também é padrão de bot. Zero
+         * desliga a espera (útil em teste).
+         */
+        'stream_direto_intervalo_min' => (int) env('TORRENTS_STREAM_DIRETO_INTERVALO_MIN', 800),
+        'stream_direto_intervalo_max' => (int) env('TORRENTS_STREAM_DIRETO_INTERVALO_MAX', 2200),
+
+        /*
+         * Teto de páginas abertas por busca. Cada página é uma requisição, e o
+         * fallback é socorro, não catálogo: uma vez que há links tocáveis, gastar
+         * o orçamento em mais páginas só atrasa a resposta.
+         */
+        'stream_direto_max_paginas' => (int) env('TORRENTS_STREAM_DIRETO_MAX_PAGINAS', 6),
+
+        /*
+         * Teto, em segundos, de cada requisição do fallback (motor de busca ou
+         * página de streaming). Curto de propósito: o fallback roda depois do
+         * orçamento principal e não pode empurrar a resposta além dos 60 s que o
+         * frontend espera.
+         */
+        'stream_direto_tempo_limite' => (int) env('TORRENTS_STREAM_DIRETO_TEMPO_LIMITE', 10),
+
+        /*
+         * Orçamento próprio do fallback, em segundos. É um relógio separado do
+         * `orcamento_busca` porque aquele já foi fechado quando o fallback
+         * começa — sem este, uma página lenta seguraria a resposta sem limite.
+         */
+        'stream_direto_orcamento' => (int) env('TORRENTS_STREAM_DIRETO_ORCAMENTO', 12),
+
+        /*
          * Bypass do cache de consultas aos provedores. Com isto ligado, a busca
          * ignora a **leitura** do cache e reconsulta o provedor; o resultado novo
          * é gravado por cima, então as chamadas seguintes já veem o valor fresco.
@@ -372,6 +477,19 @@ return [
          * restantes do degrau atual. Quem encerra é o orçamento.
          */
         'meta_pt_br_coleta' => (int) env('TORRENTS_META_PT_BR', 6),
+
+        /*
+         * Segunda tentativa pelo título original.
+         *
+         * A busca pergunta primeiro pelo título traduzido — é o que os trackers
+         * brasileiros publicam. Quando essa primeira fase não junta PT-BR
+         * suficiente, vale repetir a busca pelo título original: algumas
+         * traduções ficam curtas demais para o buscador do site ("Homem-Aranha"
+         * devolve o desenho, "Spider-Man" devolve o filme). Desligada, a busca
+         * fica só com o título traduzido e economiza orçamento — ao custo de
+         * perder o release que só aparece pelo nome internacional.
+         */
+        'titulo_original_segunda_tentativa' => (bool) env('TORRENTS_TITULO_ORIGINAL_SEGUNDA_TENTATIVA', true),
 
         /*
          * Buscar em todos os provedores, sem encerrar na primeira meta atingida.

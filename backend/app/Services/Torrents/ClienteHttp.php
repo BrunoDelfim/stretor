@@ -80,10 +80,16 @@ class ClienteHttp
     /**
      * Faz um GET, tentando direto e caindo para o FlareSolverr em caso de bloqueio.
      *
-     * @param  array<string, mixed>  $consulta  Parâmetros de query string
+     * @param  array<string, mixed>  $consulta   Parâmetros de query string
+     * @param  array<string, string>  $cabecalhos  Cabeçalhos extras (ex.: a chave da API do Brave)
      */
-    public function get(string $url, array $consulta = [], ?string $userAgent = null, ?int $timeout = null): ?Response
-    {
+    public function get(
+        string $url,
+        array $consulta = [],
+        ?string $userAgent = null,
+        ?int $timeout = null,
+        array $cabecalhos = [],
+    ): ?Response {
         $timeout = $this->tempoDisponivel($timeout ?? (int) config('services.torrents.tempo_limite', 15));
 
         /*
@@ -95,7 +101,7 @@ class ClienteHttp
             return null;
         }
 
-        $direta = $this->tentarDireto($url, $consulta, $userAgent, $timeout);
+        $direta = $this->tentarDireto($url, $consulta, $userAgent, $timeout, $cabecalhos);
 
         if ($direta !== null && ! $this->pareceBloqueio($direta)) {
             return $direta;
@@ -202,11 +208,17 @@ class ClienteHttp
      * quem chamou decide o que fazer (normalmente, tentar o proxy).
      *
      * @param  array<string, mixed>  $consulta
+     * @param  array<string, string>  $cabecalhos
      */
-    private function tentarDireto(string $url, array $consulta, ?string $userAgent, int $timeout): ?Response
-    {
+    private function tentarDireto(
+        string $url,
+        array $consulta,
+        ?string $userAgent,
+        int $timeout,
+        array $cabecalhos = [],
+    ): ?Response {
         try {
-            return $this->requisicao($userAgent, $timeout)->get($url, $consulta);
+            return $this->requisicao($userAgent, $timeout, $cabecalhos)->get($url, $consulta);
         } catch (\Throwable) {
             return null;
         }
@@ -227,8 +239,10 @@ class ClienteHttp
     /**
      * Monta a requisição base, com o User-Agent de navegador que os trackers
      * exigem — sem ele, vários respondem 403 antes mesmo de olhar o conteúdo.
+     *
+     * @param  array<string, string>  $cabecalhos  Cabeçalhos extras, mesclados por cima dos de navegador
      */
-    private function requisicao(?string $userAgent, int $timeout): PendingRequest
+    private function requisicao(?string $userAgent, int $timeout, array $cabecalhos = []): PendingRequest
     {
         /*
          * O `connectTimeout` corta a fase de conexão, que o `timeout()` não
@@ -238,9 +252,35 @@ class ClienteHttp
          * inteiro.
          */
         return Http::withUserAgent($userAgent ?? $this->navegador())
+            ->withHeaders(array_merge($this->cabecalhosDeNavegador(), $cabecalhos))
             ->connectTimeout(max(1, min(3, $timeout)))
             ->timeout($timeout)
             ->withOptions(['allow_redirects' => ['max' => 5]]);
+    }
+
+    /**
+     * Cabeçalhos que um navegador comum manda e um cliente HTTP cru não.
+     *
+     * O User-Agent sozinho não basta: filtros anti-bot cruzam o agente com os
+     * cabeçalhos de aceitação. Um `Accept-Language` ausente, ou um `Accept`
+     * genérico, denuncia o robô mesmo com o agente certo. O `pt-BR` também tem
+     * efeito prático: o DDG devolve resultados na variante brasileira, que é o
+     * que o fallback procura.
+     *
+     * @return array<string, string>
+     */
+    private function cabecalhosDeNavegador(): array
+    {
+        return [
+            'Accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language' => 'pt-BR,pt;q=0.9,en;q=0.8',
+            'Cache-Control' => 'no-cache',
+            'Pragma' => 'no-cache',
+            'Sec-Fetch-Dest' => 'document',
+            'Sec-Fetch-Mode' => 'navigate',
+            'Sec-Fetch-Site' => 'none',
+            'Upgrade-Insecure-Requests' => '1',
+        ];
     }
 
     /**

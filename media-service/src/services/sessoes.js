@@ -335,6 +335,206 @@ export function criarSessao({ magnet, filmeId, temporada = null, episodio = null
   return { sessao_id: id, status: sessao.status }
 }
 
+/**
+ * Extensões de vídeo que o provedor direto pode entregar.
+ *
+ * Diferente do torrent, aqui não há malha nem escolha de arquivo: a URL já
+ * aponta para o vídeo. A extensão serve só para decidir como o FFmpeg lê a
+ * entrada — um `.m3u8` é uma playlist HLS (o FFmpeg a segue sozinho) e os
+ * demais são arquivos progressivos.
+ */
+const EXTENSOES_DIRETAS = ['.mp4', '.m4v', '.webm', '.mkv', '.mov', '.m3u8', '.mpd']
+
+/**
+ * Cria uma sessão de reprodução a partir de um link direto (MP4/HLS).
+ *
+ * É o caminho de socorro para conteúdo raro: quando a cascata de torrents não
+ * devolve nenhuma fonte viva, o backend oferece uma URL de streaming direto e o
+ * media-service a converte para HLS do mesmo jeito que faria com um torrent. O
+ * player não precisa saber a diferença — consome a mesma playlist.
+ *
+ * A diferença de fundo é que não há download em malha: o FFmpeg lê a URL
+ * remota diretamente (arquivo progressivo) ou segue a playlist HLS de origem.
+ * Por isso não há janela de leitura, nem seleção de pedaços, nem espera por
+ * peers — o gargalo passa a ser a banda do servidor de origem.
+ *
+ * @param {object} opcoes
+ * @param {string} opcoes.url URL do vídeo direto (MP4, HLS, etc.)
+ * @param {number|string} opcoes.filmeId identificador do filme (para log)
+ * @param {number|string} [opcoes.temporada] temporada, no fluxo de série
+ * @param {number|string} [opcoes.episodio] episódio, no fluxo de série
+ * @returns {{sessao_id: string, status: string}}
+ */
+export function criarSessaoDireta({ url, filmeId, temporada = null, episodio = null }) {
+  const id = uuid()
+  const diretorio = path.join(os.tmpdir(), `stretor-${id}`)
+
+  const numeroTemporada = Number.parseInt(temporada, 10)
+  const numeroEpisodio = Number.parseInt(episodio, 10)
+  const temEpisodio = Number.isInteger(numeroTemporada) && numeroTemporada > 0
+    && Number.isInteger(numeroEpisodio) && numeroEpisodio > 0
+
+  const sessao = {
+    id,
+    filmeId,
+    // Guardamos a URL no mesmo campo do magnet para o encerramento e o log
+    // seguirem um caminho só; `tipo` é quem distingue os dois fluxos.
+    magnet: url,
+    tipo: 'direto',
+    url,
+    temporada: temEpisodio ? numeroTemporada : null,
+    episodio: temEpisodio ? numeroEpisodio : null,
+    status: 'conectando',
+    mensagem: 'Conectando à fonte direta...',
+    diretorio,
+    torrent: null,
+    comando: null,
+    fluxo: null,
+    playlist: null,
+    erro: null,
+    motivo: null,
+    progresso: null,
+    download: null,
+    duracao: null,
+    idiomaAudio: null,
+    idiomaAudioRotulo: null,
+    idiomasAudio: [],
+    posicaoLeitura: 0,
+    contador: null,
+    janela: null,
+    cancelada: false,
+    criadaEm: Date.now(),
+  }
+
+  sessoes.set(id, sessao)
+
+  prepararSessaoDireta(sessao).catch((erro) => {
+    if (erro instanceof SessaoCancelada || sessao.cancelada) {
+      logger.info(`[sessao ${id}] preparo direto interrompido: a sessão foi encerrada`)
+      return
+    }
+
+    logger.error(`[sessao ${id}] falha ao preparar fonte direta:`, erro.message)
+    sessao.status = 'erro'
+    sessao.erro = erro.message
+    sessao.motivo = erro.motivo ?? null
+  })
+
+  return { sessao_id: id, status: sessao.status }
+}
+
+/**
+ * Prepara uma sessão de fonte direta: sonda a URL e converte para HLS.
+ *
+ * O FFmpeg aceita a URL como entrada e cuida do resto — num MP4 progressivo ele
+ * faz requisições HTTP com `Range` para buscar o índice e as amostras; num HLS
+ * ele baixa a playlist e os segmentos. Não precisamos baixar o arquivo inteiro
+ * antes: a conversão publica os segmentos conforme os bytes chegam, exatamente
+ * como no caminho do torrent.
+ *
+ * A sondagem (`ffprobe`) também aceita URL, mas é frágil em servidores que não
+ * respondem a `Range` ou que exigem cabeçalhos específicos. Por isso a análise
+ * aqui é tolerante: se o ffprobe falhar, seguimos com um modo conservador
+ * (`video`, que transcodifica) em vez de derrubar a sessão — o FFmpeg ainda
+ * pode conseguir ler o que o ffprobe não conseguiu.
+ */
+async function prepararSessaoDireta(sessao) {
+  const extensao = extensaoDaUrl(sessao.url)
+
+  if (!EXTENSOES_DIRETAS.includes(extensao)) {
+    throw erroDaFonte(
+      'formato_desconhecido',
+      `O link direto não aponta para um formato de vídeo reconhecido (${extensao || 'sem extensão'}).`
+    )
+  }
+
+  sessao.status = 'aguardando'
+  sessao.mensagem = 'Lendo o cabeçalho da fonte...'
+
+  /*
+   * A análise é o único ponto que pode falhar sem condenar a sessão. Um
+   * servidor que não responde ao ffprobe ainda pode ser lido pelo FFmpeg, então
+   * tratamos a falha como "não sei" e caímos no modo mais seguro.
+   */
+  let analise = null
+
+  try {
+    analise = await analisarArquivo(sessao.url)
+  } catch (erro) {
+    logger.warn(
+      `[sessao ${sessao.id}] ffprobe não leu a fonte direta (${erro.message}); seguindo com transcodificação`
+    )
+  }
+
+  conferirSessao(sessao)
+
+  const modo = analise?.modo ?? 'video'
+
+  sessao.duracao = analise?.duracao ?? null
+  sessao.idiomasAudio = analise?.idiomasAudio ?? []
+  sessao.idiomaAudio = analise?.idiomaAudio ?? null
+  sessao.idiomaAudioRotulo = analise?.idiomaAudioRotulo ?? null
+  sessao.temAudioPortugues = sessao.idiomasAudio.length
+    ? temFaixaPortuguesa(sessao.idiomasAudio)
+    : null
+
+  sessao.status = 'convertendo'
+  sessao.mensagem = mensagemDoModo(modo)
+  sessao.modo = modo
+  sessao.tempoBase = 0
+  sessao.indiceAudio = analise?.indiceAudio ?? null
+
+  logger.info(
+    `[sessao ${sessao.id}] fonte direta modo=${modo} video=${analise?.videoCodec ?? '?'} audio=${analise?.audioCodec ?? '?'} duracao=${sessao.duracao ?? '?'} url=${sessao.url}`
+  )
+
+  /*
+   * O FFmpeg lê a URL diretamente. Passamos `caminho` (e não `fluxo`) porque a
+   * entrada remota é buscável: o FFmpeg consegue voltar para o `moov` no fim de
+   * um MP4 sem faststart, o que um pipe não permitiria.
+   */
+  registrarConversao(
+    sessao,
+    iniciarConversao({
+      caminho: sessao.url,
+      extensao,
+      diretorio: sessao.diretorio,
+      modo,
+      duracaoEsperada: sessao.duracao,
+      indiceAudio: sessao.indiceAudio,
+      aoProgredir: (progresso) => {
+        sessao.progresso = progresso
+      },
+    })
+  )
+
+  await aguardarBufferInicial(sessao.diretorio)
+  conferirSessao(sessao)
+
+  registrarDiagnostico(sessao)
+
+  sessao.status = 'pronto'
+  sessao.mensagem = 'Pronto para reproduzir'
+  sessao.playlist = path.join(sessao.diretorio, 'playlist.m3u8')
+}
+
+/**
+ * Extrai a extensão de uma URL, ignorando a query string.
+ *
+ * Uma URL de streaming costuma carregar token e parâmetros depois do `?`
+ * (`.../video.mp4?token=abc`), e `path.extname` os incluiria no resultado. O
+ * caminho é isolado antes para que a extensão saia limpa.
+ */
+function extensaoDaUrl(url) {
+  try {
+    const caminho = new URL(url).pathname
+    return path.extname(caminho).toLowerCase()
+  } catch {
+    // URL malformada: cai no extname cru, que ao menos tenta algo.
+    return path.extname(String(url).split('?')[0]).toLowerCase()
+  }
+}
+
 /** Converte bytes para MB — só para deixar o log legível. */
 function emMB(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`

@@ -26,5 +26,11 @@
         <env name="QUEUE_CONNECTION" value="sync"/>
         <env name="SESSION_DRIVER" value="array"/>
         <env name="TELESCOPE_ENABLED" value="false"/>
+        <!--
+            O fallback de stream direto nasce desligado. Fixar a chave aqui impede
+            que o `.env` de quem ligou o provedor para testar o fallback faça o
+            teste do padrão quebrar.
+        -->
+        <env name="TORRENTS_STREAM_DIRETO_HABILITADO" value="false"/>
     </php>
 </phpunit>

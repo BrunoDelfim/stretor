@@ -1514,9 +1514,16 @@ async function tentarFontes(fontes, minhaGeracao, minhaAbertura, filme) {
     estado.value = 'tentando'
     mensagem.value = `Tentando fonte ${indice + 1} de ${fontes.length}...`
 
-    // Provedor de origem + idioma detectado (ex.: "Indexador (Torznab) · Dublado").
+    /*
+     * Provedor de origem + idioma detectado (ex.: "Indexador (Torznab) · Dublado").
+     * Numa fonte direta acrescentamos o rótulo "Link direto" para o usuário
+     * entender que aquele caminho não é um torrent — é o socorro que só entra
+     * quando a malha falhou.
+     */
+    const rotuloOrigem = fonte.tipo === 'direto' ? 'Link direto' : null
+
     rotuloFonte.value =
-      [fonte.provedor_rotulo, fonte.idioma_rotulo].filter(Boolean).join(' · ') || null
+      [fonte.provedor_rotulo, rotuloOrigem, fonte.idioma_rotulo].filter(Boolean).join(' · ') || null
 
     try {
       /*
@@ -1525,13 +1532,24 @@ async function tentarFontes(fontes, minhaGeracao, minhaAbertura, filme) {
        * misturava os episódios: quando a busca do episódio 2 demorava e o
        * usuário fechava e reabria, o loop antigo (ainda vivo) passava a ler a
        * prop já trocada e criava sessões com a numeração do episódio errado.
+       *
+       * A fonte direta não tem magnet: ela carrega uma URL de vídeo e o
+       * media-service a converte para HLS pelo endpoint próprio. O resto do
+       * acompanhamento é idêntico — o overlay nem precisa saber a diferença.
        */
-      const sessao = await streamingService.criarSessao(
-        fonte.magnet,
-        filme.id,
-        filme.temporada,
-        filme.episodio
-      )
+      const sessao = fonte.tipo === 'direto'
+        ? await streamingService.criarSessaoDireta(
+          fonte.stream,
+          filme.id,
+          filme.temporada,
+          filme.episodio
+        )
+        : await streamingService.criarSessao(
+          fonte.magnet,
+          filme.id,
+          filme.temporada,
+          filme.episodio
+        )
 
       if (cancelado || minhaAbertura !== abertura) return
 

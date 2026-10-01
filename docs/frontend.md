@@ -97,6 +97,18 @@ com uma troca de série.
   episódio com capa, número, título, sinopse, nota e duração, além do skeleton de
   carregamento.
 
+#### A arte da série cobre o episódio sem imagem
+
+O TMDB nem sempre tem o `still` do episódio — séries antigas e episódios
+recém-anunciados costumam vir sem. Antes, a linha caía na moldura cinza vazia.
+Agora o [`SerieModal.vue`](../frontend/src/components/SerieModal.vue:1) calcula
+`arteDaSerie` (a capa da série e, na falta dela, o backdrop) e a repassa à lista
+pela prop `capa-serie`. O
+[`ListaEpisodios.vue`](../frontend/src/components/ListaEpisodios.vue:1) resolve a
+imagem com `imagemDoEpisodio()`: usa a capa do episódio quando existe e, senão,
+repete a arte da série. A linha continua clicável e mantém a identidade visual em
+vez de um retângulo vazio.
+
 O botão de play do episódio emite a série com `temporada` e `episodio` anexados.
 O [`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:1) repassa
 esses campos na busca de fontes, e o backend monta o termo `Titulo S01E02`. O

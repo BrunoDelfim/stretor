@@ -7,6 +7,7 @@ import { v4 as uuid } from 'uuid'
 import { probeMedia, transcodeVideo, extractAudio } from '../services/ffmpeg.js'
 import {
   criarSessao,
+  criarSessaoDireta,
   obterSessao,
   encerrarSessao,
   caminhoPlaylist,
@@ -70,6 +71,33 @@ router.post('/sessao', (req, res, next) => {
     // `temporada`/`episodio` só vêm no fluxo de série; no filme ficam undefined
     // e a sessão segue sem eles, escolhendo o maior vídeo do torrent.
     const sessao = criarSessao({ magnet, filmeId, temporada, episodio })
+
+    res.status(202).json(sessao)
+  } catch (err) {
+    next(err)
+  }
+})
+
+/**
+ * Cria uma sessão de reprodução a partir de um link direto (MP4/HLS).
+ *
+ * É o caminho de socorro do conteúdo raro: quando a cascata de torrents não
+ * devolve nenhuma fonte viva, o backend oferece uma URL de streaming direto e o
+ * media-service a converte para HLS do mesmo jeito que faria com um torrent. O
+ * player consome a mesma playlist e não precisa saber de onde veio.
+ *
+ * Como no `/sessao`, respondemos na hora com o id: a leitura da URL remota e a
+ * conversão seguem em segundo plano, e o frontend acompanha pelo status.
+ */
+router.post('/sessao-direta', (req, res, next) => {
+  try {
+    const { url, filme_id: filmeId, temporada, episodio } = req.body ?? {}
+
+    if (!url) {
+      return res.status(400).json({ error: 'O campo "url" é obrigatório.' })
+    }
+
+    const sessao = criarSessaoDireta({ url, filmeId, temporada, episodio })
 
     res.status(202).json(sessao)
   } catch (err) {

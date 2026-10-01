@@ -62,6 +62,7 @@ trait NormalizaFonte
 
         return [
             'id' => $id,
+            'tipo' => 'torrent',
             'titulo' => $titulo,
             'qualidade' => $this->deduzirQualidade($titulo),
             'idioma' => $idioma->value,
@@ -70,6 +71,62 @@ trait NormalizaFonte
             'seeds' => (int) ($dados['seeds'] ?? 0),
             'peers' => (int) ($dados['peers'] ?? 0),
             'magnet' => $magnet,
+            'stream' => '',
+            'provedor' => $provedor,
+            'provedor_rotulo' => $rotuloProvedor,
+        ];
+    }
+
+    /**
+     * Monta uma fonte de **stream direto** (MP4/HLS) no mesmo contrato do frontend.
+     *
+     * É o irmão de [`montarFonte()`] para o fallback de conteúdo raro: quando os
+     * torrents morreram, o provedor direto entrega uma URL tocável em vez de um
+     * magnet. O contrato é o mesmo — o player só olha o campo `tipo` para saber
+     * qual caminho seguir —, mas os campos que só fazem sentido para torrent
+     * (`magnet`, `seeds`, `peers`) saem vazios ou zerados de propósito.
+     *
+     * O `seeds` recebe o piso [`SEEDS_NAO_MEDIDOS`] em vez de zero: a montagem
+     * final descarta fonte com `seeds <= 0`, e um link direto não tem malha para
+     * medir. Zerá-lo faria a própria fonte que o fallback acabou de achar ser
+     * jogada fora no último filtro.
+     *
+     * @param  array<string, mixed>  $dados  Campos crus do provedor (`url`, `titulo`, `idioma`...)
+     */
+    protected function montarFonteDireta(array $dados, string $provedor, string $rotuloProvedor): array
+    {
+        $titulo = $this->limparTexto((string) ($dados['titulo'] ?? ''));
+        $url = trim((string) ($dados['url'] ?? ''));
+
+        $textoIdioma = (string) ($dados['idioma_titulo'] ?? $titulo);
+
+        $idioma = IdiomaFonte::deduzirDoIdioma((string) ($dados['idioma'] ?? ''))
+            ?? IdiomaFonte::deduzirDoTitulo($textoIdioma);
+
+        /*
+         * O `id` de uma fonte direta não tem infohash para derivar. Usamos o
+         * próprio endereço como semente: o md5 da URL é estável e único, e é o
+         * que permite deduplicar o mesmo link devolvido por duas fontes de
+         * descoberta diferentes sem confundir links distintos.
+         */
+        $id = trim((string) ($dados['id'] ?? ''));
+
+        if ($id === '') {
+            $id = $url !== '' ? md5($url) : '';
+        }
+
+        return [
+            'id' => $id,
+            'tipo' => 'direto',
+            'titulo' => $titulo,
+            'qualidade' => $this->deduzirQualidade($titulo),
+            'idioma' => $idioma->value,
+            'idioma_rotulo' => $idioma->rotulo(),
+            'tamanho' => $this->formatarTamanho($dados['tamanho_bytes'] ?? null),
+            'seeds' => (int) ($dados['seeds'] ?? self::SEEDS_NAO_MEDIDOS),
+            'peers' => (int) ($dados['peers'] ?? 0),
+            'magnet' => '',
+            'stream' => $url,
             'provedor' => $provedor,
             'provedor_rotulo' => $rotuloProvedor,
         ];

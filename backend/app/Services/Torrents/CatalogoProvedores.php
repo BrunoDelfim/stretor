@@ -157,6 +157,16 @@ class CatalogoProvedores
      */
     private bool $avisouPrazo = false;
 
+    /**
+     * Provedor de stream direto — o fallback de conteúdo raro.
+     *
+     * Fica fora dos degraus de propósito: não é consultado junto com os torrents,
+     * e sim depois que a cascata inteira termina sem fonte aproveitável. Guardado
+     * como propriedade (e não só no registro) porque o gatilho do fallback precisa
+     * chamá-lo diretamente, sem passar pelo laço de grupos.
+     */
+    private ProvedorStreamDireto $streamDireto;
+
     public function __construct(
         ProvedorTrackersBr $trackersBr,
         ProvedorApibay $apibay,
@@ -168,17 +178,21 @@ class CatalogoProvedores
         private readonly ProvedorYts $yts,
         private readonly InspecaoPack $inspecao,
         private readonly OrcamentoBusca $orcamento,
+        ProvedorStreamDireto $streamDireto,
     ) {
         $this->primarios = [$trackersBr, $apibay, $knaben, $bt4g];
         $this->porIdentificador = [$torrentio, $addonStremio];
+        $this->streamDireto = $streamDireto;
 
         // A ordem do relatório é a ordem da cascata: os por identificador abrem, os
-        // por nome seguem e o indexador com o YTS fecham os degraus.
+        // por nome seguem, o indexador com o YTS fecham os degraus e o stream direto
+        // fica por último — é o único que só entra quando todos os outros falharam.
         $this->registro = [
             ...$this->porIdentificador,
             ...$this->primarios,
             $this->torznab,
             $this->yts,
+            $this->streamDireto,
         ];
 
         $this->reiniciarCenso();
@@ -430,6 +444,131 @@ class CatalogoProvedores
         }
 
         return $this->encerrar($fontes, $titulos, $temporada, $episodio);
+    }
+
+    /**
+     * Aciona o provedor de stream direto e devolve o que ele achar.
+     *
+     * Este é o socorro do conteúdo raro, e ele **não** mora dentro da cascata: a
+     * cascata devolve o que os torrents deram, e quem decide se o fallback entra é
+     * o [`TorrentService`], depois de `ordenar()` — porque só lá se sabe o que
+     * sobrou de fato. A cascata pode ter recebido dezenas de fontes do Torrentio e
+     * descartado todas no filtro de idioma; para o usuário, isso é lista vazia, e é
+     * aí que o stream direto vale. Disparar aqui dentro, com a lista bruta, daria
+     * fallback até quando o filtro ainda ia aproveitar metade do que veio.
+     *
+     * Roda com orçamento próprio: o relógio global da cascata já foi fechado (ou
+     * está prestes a ser), e reaproveitá-lo faria o fallback nascer sem tempo. O
+     * teto é curto de propósito — o fallback acontece depois de a cascata inteira
+     * ter gastado o orçamento dela, e a resposta ainda precisa caber nos 60 s do
+     * frontend.
+     *
+     * O censo do provedor é preenchido à mão porque ele não passa pelo
+     * `buscarGrupo()`: sem isto, o relatório o mostraria como `nao_consultado`
+     * mesmo tendo sido a única fonte da busca.
+     *
+     * @param  array<int, string>  $titulos
+     * @return array<int, array<string, mixed>>
+     */
+    public function buscarFallbackDireto(
+        array $titulos,
+        ?int $ano,
+        ?string $imdbId,
+        ?int $temporada,
+        ?int $episodio,
+    ): array {
+        $id = $this->streamDireto->identificador();
+
+        /*
+         * O rastreio começa aqui, antes de qualquer desistência. Sem este log, um
+         * fallback que não roda é indistinguível de um fallback que rodou e não
+         * achou nada: os dois terminam com a lista vazia e o mesmo aviso no
+         * frontend. Registrar a entrada e cada motivo de saída antecipada é o que
+         * permite responder "por que o stream direto não foi consultado?".
+         */
+        Log::debug('Stream direto: fallback acionado.', [
+            'provedor' => $id,
+            'titulos' => $titulos,
+            'ano' => $ano,
+            'imdb_id' => $imdbId,
+            'temporada' => $temporada,
+            'episodio' => $episodio,
+        ]);
+
+        if (! $this->streamDireto->disponivel()) {
+            $this->censo[$id]['disponivel'] = false;
+
+            Log::info('Stream direto: fallback desligado, provedor não consultado.', [
+                'provedor' => $id,
+                'chave' => 'TORRENTS_STREAM_DIRETO_HABILITADO',
+            ]);
+
+            return [];
+        }
+
+        $titulo = $titulos[0] ?? '';
+
+        if (trim($titulo) === '') {
+            Log::info('Stream direto: fallback sem título para buscar, provedor não consultado.', [
+                'provedor' => $id,
+            ]);
+
+            return [];
+        }
+
+        $inicio = microtime(true);
+
+        $this->orcamento->abrir((int) config('services.torrents.stream_direto_orcamento', 12));
+
+        try {
+            /*
+             * Passamos a lista inteira de títulos, e não só o primeiro: o scraper
+             * usa as variações (tipicamente o título original) como rede de
+             * segurança quando o acervo PT-BR não tem página nenhuma.
+             */
+            $fontes = $this->streamDireto->buscarComTitulos($titulos, $ano, $imdbId, $temporada, $episodio);
+        } catch (\Throwable $excecao) {
+            $this->censo[$id]['erros']++;
+            $this->censo[$id]['consultas']++;
+
+            Log::warning('Falha no provedor de stream direto.', [
+                'provedor' => $id,
+                'erro' => $excecao->getMessage(),
+            ]);
+
+            $fontes = [];
+        } finally {
+            $this->orcamento->fechar();
+        }
+
+        $this->censo[$id]['consultas']++;
+        $this->censo[$id]['ms'] += (int) round((microtime(true) - $inicio) * 1000);
+        $this->censo[$id]['brutas'] += count($fontes);
+
+        Log::debug('Stream direto: fallback concluído.', [
+            'provedor' => $id,
+            'fontes' => count($fontes),
+            'ms' => (int) round((microtime(true) - $inicio) * 1000),
+        ]);
+
+        /*
+         * As fontes diretas não passam pelo gate de temporada — não têm numeração
+         * de release para provar nada. A marcação de `pt_br` é feita aqui, pelo
+         * idioma deduzido, para a montagem final tratá-las como qualquer outra.
+         */
+        foreach ($fontes as &$fonte) {
+            $fonte['pt_br'] = in_array(
+                $fonte['idioma'] ?? '',
+                [IdiomaFonte::DUBLADO->value, IdiomaFonte::DUAL_AUDIO->value],
+                true
+            );
+        }
+
+        unset($fonte);
+
+        $this->contabilizarAproveitadas($fontes);
+
+        return $fontes;
     }
 
     /**
@@ -728,6 +867,21 @@ class CatalogoProvedores
         }
 
         return false;
+    }
+
+    /**
+     * Diz se a lista já juntou PT-BR suficiente para dispensar a segunda fase.
+     *
+     * É a leitura pública do mesmo critério que encerra a cascata
+     * (`coletaSuficiente()`). O [`TorrentService`] a usa para decidir se vale
+     * repetir a busca pelo título original: quando a primeira fase já bateu a
+     * meta PT-BR, a segunda só gastaria orçamento e traria releases em inglês.
+     *
+     * @param  array<int, array<string, mixed>>  $fontes
+     */
+    public function ptBrSuficiente(array $fontes): bool
+    {
+        return $this->coletaSuficiente($fontes);
     }
 
     /**

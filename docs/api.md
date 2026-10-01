@@ -115,6 +115,22 @@ PT-BR primeiro e, dentro do idioma, as fontes com mais seeds. Como dificilmente
 o filme terá fonte dublada logo na primeira tentativa, o frontend percorre a
 lista inteira até encontrar uma que conecte.
 
+A busca acontece em **duas fases**. A primeira pergunta pelo título traduzido —
+é o que os trackers brasileiros publicam. Só quando essa fase não junta PT-BR
+suficiente (a meta de `TORRENTS_META_PT_BR`) o serviço repete a busca pelo título
+original: algumas traduções ficam curtas demais para o buscador do site
+("Homem-Aranha" devolve o desenho, "Spider-Man" devolve o filme). As fontes das
+duas fases são fundidas sem duplicar (a chave é o infohash). A chave
+`TORRENTS_TITULO_ORIGINAL_SEGUNDA_TENTATIVA` desliga a segunda fase.
+
+A busca acontece em **duas fases**. A primeira pergunta pelo título traduzido —
+é o que os trackers brasileiros publicam. Só quando essa fase não junta PT-BR
+suficiente (a meta de `TORRENTS_META_PT_BR`) o serviço repete a busca pelo título
+original: algumas traduções ficam curtas demais para o buscador do site
+("Homem-Aranha" devolve o desenho, "Spider-Man" devolve o filme). As fontes das
+duas fases são fundidas sem duplicar (a chave é o infohash). A chave
+`TORRENTS_TITULO_ORIGINAL_SEGUNDA_TENTATIVA` desliga a segunda fase.
+
 ```json
 {
   "data": {

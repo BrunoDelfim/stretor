@@ -9,7 +9,7 @@ import SkeletonBlock from '@/components/SkeletonBlock.vue'
  * escolhido para o modal, que abre o player com a temporada e o episódio
  * corretos — é isso que faz a busca de fontes montar o termo "SxxExx".
  */
-defineProps({
+const props = defineProps({
   /** Episódios normalizados pelo backend. */
   episodios: {
     type: Array,
@@ -20,12 +20,30 @@ defineProps({
     type: Boolean,
     default: false,
   },
+  /**
+   * Arte da série, usada como reserva quando o episódio não tem imagem própria.
+   *
+   * O TMDB nem sempre tem o `still` do episódio — séries antigas e episódios
+   * recém-anunciados costumam vir sem. Repetir a arte da série é melhor que a
+   * moldura cinza vazia: mantém a identidade visual e a linha continua clicável.
+   */
+  capaSerie: {
+    type: String,
+    default: null,
+  },
 })
 
 const emit = defineEmits(['assistir'])
 
 function assistir(episodio) {
   emit('assistir', episodio)
+}
+
+/**
+ * Resolve a imagem da linha: a do episódio quando existe, senão a da série.
+ */
+function imagemDoEpisodio(episodio) {
+  return episodio.capa || props.capaSerie || null
 }
 </script>
 
@@ -63,8 +81,8 @@ function assistir(episodio) {
           @click="assistir(episodio)"
         >
           <img
-            v-if="episodio.capa"
-            :src="episodio.capa"
+            v-if="imagemDoEpisodio(episodio)"
+            :src="imagemDoEpisodio(episodio)"
             :alt="episodio.titulo"
             class="h-full w-full object-cover"
             loading="lazy"

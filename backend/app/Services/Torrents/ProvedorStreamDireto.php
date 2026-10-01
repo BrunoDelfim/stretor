@@ -1,0 +1,356 @@
+<?php
+
+namespace App\Services\Torrents;
+
+use App\Contracts\ProvedorTorrents;
+use Illuminate\Support\Facades\Log;
+
+/**
+ * Provedor de stream direto — o scraper web do conteúdo raro.
+ *
+ * A cascata inteira existe para achar um magnet com peers. Quando ela termina
+ * vazia, é porque o release simplesmente não tem mais ninguém semeando: o filme
+ * antigo, o episódio dublado que só um tracker morto tinha. Para esse caso, este
+ * provedor troca a estratégia — em vez de procurar um torrent, ele **raspa a
+ * web** atrás de um link de vídeo tocável (MP4 ou HLS).
+ *
+ * Ele **não** é um degrau da cascata: é acionado pelo [`CatalogoProvedores`]
+ * apenas quando os torrents falharam, e por isso não paga custo nenhum no
+ * caminho comum. A fonte que ele devolve sai com `tipo=direto` e o campo
+ * `stream` preenchido; o `magnet` fica vazio de propósito, e é o `tipo` que diz
+ * ao player para seguir pelo media-service (proxy/remux) em vez do WebTorrent.
+ *
+ * O fluxo tem quatro etapas, e cada uma tem um serviço próprio:
+ *
+ * 1. **Termo.** [`TermosStreamDireto`] monta a query inteligente — título,
+ *    numeração do episódio e intenção de streaming ("assistir online dublado").
+ * 2. **Busca.** [`MotorBuscaWeb`] resolve o termo em páginas candidatas, usando
+ *    o DuckDuckGo HTML/Lite (sem chave de API).
+ * 3. **Extração.** [`ExtratorVideo`] abre cada página e varre o HTML atrás de
+ *    `<video src>`, `.mp4`/`.m3u8` e configuração de player JS.
+ * 4. **Montagem.** [`NormalizaFonte::montarFonteDireta()`] traduz o link no
+ *    contrato do frontend.
+ *
+ * A descoberta é autônoma: não há mais dependência de uma API externa estática
+ * em `stream_direto_fontes`. O provedor só precisa estar ligado
+ * (`stream_direto_habilitado`) para funcionar.
+ *
+ * Como a busca web é frágil por natureza (motor bloqueia, HTML muda, acervo não
+ * cobre), o provedor registra cada etapa em `debug`/`warning`. Quando a lista sai
+ * vazia, o log diz exatamente onde parou: se o motor não respondeu, se respondeu
+ * sem links, ou se os links não tinham vídeo.
+ */
+class ProvedorStreamDireto implements ProvedorTorrents
+{
+    use NormalizaFonte;
+    use ConsultaComOrcamento;
+    use TermosStreamDireto;
+
+    public function __construct(
+        private readonly OrcamentoBusca $orcamento,
+        private readonly MotorBuscaWeb $motor,
+        private readonly ExtratorVideo $extrator,
+        private readonly ClienteHttp $cliente,
+    ) {
+    }
+
+    public function identificador(): string
+    {
+        return 'stream_direto';
+    }
+
+    public function rotulo(): string
+    {
+        return 'Stream direto';
+    }
+
+    /**
+     * O provedor está disponível quando o fallback está ligado.
+     *
+     * Antes, a disponibilidade dependia de haver uma fonte configurada em
+     * `stream_direto_fontes` — sem API apontada, não havia o que consultar. Com o
+     * scraper autônomo, a chave liga/desliga é a única condição: o motor de busca
+     * e o extrator já vêm embutidos.
+     */
+    public function disponivel(): bool
+    {
+        return (bool) config('services.torrents.stream_direto_habilitado', false);
+    }
+
+    /**
+     * Entrada do contrato: um título só.
+     *
+     * O catálogo chama `buscarComTitulos()` quando tem as variações do nome; este
+     * método existe para respeitar o contrato e para os testes que exercitam o
+     * provedor isolado.
+     */
+    public function buscar(
+        string $titulo,
+        ?int $ano = null,
+        ?string $imdbId = null,
+        ?int $temporada = null,
+        ?int $episodio = null,
+    ): array {
+        return $this->buscarComTitulos([$titulo], $ano, $imdbId, $temporada, $episodio);
+    }
+
+    /**
+     * Busca usando todas as grafias do título.
+     *
+     * O primeiro título é o principal (PT-BR); os demais entram como rede de
+     * segurança na camada genérica de termos — é o que cobre o caso em que o
+     * acervo PT-BR não tem página nenhuma.
+     *
+     * @param  array<int, string>  $titulos
+     * @return array<int, array<string, mixed>>
+     */
+    public function buscarComTitulos(
+        array $titulos,
+        ?int $ano = null,
+        ?string $imdbId = null,
+        ?int $temporada = null,
+        ?int $episodio = null,
+    ): array {
+        if (! $this->disponivel()) {
+            return [];
+        }
+
+        $titulos = $this->titulosLimpos($titulos);
+        $titulo = $titulos[0] ?? '';
+
+        if ($titulo === '') {
+            return [];
+        }
+
+        $alternativos = array_slice($titulos, 1);
+        $termos = $this->termosDeStreaming($titulo, $temporada, $episodio, $alternativos);
+
+        if ($termos === []) {
+            return [];
+        }
+
+        Log::debug('Stream direto: iniciando busca.', [
+            'titulo' => $titulo,
+            'alternativos' => $alternativos,
+            'temporada' => $temporada,
+            'episodio' => $episodio,
+            'termos' => $termos,
+        ]);
+
+        $fontes = [];
+        $paginasVisitadas = [];
+        $tetoPaginas = (int) config('services.torrents.stream_direto_max_paginas', 6);
+        $termosComResultado = 0;
+
+        foreach ($termos as $termo) {
+            if (! $this->temOrcamento()) {
+                Log::debug('Stream direto: orçamento esgotado antes do termo.', ['termo' => $termo]);
+
+                break;
+            }
+
+            /*
+             * O laço para assim que junta fontes suficientes: o fallback é socorro,
+             * não catálogo. Uma vez que há links tocáveis, gastar o orçamento
+             * restante em mais termos só atrasaria a resposta.
+             */
+            if (count($fontes) >= $tetoPaginas) {
+                break;
+            }
+
+            $candidatas = $this->motor->procurar($termo);
+
+            if ($candidatas === []) {
+                continue;
+            }
+
+            $termosComResultado++;
+
+            foreach ($candidatas as $pagina) {
+                if (! $this->temOrcamento() || count($fontes) >= $tetoPaginas) {
+                    break 2;
+                }
+
+                // A mesma página pode aparecer em vários termos; não vale abri-la
+                // duas vezes.
+                if (isset($paginasVisitadas[$pagina])) {
+                    continue;
+                }
+
+                $paginasVisitadas[$pagina] = true;
+
+                $fontes = array_merge($fontes, $this->rasparPagina($pagina, $titulo));
+            }
+        }
+
+        $unicas = $this->deduplicar($fontes);
+
+        /*
+         * O rastro dos domínios que passaram pelo filtro e foram abertos. Sem
+         * ele, "visitei 4 páginas" não diz se o orçamento foi para agregadores
+         * de vídeo ou para catálogos que escaparam da lista negra.
+         */
+        Log::debug('Stream direto: domínios consultados.', [
+            'dominios' => $this->dominiosDe(array_keys($paginasVisitadas)),
+        ]);
+
+        Log::debug('Stream direto: busca concluída.', [
+            'titulo' => $titulo,
+            'termos_com_resultado' => $termosComResultado,
+            'paginas_visitadas' => count($paginasVisitadas),
+            'fontes' => count($unicas),
+        ]);
+
+        if ($unicas === []) {
+            Log::info('Stream direto: nenhuma fonte encontrada.', [
+                'titulo' => $titulo,
+                'paginas_visitadas' => count($paginasVisitadas),
+            ]);
+        }
+
+        return $unicas;
+    }
+
+    /**
+     * Abre uma página candidata e extrai as fontes diretas dela.
+     *
+     * A falha de uma página não derruba as outras: o `catch` devolve lista vazia
+     * e o laço segue. É o mesmo princípio dos provedores de torrent — uma página
+     * fora do ar reduz o alcance, não impede a busca.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function rasparPagina(string $pagina, string $titulo): array
+    {
+        $teto = $this->tempoDeConsulta((int) config('services.torrents.stream_direto_tempo_limite', 10));
+
+        if ($teto <= 0) {
+            return [];
+        }
+
+        try {
+            $resposta = $this->cliente->get($pagina, [], null, $teto);
+        } catch (\Throwable $excecao) {
+            Log::warning('Stream direto: falha ao raspar página.', [
+                'pagina' => $pagina,
+                'erro' => $excecao->getMessage(),
+            ]);
+
+            return [];
+        }
+
+        if ($resposta === null) {
+            Log::debug('Stream direto: página não respondeu.', ['pagina' => $pagina]);
+
+            return [];
+        }
+
+        if ($resposta->failed()) {
+            Log::debug('Stream direto: página devolveu erro HTTP.', [
+                'pagina' => $pagina,
+                'status' => $resposta->status(),
+            ]);
+
+            return [];
+        }
+
+        $urls = $this->extrator->extrair((string) $resposta->body());
+
+        if ($urls === []) {
+            Log::debug('Stream direto: página sem vídeo extraível.', ['pagina' => $pagina]);
+
+            return [];
+        }
+
+        Log::debug('Stream direto: vídeos extraídos da página.', [
+            'pagina' => $pagina,
+            'videos' => count($urls),
+        ]);
+
+        $fontes = [];
+
+        foreach ($urls as $url) {
+            $fontes[] = $this->montarFonteDireta([
+                'url' => $url,
+                'titulo' => $this->limparTexto($titulo),
+                'idioma' => $this->idiomaDaPagina($pagina),
+            ], $this->identificador(), $this->rotulo());
+        }
+
+        return $fontes;
+    }
+
+    /**
+     * Deduz o idioma a partir do endereço da página.
+     *
+     * Muitos sites de streaming separam dublado e legendado por caminho
+     * (`/dublado/`, `/legendado/`) ou por subdomínio. É uma pista fraca, mas
+     * melhor que nada: quando ela não aparece, o idioma fica vazio e a dedução
+     * pelo título assume na montagem.
+     */
+    private function idiomaDaPagina(string $pagina): string
+    {
+        $alvo = strtolower($pagina);
+
+        if (str_contains($alvo, 'dublado') || str_contains($alvo, 'dublada')) {
+            return 'dublado';
+        }
+
+        if (str_contains($alvo, 'legendado') || str_contains($alvo, 'legendada')) {
+            return 'legendado';
+        }
+
+        return '';
+    }
+
+    /**
+     * Remove fontes repetidas pelo mesmo `stream`.
+     *
+     * A mesma URL pode sair de páginas diferentes (um agregador que espelha
+     * outro). O `id` da fonte direta é o md5 da URL, então a deduplicação é por
+     * ele — o mesmo link vindo de duas páginas vira uma fonte só.
+     *
+     * @param  array<int, array<string, mixed>>  $fontes
+     * @return array<int, array<string, mixed>>
+     */
+    private function deduplicar(array $fontes): array
+    {
+        $unicas = [];
+
+        foreach ($fontes as $fonte) {
+            $id = (string) ($fonte['id'] ?? '');
+
+            if ($id === '' || isset($unicas[$id])) {
+                continue;
+            }
+
+            $unicas[$id] = $fonte;
+        }
+
+        return array_values($unicas);
+    }
+
+    /**
+     * Extrai os hosts únicos de uma lista de URLs, para o log de diagnóstico.
+     *
+     * O log mostra o domínio, não a URL inteira: a pergunta que ele responde é
+     * "para onde o orçamento foi", e o caminho completo só polui a leitura.
+     *
+     * @param  array<int, string>  $urls
+     * @return array<int, string>
+     */
+    private function dominiosDe(array $urls): array
+    {
+        $dominios = [];
+
+        foreach ($urls as $url) {
+            $host = strtolower((string) parse_url($url, PHP_URL_HOST));
+
+            if ($host !== '') {
+                $dominios[$host] = true;
+            }
+        }
+
+        return array_keys($dominios);
+    }
+}
