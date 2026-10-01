@@ -56,4 +56,66 @@ class ProvedorStreamDiretoTest extends TestCase
     {
         $this->assertSame([], $this->invocar('dominiosDe', []));
     }
+
+    /**
+     * O caso que motivou a correção: o tokyvideo separa o conteúdo por país no
+     * caminho (`/br/`) e marca o idioma no slug (`-pt-`), sem escrever
+     * "dublado" em lugar nenhum. Antes, esse endereço caía em "original" e o
+     * overlay marcava como idioma original um vídeo que toca dublado.
+     */
+    public function test_endereco_com_segmento_de_pais_e_codigo_pt_e_dublado(): void
+    {
+        $idioma = $this->invocar(
+            'idiomaDaPagina',
+            'https://tokyvideo.com/br/video/desperate-housewives-pt-01x01-nicsfilm'
+        );
+
+        $this->assertSame('dublado', $idioma);
+    }
+
+    public function test_endereco_com_dublado_explicito_e_dublado(): void
+    {
+        $this->assertSame('dublado', $this->invocar('idiomaDaPagina', 'https://site.com/filme-dublado'));
+    }
+
+    /**
+     * "legendado" precisa vencer o código `pt`: num endereço "legendado pt br"
+     * o `pt` é da legenda, não do áudio. Se a checagem de indícios viesse
+     * primeiro, ele seria classificado como dublado.
+     */
+    public function test_legendado_vence_o_codigo_pt(): void
+    {
+        $idioma = $this->invocar('idiomaDaPagina', 'https://site.com/br/filme-legendado-pt-br');
+
+        $this->assertSame('legendado', $idioma);
+    }
+
+    public function test_endereco_sem_pista_devolve_vazio(): void
+    {
+        $this->assertSame('', $this->invocar('idiomaDaPagina', 'https://site.com/watch/12345'));
+    }
+
+    /**
+     * O segmento de país é procurado com as barras à volta: `/br/` é o Brasil,
+     * mas `/bruno/` não é. Sem essa borda, qualquer slug com "br" viraria
+     * dublado.
+     */
+    public function test_segmento_de_pais_nao_casa_pedaco_de_palavra(): void
+    {
+        $this->assertFalse($this->invocar('enderecoIndicaPortugues', 'https://site.com/bruno/filme'));
+    }
+
+    public function test_codigo_pt_solto_no_slug_indica_portugues(): void
+    {
+        $this->assertTrue($this->invocar('enderecoIndicaPortugues', 'https://site.com/video/filme-pt-01x01'));
+    }
+
+    /**
+     * `str_contains('pt')` casaria com "script" e "concept". A borda de palavra
+     * que o `IndiciosPtBr` aplica evita esse falso positivo.
+     */
+    public function test_palavra_com_pt_no_meio_nao_indica_portugues(): void
+    {
+        $this->assertFalse($this->invocar('enderecoIndicaPortugues', 'https://site.com/script/concept'));
+    }
 }

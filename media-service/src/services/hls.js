@@ -925,13 +925,21 @@ function aplicarModo(comando, modo) {
  * (~500 KB/s) e segmentos de 4 s, 8 segmentos (~32 s de vídeo) dão folga
  * confortável para a reprodução não alcançar a conversão.
  *
+ * O `timeoutMs` é um teto de segurança, não um veredito de morte. Numa fonte
+ * direta (URL HTTP convertida para HLS) a conversão pode ser longa e o relógio
+ * sozinho condenaria um trabalho que está andando. Por isso aceitamos um
+ * `aoProgredir` opcional: quando ele devolve `true`, a conversão deu sinal de
+ * vida desde a última checagem e o prazo é renovado. Só quando o progresso
+ * também para é que o tempo esgotado vira erro de verdade.
+ *
  * @param {string} diretorio pasta da sessão
  * @param {number} minimoSegmentos quantidade mínima de segmentos prontos
- * @param {number} timeoutMs tempo máximo de espera
+ * @param {number} timeoutMs tempo máximo de espera sem sinal de vida
+ * @param {() => boolean} [aoProgredir] devolve `true` se a conversão avançou
  */
-export function aguardarBufferInicial(diretorio, minimoSegmentos = 8, timeoutMs = 180000) {
+export function aguardarBufferInicial(diretorio, minimoSegmentos = 8, timeoutMs = 180000, aoProgredir = null) {
   const playlist = path.join(diretorio, 'playlist.m3u8')
-  const inicio = Date.now()
+  let inicio = Date.now()
 
   return new Promise((resolve, reject) => {
     const verificar = () => {
@@ -944,7 +952,13 @@ export function aguardarBufferInicial(diretorio, minimoSegmentos = 8, timeoutMs 
         }
       }
 
-      if (Date.now() - inicio > timeoutMs) {
+      /*
+       * A conversão avançou desde a última checagem: o prazo reinicia. Assim o
+       * `timeoutMs` mede estagnação real, e não a duração total da conversão.
+       */
+      if (aoProgredir?.()) {
+        inicio = Date.now()
+      } else if (Date.now() - inicio > timeoutMs) {
         return reject(new Error('Tempo esgotado aguardando o buffer inicial da conversão.'))
       }
 

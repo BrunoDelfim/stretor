@@ -508,7 +508,26 @@ async function prepararSessaoDireta(sessao) {
     })
   )
 
-  await aguardarBufferInicial(sessao.diretorio)
+  /*
+   * A fonte direta não tem peers: o que prova que ela está viva é o avanço da
+   * conversão. Guardamos o último percentual visto e comparamos a cada checagem
+   * do buffer — se mudou, o FFmpeg trabalhou e o prazo do buffer reinicia. Sem
+   * isso, uma conversão longa (fonte HTTP lenta, arquivo grande) estourava os
+   * 180 s e a sessão morria como erro mesmo estando a avançar.
+   */
+  let ultimoPercentual = null
+
+  await aguardarBufferInicial(sessao.diretorio, 8, 180000, () => {
+    const percentual = sessao.progresso?.percentual ?? null
+
+    if (percentual === null || percentual === ultimoPercentual) {
+      return false
+    }
+
+    ultimoPercentual = percentual
+    return true
+  })
+
   conferirSessao(sessao)
 
   registrarDiagnostico(sessao)

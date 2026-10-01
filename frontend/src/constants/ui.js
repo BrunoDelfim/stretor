@@ -64,6 +64,35 @@ export const TIMEOUT_FONTE_MS = Number(import.meta.env.VITE_TIMEOUT_FONTE_MS) ||
 export const ESTAGNACAO_FONTE_MS = Number(import.meta.env.VITE_ESTAGNACAO_FONTE_MS) || 20 * 1000
 
 /**
+ * Tempo máximo aguardando uma fonte **direta** ficar pronta, em ms (5 minutos).
+ *
+ * A fonte direta não vem de uma malha P2P: o media-service baixa a URL de um
+ * servidor HTTP e converte para HLS. Esse caminho é mais lento que o torrent e
+ * não tem telemetria de peers para medir vida — o que prova que ela está
+ * trabalhando é o progresso da conversão. O `TIMEOUT_FONTE_MS` (90 s), pensado
+ * para torrent, cortava a conversão no meio e o overlay mostrava "sem peers"
+ * num vídeo que estava apenas sendo preparado. Aqui o teto é bem mais largo e,
+ * na prática, quem encerra antes é a estagnação do progresso (abaixo).
+ *
+ * Ajustável por `VITE_TIMEOUT_DIRETO_MS`.
+ */
+export const TIMEOUT_DIRETO_MS = Number(import.meta.env.VITE_TIMEOUT_DIRETO_MS) || 5 * 60 * 1000
+
+/**
+ * Tempo de estagnação tolerado numa fonte direta, em ms (60 s).
+ *
+ * O equivalente direto do `ESTAGNACAO_FONTE_MS`: enquanto o `progresso` da
+ * conversão muda, a fonte está viva e não é abandonada. Se o percentual parar
+ * de avançar por este tempo, a conversão travou de verdade (servidor parou de
+ * entregar bytes, FFmpeg preso) e passamos para a próxima fonte. É mais largo
+ * que o do torrent porque uma conversão pode ter pausas longas entre trechos
+ * sem estar morta.
+ *
+ * Ajustável por `VITE_ESTAGNACAO_DIRETA_MS`.
+ */
+export const ESTAGNACAO_DIRETA_MS = Number(import.meta.env.VITE_ESTAGNACAO_DIRETA_MS) || 60 * 1000
+
+/**
  * Tempo máximo aguardando o Plyr emitir o evento `ready`, em ms.
  *
  * O Plyr pode montar sem disparar o evento (elemento já controlado, erro

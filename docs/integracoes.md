@@ -2882,6 +2882,62 @@ A sondagem (`ffprobe`) também aceita URL, mas é tolerante a falha: um servidor
 que não responde ao ffprobe ainda pode ser lido pelo FFmpeg, então a sessão cai
 num modo conservador (`video`, que transcodifica) em vez de desistir.
 
+##### O idioma da fonte direta mora no endereço
+
+O scraper não tem o nome do release para deduzir o idioma — o que ele tem é a
+URL da página. Muitos sites separam dublado e legendado pelo caminho
+(`/dublado/`, `/legendado/`) ou pelo **segmento de país** no endereço. O
+tokyvideo, por exemplo, serve o conteúdo brasileiro em
+`tokyvideo.com/br/video/desperate-housewives-pt-01x01`: o `/br/` (Brasil) e o
+`-pt-` (português) estão no próprio endereço, sem a palavra "dublado" em lugar
+nenhum.
+
+Olhar só "dublado" deixava esses casos caírem em `original`, e o overlay marcava
+como idioma original um vídeo que toca dublado. A correção está em
+[`ProvedorStreamDireto::idiomaDaPagina()`](../backend/app/Services/Torrents/ProvedorStreamDireto.php:310),
+que agora checa, nesta ordem:
+
+1. **"legendado"** primeiro, porque é a única tag que **nega** o áudio PT-BR: um
+   endereço "legendado pt br" carrega o `pt` da legenda, não da dublagem. Se
+   viesse depois, o código `pt` o classificaria como dublado.
+2. **"dublado"/"dublada"**, a prova explícita.
+3. **Indícios de PT-BR no caminho** ([`enderecoIndicaPortugues()`](../backend/app/Services/Torrents/ProvedorStreamDireto.php:343)):
+   o segmento de país (`/br/`, `/pt/`, `/pt-br/`, `/brasil/`, `/brazil/`) e o
+   código `pt` como palavra no slug, via
+   [`IndiciosPtBr::temCodigoPt()`](../backend/app/Support/IndiciosPtBr.php:151).
+
+O segmento de país é procurado com as barras à volta (`/br/` é o Brasil, mas
+`/bruno/` não é), e o código `pt` usa a borda de palavra do `IndiciosPtBr` para
+não casar "script" nem "concept". Quando nada aparece, o idioma fica vazio e a
+dedução pelo título assume na montagem — o comportamento antigo, preservado para
+não inventar dublagem onde não há pista nenhuma.
+
+##### A fonte direta não tem peers — tem progresso
+
+O overlay aplicava à fonte direta a mesma lógica de estagnação do torrent: sem
+peers, "fonte morta". Mas uma sessão direta não tem malha — o `download` fica
+`null` de propósito, e o que prova que ela está viva é o **progresso da
+conversão**. O resultado era um link HTTP saudável rotulado como "sem peers" e
+abandonado no meio da conversão.
+
+O fluxo direto ganhou tratamento próprio em
+[`PlayerOverlay::aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:1690):
+
+- O teto de espera é `TIMEOUT_DIRETO_MS` (5 min), não o `TIMEOUT_FONTE_MS` (90 s)
+  pensado para torrent.
+- A prova de vida é o `progresso.percentual` da sessão: enquanto ele muda, a
+  fonte está trabalhando. Só quando ele para por `ESTAGNACAO_DIRETA_MS` (60 s) é
+  que a conversão travou de verdade.
+- A mensagem do overlay mostra o percentual (`Convertendo o vídeo... 42%`) em vez
+  de "sem peers".
+
+Do lado do media-service, [`aguardarBufferInicial()`](../media-service/src/services/hls.js:932)
+deixou de ser um veredito de morte por relógio: ele aceita um callback
+`aoProgredir` e, quando a conversão avançou desde a última checagem, **reinicia o
+prazo**. Assim o `timeoutMs` mede estagnação real, e não a duração total da
+conversão. [`prepararSessaoDireta()`](../media-service/src/services/sessoes.js:441)
+passa esse callback comparando o último percentual visto.
+
 #### Configuração
 
 ```env

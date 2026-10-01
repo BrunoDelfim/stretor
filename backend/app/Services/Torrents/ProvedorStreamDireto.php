@@ -3,6 +3,7 @@
 namespace App\Services\Torrents;
 
 use App\Contracts\ProvedorTorrents;
+use App\Support\IndiciosPtBr;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -284,23 +285,80 @@ class ProvedorStreamDireto implements ProvedorTorrents
      * Deduz o idioma a partir do endereço da página.
      *
      * Muitos sites de streaming separam dublado e legendado por caminho
-     * (`/dublado/`, `/legendado/`) ou por subdomínio. É uma pista fraca, mas
-     * melhor que nada: quando ela não aparece, o idioma fica vazio e a dedução
-     * pelo título assume na montagem.
+     * (`/dublado/`, `/legendado/`) ou por subdomínio. Mas a pista mais comum
+     * nem é a palavra inteira: é o **código de idioma no slug ou no segmento de
+     * país** — `tokyvideo.com/br/video/desperate-housewives-pt-01x01` traz o
+     * `/br/` (Brasil) e o `-pt-` (português) no próprio endereço. Olhar só
+     * "dublado" deixava esses casos caírem em "original", e o overlay marcava
+     * como idioma original um vídeo que toca dublado.
+     *
+     * A ordem das checagens separa o que é prova do que é pista:
+     *
+     * 1. **"legendado"** vem primeiro porque é a única tag que **nega** o áudio
+     *    PT-BR: um endereço "legendado pt br" carrega o `pt` da legenda, não da
+     *    dublagem. Se ele viesse depois, o código `pt` o classificaria como
+     *    dublado — o mesmo cuidado que [`IdiomaFonte::deduzirDoTitulo()`] toma.
+     * 2. **"dublado"/"dublada"** é a prova explícita.
+     * 3. **Indícios de PT-BR** ([`IndiciosPtBr`]) no endereço: o segmento de
+     *    país (`/br/`, `/pt/`, `/pt-br/`) e o código `pt` como palavra no slug.
+     *    É a pista que cobre os sites que não escrevem "dublado" na URL.
+     *
+     * Quando nada aparece, o idioma fica vazio e a dedução pelo título assume
+     * na montagem — o comportamento antigo, preservado para não inventar
+     * dublagem onde não há pista nenhuma.
      */
     private function idiomaDaPagina(string $pagina): string
     {
         $alvo = strtolower($pagina);
 
-        if (str_contains($alvo, 'dublado') || str_contains($alvo, 'dublada')) {
-            return 'dublado';
-        }
-
         if (str_contains($alvo, 'legendado') || str_contains($alvo, 'legendada')) {
             return 'legendado';
         }
 
+        if (str_contains($alvo, 'dublado') || str_contains($alvo, 'dublada')) {
+            return 'dublado';
+        }
+
+        if ($this->enderecoIndicaPortugues($alvo)) {
+            return 'dublado';
+        }
+
         return '';
+    }
+
+    /**
+     * Diz se o endereço da página carrega um indício de PT-BR.
+     *
+     * O alvo é o **caminho** da URL, não o host: um domínio `.com.br` prova que
+     * o site é brasileiro, mas não que aquele vídeo específico está dublado —
+     * muitos agregadores hospedam o áudio original sob o mesmo domínio. O que
+     * vale é o que o site escreveu no caminho para aquele título: o segmento de
+     * país (`/br/`, `/pt/`, `/pt-br/`) ou o código `pt` no slug.
+     *
+     * O `IndiciosPtBr::temCodigoPt()` é reusado porque ele já resolve a
+     * armadilha do "pt" solto — `str_contains('pt')` casaria com "script" e
+     * "concept", e a borda de palavra que ele aplica libera "pt", "pt-br" e
+     * "pt_br" sem esses falsos positivos.
+     */
+    private function enderecoIndicaPortugues(string $endereco): bool
+    {
+        $caminho = (string) parse_url($endereco, PHP_URL_PATH);
+
+        if ($caminho === '') {
+            return false;
+        }
+
+        /*
+         * O segmento de país é procurado com as barras à volta para não casar
+         * um pedaço de palavra: `/br/` é o Brasil, mas `/bruno/` não é.
+         */
+        foreach (['/br/', '/pt/', '/pt-br/', '/pt_br/', '/brasil/', '/brazil/'] as $segmento) {
+            if (str_contains($caminho, $segmento)) {
+                return true;
+            }
+        }
+
+        return IndiciosPtBr::temCodigoPt($caminho);
     }
 
     /**

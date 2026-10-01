@@ -6,8 +6,10 @@ import 'plyr/dist/plyr.css'
 
 import { streamingService } from '@/services/streaming'
 import {
+  ESTAGNACAO_DIRETA_MS,
   ESTAGNACAO_FONTE_MS,
   INTERVALO_STATUS_SESSAO_MS,
+  TIMEOUT_DIRETO_MS,
   TIMEOUT_FONTE_MS,
   TIMEOUT_PLYR_READY_MS,
 } from '@/constants/ui'
@@ -1633,9 +1635,25 @@ function mensagemDeFalha(desistencias, total, recusadasPorIdioma) {
  * sozinha não distingue uma fonte morta de uma lenta. Quando há telemetria de
  * download, acrescentamos peers e velocidade para o usuário saber se vale
  * esperar ou trocar de fonte.
+ *
+ * A fonte direta não tem malha: não há peers nem velocidade a mostrar. O que
+ * ela tem é o percentual da conversão, e é isso que exibimos — dizer "sem
+ * peers" num link HTTP que está a ser convertido era o que fazia o usuário
+ * achar que a fonte tinha morrido.
  */
-function mensagemDeProgresso(status) {
+function mensagemDeProgresso(status, eDireta = false) {
   const base = status.mensagem || 'Preparando o vídeo...'
+
+  if (eDireta) {
+    const percentual = status.progresso?.percentual
+
+    if (typeof percentual === 'number') {
+      return `${base} ${Math.round(percentual)}%`
+    }
+
+    return base
+  }
+
   const info = status.download
 
   if (!info) return base
@@ -1692,6 +1710,16 @@ function aguardarFonte(minhaGeracao, fonte) {
   const sessaoDaFonte = sessaoId
 
   /*
+   * A fonte direta não é um torrent: não há malha, não há peers e não há
+   * download a medir. O media-service baixa a URL e converte para HLS, e o
+   * `download` da sessão fica `null` de propósito. Aplicar aqui a lógica de
+   * estagnação do torrent (`peers === 0` → `sem_peers`) rotulava um link HTTP
+   * saudável como "fonte morta", e o overlay desistia de um vídeo que estava
+   * apenas convertendo. Por isso o fluxo direto tem tratamento próprio.
+   */
+  const eDireta = fonte?.tipo === 'direto'
+
+  /*
    * Instante em que a fonte começou a parecer estagnada, ou `null` enquanto ela
    * dá sinal de vida. Uma fonte com poucos peers costuma conectar e ficar a
    * 0 MB/s sem nunca gerar erro: sem esta marca, ela só seria abandonada no
@@ -1709,6 +1737,14 @@ function aguardarFonte(minhaGeracao, fonte) {
    */
   let jaEntregouBytes = false
 
+  /*
+   * Último percentual de conversão visto numa fonte direta. É a prova de vida
+   * dela: enquanto o número muda, o FFmpeg está avançando e não há motivo para
+   * abandonar. Só quando ele para de mudar por `ESTAGNACAO_DIRETA_MS` é que a
+   * conversão travou de verdade.
+   */
+  let progressoAnterior = null
+
   return new Promise((resolve) => {
     const consultar = async () => {
       if (cancelado || minhaGeracao !== geracao) return resolve({ desfecho: 'cancelado' })
@@ -1719,7 +1755,17 @@ function aguardarFonte(minhaGeracao, fonte) {
        * sobra — as desistências rápidas (magnet sem metadados, estagnação) já
        * teriam acontecido antes deste ponto.
        */
-      if (Date.now() - inicio > TIMEOUT_FONTE_MS) {
+      /*
+       * O prazo da fonte direta é maior: ela não baixa de uma malha P2P, e sim
+       * de um servidor HTTP que pode ser lento. Enquanto a conversão avança
+       * (o progresso muda), não faz sentido abandonar — o `TIMEOUT_FONTE_MS`
+       * padrão, pensado para torrent, cortava a conversão no meio. Só o
+       * `TIMEOUT_DIRETO_MS` encerra, e mesmo assim só quando o progresso
+       * estagnou de verdade (ver o bloco de estagnação abaixo).
+       */
+      const teto = eDireta ? TIMEOUT_DIRETO_MS : TIMEOUT_FONTE_MS
+
+      if (Date.now() - inicio > teto) {
         await limparSessaoAtual()
         return resolve({ desfecho: 'falhou', motivo: 'lento' })
       }
@@ -1794,7 +1840,35 @@ function aguardarFonte(minhaGeracao, fonte) {
         estado.value = 'preparando'
         download.value = status.download ?? null
         duracaoTotal.value = status.duracao ?? duracaoTotal.value
-        mensagem.value = mensagemDeProgresso(status)
+        mensagem.value = mensagemDeProgresso(status, eDireta)
+
+        /*
+         * A fonte direta não tem telemetria de download: o que prova que ela
+         * está viva é o **progresso da conversão**. O media-service publica
+         * `progresso` conforme o FFmpeg avança, e enquanto esse número muda a
+         * fonte está trabalhando — mesmo que ainda não tenha produzido os
+         * segmentos suficientes para o buffer inicial. Só abandonamos quando o
+         * progresso para de mudar por `ESTAGNACAO_DIRETA_MS`, o que separa
+         * "convertendo devagar" de "travado de verdade".
+         */
+        if (eDireta) {
+          const progresso = status.progresso?.percentual ?? null
+
+          if (progresso !== null && progresso !== progressoAnterior) {
+            progressoAnterior = progresso
+            estagnadaDesde = null
+          } else if (progresso !== null) {
+            estagnadaDesde ??= Date.now()
+
+            if (Date.now() - estagnadaDesde > ESTAGNACAO_DIRETA_MS) {
+              await limparSessaoAtual()
+              return resolve({ desfecho: 'falhou', motivo: 'sem_dados' })
+            }
+          }
+
+          timerStatus = setTimeout(consultar, INTERVALO_STATUS_SESSAO_MS)
+          return
+        }
 
         /*
          * Desistência por estagnação: a fonte conectou (a sessão existe e está
