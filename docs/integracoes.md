@@ -2706,16 +2706,61 @@ O fluxo tem quatro etapas, cada uma num arquivo próprio:
    sem casar domínios que apenas terminam com o mesmo texto (`naoimdb.com`). URLs
    sem host válido não são descartadas aqui — quem decide se servem é o extrator.
 
-   O descarte é registrado em `debug` **"domínios de catálogo ignorados"**, com a
-   quantidade e a lista de hosts únicos. É o log que mostra que o filtro está
-   trabalhando, e não que a busca simplesmente não achou nada.
+   ##### Três famílias de descarte, não só catálogo
 
-   ##### A query prioriza agregadores de vídeo
+   O SearXNG agrega a web inteira e, para um título conhecido, devolve muito mais
+   que catálogo: **fóruns estrangeiros** (Yahoo japonês, Zhihu chinês), **Q&A e
+   redes sociais** (Reddit, Quora, Facebook) e **arquivos de referência** (PDFs,
+   planilhas, pacotes). Nenhum deles hospeda o vídeo, e abrir cada um custa uma
+   requisição do orçamento curto do fallback.
 
-   A lista negra resolve o que chega, mas não o que é pedido. Os termos padrão de
-   [`TermosStreamDireto::intencoesDeStreaming()`](../backend/app/Services/Torrents/TermosStreamDireto.php:75)
-   foram reordenados para puxar **agregadores de vídeo** para as primeiras
-   posições, em vez de páginas genéricas:
+   O filtro passou a classificar o descarte em **três famílias**, cada uma com sua
+   lista:
+
+   - `DOMINIOS_IGNORADOS` — catálogo/metadados, fóruns/Q&A/redes sociais e
+     buscadores. Casamento por host, como antes.
+   - `TLDS_IGNORADOS` — sufixos de TLD que nunca hospedam vídeo PT-BR (`.jp`,
+     `.cn`, `.kr`, `.ru`, `.ir`, `.vn`, `.th`, `.id`, `.tr`, `.pl`, `.ua`, `.kz`).
+     É por **sufixo de TLD**, não por host: `.jp` cobre `news.yahoo.co.jp` e
+     `search.yahoo.co.jp` de uma vez. Os TLDs de língua portuguesa (`.br`, `.pt`)
+     ficam de fora de propósito — são justamente os que podem ter a página
+     dublada.
+   - `EXTENSOES_IGNORADAS` — extensões que nunca são vídeo (`.pdf`, `.doc`,
+     `.docx`, `.xls`, `.xlsx`, `.ppt`, `.pptx`, `.txt`, `.zip`, `.rar`, `.7z`,
+     `.torrent`, `.epub`). O extrator já as recusaria, mas descartá-las aqui evita
+     gastar uma requisição para descobrir isso.
+
+   [`MotorBuscaWeb::motivoDoDescarte()`](../backend/app/Services/Torrents/MotorBuscaWeb.php:558)
+   classifica a URL em `extensao`, `dominio`, `tld` ou `null` (serve). A ordem das
+   checagens vai do mais barato ao mais caro — host vazio, extensão, domínio e,
+   por fim, TLD. O log de `debug` **"resultados irrelevantes ignorados"** agrupa os
+   descartes **por motivo**, com a quantidade e os hosts únicos de cada família:
+   muitos descartes por `tld` significam que a query está a alcançar acervo
+   estrangeiro; muitos por `dominio` significam que a lista negra está a segurar
+   fóruns. Sem essa separação, só se saberia que "algo" foi ignorado.
+
+   ##### A query ancora a busca em plataformas de vídeo
+
+   A lista negra resolve o que chega, mas não o que é pedido. Além das intenções
+   genéricas, os termos agora abrem com **âncoras de plataforma** — o operador
+   `site:` apontado para domínios que de fato publicam vídeo:
+
+   ```
+   site:tokyvideo.com
+   site:dailymotion.com
+   site:ok.ru
+   site:vimeo.com
+   ```
+
+   A âncora é o termo **mais preciso** da lista: ela restringe o motor a um
+   domínio que hospeda o arquivo, sem depender do ranqueamento para trazer a
+   página do player às primeiras posições. Como o provedor consome os termos de
+   cima para baixo e para quando junta páginas suficientes, a âncora é a primeira
+   consulta — e a que mais rende por requisição. A lista é configurável em
+   `stream_direto_plataformas`; vazia, usa o padrão embutido.
+
+   As intenções genéricas vêm **depois** das âncoras, na ordem em que valem a
+   consulta:
 
    ```
    assistir online dublado
@@ -2727,9 +2772,7 @@ O fluxo tem quatro etapas, cada uma num arquivo próprio:
 
    Os dois últimos termos ("filme completo dublado", "serie completa dublada")
    são o que os sites de hospedagem de vídeo usam no próprio título da página —
-   diferente de "assistir online", que também aparece em catálogos. Como o
-   provedor consome os termos de cima para baixo e para quando junta páginas
-   suficientes, a ordem é o que decide se o orçamento é gasto com o site certo.
+   diferente de "assistir online", que também aparece em catálogos.
 
    ##### O teto de termos: a rajada é o que o buscador pune
 
@@ -2945,6 +2988,7 @@ TORRENTS_STREAM_DIRETO_HABILITADO=false
 TORRENTS_STREAM_DIRETO_MOTORES=http://searxng:8080/search
 TORRENTS_STREAM_DIRETO_BRAVE_KEY=
 TORRENTS_STREAM_DIRETO_TERMOS=
+TORRENTS_STREAM_DIRETO_PLATAFORMAS=
 TORRENTS_STREAM_DIRETO_MAX_TERMOS=8
 TORRENTS_STREAM_DIRETO_INTERVALO_MIN=800
 TORRENTS_STREAM_DIRETO_INTERVALO_MAX=2200
@@ -2965,8 +3009,11 @@ preencher `TORRENTS_STREAM_DIRETO_BRAVE_KEY` — sem a chave, o motor é descart
 da lista.
 `TORRENTS_STREAM_DIRETO_TERMOS` sobrescreve as intenções de busca — vazio usa o
 padrão (`assistir online dublado`, `assistir online legendado`, `assistir
-online`). `TORRENTS_STREAM_DIRETO_MAX_PAGINAS` limita quantas páginas o scraper
-abre por consulta.
+online`). `TORRENTS_STREAM_DIRETO_PLATAFORMAS` sobrescreve as âncoras de
+plataforma (operadores `site:`) que abrem a lista de termos — vazio usa o padrão
+(`site:tokyvideo.com`, `site:dailymotion.com`, `site:ok.ru`, `site:vimeo.com`).
+`TORRENTS_STREAM_DIRETO_MAX_PAGINAS` limita quantas páginas o scraper abre por
+consulta.
 
 O SearXNG interno é configurado por
 [`docker/searxng/settings.yml`](../docker/searxng/settings.yml:1), que liga a

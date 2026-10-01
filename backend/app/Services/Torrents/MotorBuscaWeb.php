@@ -49,18 +49,25 @@ class MotorBuscaWeb
      * Domínios que nunca têm vídeo extraível e só gastam orçamento.
      *
      * O motor de busca devolve, para qualquer título conhecido, uma fileira de
-     * páginas de catálogo e metadados — JustWatch, IMDb, Plex, YouTube oficial,
-     * Wikipédia, TMDB. Elas ranqueiam alto porque são autoritativas, mas nenhuma
-     * serve ao scraper: o JustWatch lista onde assistir (não hospeda o vídeo), o
-     * IMDb é ficha técnica, o Plex é catálogo de assinatura, o YouTube oficial
-     * traz trailer, e a Wikipédia/TMDB são verbete. Abrir cada uma custa uma
-     * requisição e uma espera para, no fim, o extrator não achar nada.
+     * páginas que ranqueiam alto por autoridade mas não hospedam o vídeo. São
+     * três famílias:
+     *
+     * 1. **Catálogo e metadados** — JustWatch (lista onde assistir), IMDb (ficha
+     *    técnica), Plex (catálogo de assinatura), YouTube oficial (trailer),
+     *    Wikipédia/TMDB (verbete).
+     * 2. **Fóruns, Q&A e redes sociais** — Reddit, Quora, Zhihu, Yahoo
+     *    Respostas, Stack Exchange, Facebook, X/Twitter, Instagram, TikTok,
+     *    Pinterest, Medium, Tumblr. Nenhum deles publica o arquivo de vídeo: são
+     *    discussões *sobre* o título, e o extrator não acha nada ali.
+     * 3. **Buscadores e agregadores de link** — Google, Bing, DuckDuckGo,
+     *    Yandex, Baidu. Devolvem páginas de resultado, não o vídeo.
      *
      * O descarte é por sufixo de domínio, e não por substring: `imdb.com` precisa
      * barrar `www.imdb.com` e `m.imdb.com`, mas **não** um hipotético
      * `naoimdb.com`. A comparação é feita sobre o host, com o ponto à frente.
      */
     private const DOMINIOS_IGNORADOS = [
+        // Catálogo e metadados.
         'justwatch.com',
         'imdb.com',
         'plex.tv',
@@ -69,6 +76,92 @@ class MotorBuscaWeb
         'wikipedia.org',
         'tmdb.org',
         'themoviedb.org',
+        'rottentomatoes.com',
+        'metacritic.com',
+        'letterboxd.com',
+        'filmaffinity.com',
+        'adorocinema.com',
+        'filmow.com',
+        'thetvdb.com',
+        'trakt.tv',
+        // Fóruns, Q&A e redes sociais.
+        'reddit.com',
+        'quora.com',
+        'zhihu.com',
+        'stackexchange.com',
+        'stackoverflow.com',
+        'medium.com',
+        'tumblr.com',
+        'pinterest.com',
+        'facebook.com',
+        'instagram.com',
+        'twitter.com',
+        'x.com',
+        'tiktok.com',
+        'linkedin.com',
+        'vk.com',
+        't.me',
+        'telegram.me',
+        // Buscadores e agregadores de link.
+        'google.com',
+        'bing.com',
+        'duckduckgo.com',
+        'yandex.com',
+        'yandex.ru',
+        'baidu.com',
+        'search.yahoo.com',
+        'br.search.yahoo.com',
+    ];
+
+    /**
+     * Domínios de país que nunca hospedam vídeo PT-BR.
+     *
+     * O SearXNG agrega instâncias do mundo inteiro e, para um título conhecido,
+     * devolve páginas de fóruns e enciclopédias estrangeiras — Yahoo japonês,
+     * Zhihu chinês, Naver coreano, portais russos. Nenhuma delas tem o vídeo
+     * dublado que o fallback procura, e abrir cada uma custa uma requisição.
+     *
+     * A lista é de **sufixos de TLD**, não de hosts: `yahoo.co.jp` cobre
+     * `news.yahoo.co.jp` e `search.yahoo.co.jp` de uma vez. Os TLDs de língua
+     * portuguesa (`.br`, `.pt`) ficam de fora de propósito — são justamente os
+     * que podem ter a página dublada.
+     */
+    private const TLDS_IGNORADOS = [
+        '.jp',
+        '.cn',
+        '.kr',
+        '.ru',
+        '.ir',
+        '.vn',
+        '.th',
+        '.id',
+        '.tr',
+        '.pl',
+        '.ua',
+        '.kz',
+    ];
+
+    /**
+     * Extensões de arquivo que nunca são vídeo.
+     *
+     * O motor devolve PDFs, planilhas, documentos e pacotes — material de
+     * referência *sobre* o título, não o vídeo. O extrator já os recusaria, mas
+     * descartá-los aqui evita gastar uma requisição para descobrir isso.
+     */
+    private const EXTENSOES_IGNORADAS = [
+        '.pdf',
+        '.doc',
+        '.docx',
+        '.xls',
+        '.xlsx',
+        '.ppt',
+        '.pptx',
+        '.txt',
+        '.zip',
+        '.rar',
+        '.7z',
+        '.torrent',
+        '.epub',
     ];
 
     /**
@@ -343,8 +436,10 @@ class MotorBuscaWeb
                 continue;
             }
 
-            if ($this->dominioIgnorado($url)) {
-                $ignorados[] = $url;
+            $motivo = $this->motivoDoDescarte($url);
+
+            if ($motivo !== null) {
+                $ignorados[$motivo][] = (string) parse_url($url, PHP_URL_HOST);
 
                 continue;
             }
@@ -353,12 +448,21 @@ class MotorBuscaWeb
         }
 
         if ($ignorados !== []) {
-            Log::debug('Stream direto: domínios de catálogo ignorados.', [
-                'quantidade' => count($ignorados),
-                'dominios' => array_values(array_unique(array_map(
-                    static fn (string $url): string => (string) parse_url($url, PHP_URL_HOST),
+            /*
+             * O log separa os motivos para o diagnóstico ser acionável: muitos
+             * descartes por `tld` significam que a query está a alcançar acervo
+             * estrangeiro; muitos por `dominio` significam que a lista negra
+             * está a segurar fóruns. Sem essa separação, só se saberia que
+             * "algo" foi ignorado.
+             */
+            Log::debug('Stream direto: resultados irrelevantes ignorados.', [
+                'por_motivo' => array_map(
+                    static fn (array $hosts): array => [
+                        'quantidade' => count($hosts),
+                        'dominios' => array_values(array_unique($hosts)),
+                    ],
                     $ignorados
-                ))),
+                ),
             ]);
         }
 
@@ -438,19 +542,48 @@ class MotorBuscaWeb
      */
     private function dominioIgnorado(string $url): bool
     {
+        return $this->motivoDoDescarte($url) !== null;
+    }
+
+    /**
+     * Classifica por que uma URL foi descartada, ou `null` se ela serve.
+     *
+     * Separar o motivo permite um log útil: saber que 12 links caíram por TLD
+     * estrangeiro é diferente de saber que caíram por serem fóruns. A ordem das
+     * checagens vai do mais barato ao mais caro — host vazio, extensão, domínio
+     * e, por fim, TLD.
+     *
+     * @return string|null `extensao`, `dominio`, `tld` ou `null`
+     */
+    private function motivoDoDescarte(string $url): ?string
+    {
         $host = strtolower((string) parse_url($url, PHP_URL_HOST));
 
         if ($host === '') {
-            return false;
+            return null;
+        }
+
+        $caminho = strtolower((string) parse_url($url, PHP_URL_PATH));
+
+        foreach (self::EXTENSOES_IGNORADAS as $extensao) {
+            if (str_ends_with($caminho, $extensao)) {
+                return 'extensao';
+            }
         }
 
         foreach (self::DOMINIOS_IGNORADOS as $dominio) {
             if ($host === $dominio || str_ends_with($host, '.'.$dominio)) {
-                return true;
+                return 'dominio';
             }
         }
 
-        return false;
+        foreach (self::TLDS_IGNORADOS as $tld) {
+            if (str_ends_with($host, $tld)) {
+                return 'tld';
+            }
+        }
+
+        return null;
     }
 
     /**

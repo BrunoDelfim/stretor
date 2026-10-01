@@ -332,6 +332,16 @@ return [
         'stream_direto_termos' => $lista(env('TORRENTS_STREAM_DIRETO_TERMOS'), []),
 
         /*
+         * Plataformas de vídeo ancoradas na query, separadas por vírgula. Cada
+         * item é um operador `site:` (ex.: `site:tokyvideo.com`) que restringe a
+         * busca a um domínio que de fato hospeda vídeo. São os termos mais
+         * precisos da lista: entram antes das intenções genéricas, porque não
+         * dependem do ranqueamento do motor para achar a página do player. Vazio
+         * usa o padrão embutido.
+         */
+        'stream_direto_plataformas' => $lista(env('TORRENTS_STREAM_DIRETO_PLATAFORMAS'), []),
+
+        /*
          * Teto de termos consultados por busca. Cada termo é uma requisição ao
          * motor de busca, e buscadores bloqueiam quem dispara em rajada: um
          * episódio gera dezenas de termos (4 grafias de numeração × 5 intenções,

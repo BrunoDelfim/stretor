@@ -54,6 +54,41 @@ trait TermosStreamDireto
     }
 
     /**
+     * Plataformas de vídeo conhecidas, alvo explícito da busca.
+     *
+     * O SearXNG agrega a web inteira e, para um título conhecido, as primeiras
+     * posições são de catálogo, fórum e enciclopédia — nada disso hospeda o
+     * arquivo. Ancorar a consulta numa plataforma que **de fato** publica vídeo
+     * (`site:tokyvideo.com`) faz o motor devolver páginas de player em vez de
+     * páginas *sobre* o título, e o orçamento curto do fallback rende mais.
+     *
+     * A ordem é de propósito: primeiro as plataformas com acervo PT-BR forte
+     * (Tokyvideo, Dailymotion, OK.ru), depois as que hospedam vídeo mas em
+     * qualquer idioma. A normalização posterior ainda filtra o idioma — aqui o
+     * objetivo é só trazer candidatos que o extrator consiga abrir.
+     *
+     * @return array<int, string>
+     */
+    protected function plataformasDeVideo(): array
+    {
+        $configuradas = config('services.torrents.stream_direto_plataformas', []);
+
+        if (is_array($configuradas) && $configuradas !== []) {
+            return array_values(array_filter(
+                array_map(static fn ($termo): string => trim((string) $termo), $configuradas),
+                static fn (string $termo): bool => $termo !== ''
+            ));
+        }
+
+        return [
+            'site:tokyvideo.com',
+            'site:dailymotion.com',
+            'site:ok.ru',
+            'site:vimeo.com',
+        ];
+    }
+
+    /**
      * Termos de intenção de streaming, na ordem em que valem a consulta.
      *
      * "assistir online" é o que os sites brasileiros usam no `<title>`; "dublado"
@@ -95,6 +130,12 @@ trait TermosStreamDireto
     /**
      * Monta a lista de termos de busca, do mais preciso ao mais amplo.
      *
+     * A lista abre com os termos **ancorados em plataformas de vídeo**
+     * (`site:tokyvideo.com`): são os que têm a maior chance de devolver uma
+     * página de player já na primeira consulta, porque restringem o motor a
+     * domínios que de fato hospedam o arquivo. Só depois vêm as intenções
+     * genéricas, que dependem do ranqueamento do motor e por isso rendem menos.
+     *
      * `$titulosAlternativos` são as outras grafias do nome (tipicamente o título
      * original). Elas entram **por último**, e só na forma genérica — sem a
      * intenção de idioma —, porque a função delas é justamente cobrir o caso em
@@ -118,6 +159,20 @@ trait TermosStreamDireto
 
         $termos = [];
         $intencoes = $this->intencoesDeStreaming();
+        $plataformas = $this->plataformasDeVideo();
+
+        // A âncora de plataforma vem primeiro: é o termo que casa com a página
+        // certa sem depender do ranqueamento do motor. A numeração entra quando
+        // existe, para o episódio não virar a série inteira.
+        foreach ($plataformas as $plataforma) {
+            if ($temporada !== null && $episodio !== null) {
+                foreach ($this->numeracoesDoEpisodio($temporada, $episodio) as $numeracao) {
+                    $termos[] = "{$titulo} {$numeracao} {$plataforma}";
+                }
+            } else {
+                $termos[] = "{$titulo} {$plataforma}";
+            }
+        }
 
         if ($temporada !== null && $episodio !== null) {
             foreach ($this->numeracoesDoEpisodio($temporada, $episodio) as $numeracao) {

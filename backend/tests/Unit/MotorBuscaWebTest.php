@@ -208,6 +208,74 @@ class MotorBuscaWebTest extends TestCase
         $this->assertFalse($this->invocar('dominioIgnorado', '/caminho/relativo'));
     }
 
+    public function test_foruns_e_redes_sociais_sao_ignorados(): void
+    {
+        // Fóruns, Q&A e redes sociais discutem o título, mas nunca hospedam o
+        // arquivo de vídeo — abrir cada um só gasta o orçamento do fallback.
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://www.reddit.com/r/filmes/x'));
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://pt.quora.com/o-que-e-x'));
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://www.zhihu.com/question/1'));
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://www.facebook.com/pagina'));
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://x.com/perfil'));
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://t.me/canal'));
+    }
+
+    public function test_tld_estrangeiro_e_ignorado(): void
+    {
+        // O SearXNG agrega instâncias do mundo inteiro e devolve enciclopédias e
+        // fóruns estrangeiros para qualquer título conhecido. Nenhum deles tem o
+        // vídeo dublado que o fallback procura.
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://news.yahoo.co.jp/articles/x'));
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://site.ru/filme'));
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://portal.cn/video'));
+    }
+
+    public function test_tld_portugues_nao_e_ignorado(): void
+    {
+        // `.br` e `.pt` ficam de fora da lista de TLDs de propósito: são
+        // justamente os que podem ter a página dublada.
+        $this->assertFalse($this->invocar('dominioIgnorado', 'https://site.com.br/filme'));
+        $this->assertFalse($this->invocar('dominioIgnorado', 'https://site.pt/filme'));
+    }
+
+    public function test_extensao_de_arquivo_nao_video_e_ignorada(): void
+    {
+        // PDFs, planilhas e pacotes são material de referência *sobre* o título,
+        // não o vídeo. Descartá-los aqui evita uma requisição inútil.
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://site.com/artigo.pdf'));
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://site.com/planilha.xlsx'));
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://site.com/pacote.zip'));
+    }
+
+    public function test_motivo_do_descarte_classifica_a_causa(): void
+    {
+        // O motivo separado é o que torna o log acionável: saber que os descartes
+        // vieram de TLD estrangeiro é diferente de saber que vieram de fóruns.
+        $this->assertSame('extensao', $this->invocar('motivoDoDescarte', 'https://site.com/x.pdf'));
+        $this->assertSame('dominio', $this->invocar('motivoDoDescarte', 'https://www.imdb.com/title/tt1'));
+        $this->assertSame('tld', $this->invocar('motivoDoDescarte', 'https://site.ru/filme'));
+        $this->assertNull($this->invocar('motivoDoDescarte', 'https://agregador.com/assistir/filme'));
+    }
+
+    public function test_extrair_resultados_json_descarta_foruns_e_estrangeiros(): void
+    {
+        $json = json_encode([
+            'results' => [
+                ['url' => 'https://news.yahoo.co.jp/articles/x'],
+                ['url' => 'https://www.zhihu.com/question/1'],
+                ['url' => 'https://site.com/artigo.pdf'],
+                ['url' => 'https://agregador.com/assistir/filme'],
+            ],
+        ]);
+
+        // Só o agregador de vídeo sobrevive: fórum estrangeiro, Q&A e PDF caem
+        // antes de virarem candidatos a página.
+        $this->assertSame(
+            ['https://agregador.com/assistir/filme'],
+            $this->invocar('extrairResultadosJson', $json)
+        );
+    }
+
     public function test_extrair_resultados_json_descarta_dominios_de_catalogo(): void
     {
         $json = json_encode([
