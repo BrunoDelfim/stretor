@@ -113,6 +113,17 @@ class TorrentService
          */
         $this->catalogo->reconciliarCenso($fontes);
 
+        /*
+         * O orçamento é fechado aqui, e não dentro de cada canal. Ele é
+         * compartilhado entre a cascata de torrents e o stream direto — os dois
+         * são metades da mesma busca e cada um pode ser o fallback do outro.
+         * Fechá-lo ao fim de um canal deixaria o outro sem prazo e reabriria um
+         * relógio novo do zero, que é justamente como os dois orçamentos somavam
+         * e estouravam o tempo do frontend. Este é o único ponto por onde todos os
+         * desfechos passam, então é aqui que a busca inteira encerra o relógio.
+         */
+        $this->catalogo->fecharOrcamento();
+
         $this->registrar($fontes, $titulos, $ano, $imdbId);
 
         return $fontes;

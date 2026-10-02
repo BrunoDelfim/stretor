@@ -3129,7 +3129,7 @@ TORRENTS_STREAM_DIRETO_TERMOS=
 TORRENTS_STREAM_DIRETO_MAX_TERMOS=8
 TORRENTS_STREAM_DIRETO_INTERVALO_MIN=800
 TORRENTS_STREAM_DIRETO_INTERVALO_MAX=2200
-TORRENTS_STREAM_DIRETO_MAX_PAGINAS=6
+TORRENTS_STREAM_DIRETO_MAX_PAGINAS=10
 TORRENTS_STREAM_DIRETO_MAX_FONTES=2
 TORRENTS_STREAM_DIRETO_TEMPO_LIMITE=10
 TORRENTS_STREAM_DIRETO_ORCAMENTO=12
@@ -3154,11 +3154,13 @@ online`). A query é natural: não há mais operador `site:` nem lista de plataf
 a configurar. Quem filtra o resultado é a lista negra do `MotorBuscaWeb` e, na
 ponta, a prova de mídia da extração.
 `TORRENTS_STREAM_DIRETO_MAX_PAGINAS` limita quantas páginas o scraper abre por
-consulta. `TORRENTS_STREAM_DIRETO_MAX_FONTES` é o alvo de fontes distintas que
-encerra a varredura (padrão 2): assim que há este número de fontes na mão, o laço
-para, sem gastar o orçamento restante atrás de mais opções. É diferente do teto de
-páginas — uma página pode render várias fontes, e o que o usuário escolhe é a
-fonte. Zero ou negativo desliga o corte.
+consulta (padrão 10). `TORRENTS_STREAM_DIRETO_MAX_FONTES` é o alvo de fontes
+distintas que encerra a varredura (padrão 2): assim que há este número de fontes
+na mão, o laço para, sem gastar o orçamento restante atrás de mais opções. É
+diferente do teto de páginas — uma página pode render várias fontes, e o que o
+usuário escolhe é a fonte. Zero ou negativo desliga o corte. Como o alvo de fontes
+corta cedo quando há fontes, o teto de páginas só pesa no caso em que a busca não
+achou nada — e é aí que a folga maior ajuda.
 
 O SearXNG interno é configurado por
 [`docker/searxng/settings.yml`](../docker/searxng/settings.yml:1), que liga a
@@ -3219,13 +3221,57 @@ A montagem final, o corte de idioma e o censo são idênticos nos dois caminhos:
 única coisa que muda é a ordem. Por isso os dois canais são métodos privados que
 devolvem a lista pronta, e não blocos duplicados dentro de `fontes()`.
 
+##### O censo do stream direto não pode ser apagado pelo fallback cruzado
+
+O stream direto é o único provedor que não passa pela cascata: ele é acionado à
+parte, antes ou depois dela, e o seu censo é preenchido à mão em
+`buscarFallbackDireto()`. Isso criava uma mentira no relatório quando o roteador
+mandava a série antiga para o stream direto primeiro: ele rodava, voltava vazio,
+e o fallback cruzado chamava `buscar()` — que **zera o censo** no início. O
+registro da consulta ao stream direto era apagado junto, e a cobertura final
+dizia `nao_consultado` de um provedor que tinha acabado de ser consultado.
+
+O sintoma era confuso: o log mostrava o stream direto sendo acionado, mas o
+relatório jurava que ele nunca foi perguntado. A correção preserva o registro do
+stream direto em `reiniciarCenso()`: a cascata zera os demais, mas mantém o que o
+fallback direto já contou. Assim `nao_consultado` volta a significar "não foi
+perguntado" — e não "foi perguntado, mas a cascata passou por cima do registro".
+
+##### O relógio é um só: os canais não podem somar orçamentos
+
+O [`OrcamentoBusca`] é um singleton compartilhado, mas cada canal chamava `abrir()`
+com o seu próprio valor — e cada chamada **reiniciava** o prazo. O stream direto
+abria 12 s, fechava, e a cascata de torrents abria 45 s do zero. Os dois orçamentos
+somavam: no caso real, o stream direto gastou 13 s em páginas inúteis (um HTTP 402,
+um site sem mídia e um que não respondeu) e a cascata ainda levou mais 21 s até o
+Torznab esgotar o teto. Trinta e quatro segundos no total, acima do que o frontend
+espera — e o sintoma era exatamente o que o usuário relatou: "deveria ser rápido,
+já que pega 2 fontes só".
+
+A correção troca o `abrir()` por `abrirSeFechado()`: a abertura vira **idempotente**.
+O primeiro canal a chegar ancora o prazo; os demais o respeitam em vez de reancorar.
+O relógio passa a ser um só, de verdade, e não dois relógios que se somam.
+
+O stream direto continua com o teto próprio menor (`stream_direto_orcamento`, 12 s),
+mas ele entra como **limite**, não como reinício. Quando o global já está de pé, o
+`limitar()` encolhe o prazo para o menor entre o que resta e os 12 s do fallback —
+e nunca o estica. Sem isto, o `restante()` devolveria os 45 s do global e o socorro
+viraria uma segunda busca inteira, que é justamente o timeout que a estratégia de
+idade veio evitar.
+
+O fechamento também mudou de dono. Antes cada canal fechava o próprio orçamento no
+`finally`; agora quem fecha é o [`TorrentService`], no fim da busca inteira, via
+`fecharOrcamento()`. É o único ponto por onde todos os desfechos passam, então é
+ali que o relógio encerra — e a próxima busca começa limpa, sem herdar um prazo
+vencido.
+
 #### O alvo de fontes: parar quando já há o suficiente
 
 O laço do scraper tinha um defeito silencioso: o corte de "já tenho o bastante"
-comparava `count($fontes)` com o **teto de páginas** (`stream_direto_max_paginas`,
-padrão 6). São grandezas diferentes — uma página pode render várias fontes —, e o
-efeito era o laço só parar depois de abrir seis páginas, mesmo com duas fontes já
-na mão. O fallback é socorro, não catálogo: gastar o orçamento atrás de mais
+comparava `count($fontes)` com o **teto de páginas** (`stream_direto_max_paginas`).
+São grandezas diferentes — uma página pode render várias fontes —, e o efeito era
+o laço só parar depois de abrir o teto inteiro de páginas, mesmo com duas fontes
+já na mão. O fallback é socorro, não catálogo: gastar o orçamento atrás de mais
 opções quando já há o suficiente para escolher só atrasa a resposta.
 
 A correção separa as duas coisas. `stream_direto_max_paginas` continua limitando
@@ -3233,6 +3279,35 @@ quantas páginas são abertas; `stream_direto_max_fontes` (padrão 2) é o alvo 
 fontes distintas que encerra a varredura. O alvo é configurável porque
 "suficiente" é uma decisão de operação, não uma verdade do código — e zero ou
 negativo desliga o corte, devolvendo o comportamento antigo.
+
+O teto de páginas subiu de 6 para 10 **por causa dessa separação**. Com o alvo de
+fontes cortando cedo quando há fontes, o teto só entra em cena quando a busca
+**não** achou nada — e aí um punhado de páginas a mais é o que dá chance de
+alcançar o agregador certo em vez de morrer no meio do caminho. O custo do teto
+maior é pago apenas no caso que já ia falhar.
+
+#### A ordem das páginas: o agregador de vídeo sobe
+
+Separar o alvo do teto não bastava. O provedor abre as páginas na ordem que o
+motor devolve, e o motor mistura agregadores de vídeo com sites de nome parecido
+que passam pela lista negra sem ter player nenhum. No caso real, o episódio 1
+achou o Tokyvideo porque ele caiu entre as primeiras páginas; o episódio 2 não,
+porque o teto foi consumido por `donasloja.com.br`, `donasacessorios.com.br` e
+`bancodeseries.com.br` — páginas sem prova de mídia — antes de o Tokyvideo ser
+alcançado.
+
+A correção é uma **reordenação**, não uma nova lista de aceitação. O
+[`MotorBuscaWeb`] mantém uma lista de domínios com vocação de player
+(`DOMINIOS_DE_VIDEO`: Tokyvideo, Pobreflix, Rede Canais, Hypeflix, Dailymotion,
+Archive.org, entre outros) e sobe essas páginas para o topo, preservando a ordem
+original dentro de cada grupo. A prova de mídia continua decidindo o que vira
+fonte — um domínio desconhecido com player segue valendo, e um domínio "de vídeo"
+sem player segue sendo descartado. A lista só decide **em que ordem** o orçamento
+é gasto.
+
+Um domínio que apareceu nos logs como "sem prova de mídia" não entra na lista: o
+`bancodeseries.com.br` foi removido justamente por isso. A lista é uma aposta
+baseada na prática, e a prática corrige a lista.
 
 #### Sem ano conhecido, a aposta é o fluxo normal
 

@@ -76,6 +76,7 @@ class MontagemFinalTest extends TestCase
         // expectativa, o gatilho do `TorrentService` chamaria o método real.
         $catalogo->shouldReceive('buscarFallbackDireto')->andReturn([]);
         $catalogo->shouldReceive('reconciliarCenso')->andReturnNull();
+        $catalogo->shouldReceive('fecharOrcamento')->andReturnNull();
         $catalogo->shouldReceive('temDublado')->andReturnUsing(
             fn (array $lista): bool => collect($lista)->contains(
                 fn (array $f): bool => in_array($f['idioma'], [IdiomaFonte::DUBLADO->value, IdiomaFonte::DUAL_AUDIO->value], true)

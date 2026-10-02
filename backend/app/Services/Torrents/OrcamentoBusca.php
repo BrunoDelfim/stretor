@@ -40,6 +40,57 @@ class OrcamentoBusca
     }
 
     /**
+     * Abre o orçamento só se ainda não houver um em curso.
+     *
+     * O orçamento é um singleton compartilhado, mas cada canal da busca chamava
+     * `abrir()` com o seu próprio valor — e cada chamada **reiniciava** o relógio.
+     * O stream direto abria 12 s, fechava, e a cascata de torrents abria 45 s do
+     * zero: os dois orçamentos somavam e a busca inteira podia passar de 57 s,
+     * estourando o limite do frontend. Com a abertura idempotente, o primeiro
+     * canal a chegar ancora o prazo e os demais o respeitam — o relógio passa a
+     * ser um só, de verdade.
+     *
+     * Devolve `true` quando foi esta chamada que abriu o orçamento, para quem
+     * abriu saber que também é quem deve fechá-lo.
+     */
+    public function abrirSeFechado(int $segundos): bool
+    {
+        if ($this->prazo !== null) {
+            return false;
+        }
+
+        $this->abrir($segundos);
+
+        return true;
+    }
+
+    /** Há uma busca em curso com o relógio de pé? */
+    public function emCurso(): bool
+    {
+        return $this->prazo !== null;
+    }
+
+    /**
+     * Encolhe o prazo para o menor entre o que resta e o teto pedido.
+     *
+     * Serve para um canal que tem teto próprio **menor** que o global, mas que
+     * não pode reiniciar o relógio. O stream direto é o caso: ele tem 12 s de
+     * teto, mas quando entra como fallback cruzado o relógio global (45 s) já
+     * está de pé. Sem encolher, o `restante()` devolveria 45 s e o socorro
+     * viraria uma segunda busca inteira — exatamente o timeout que se quer
+     * evitar. Aqui o prazo só **diminui**, nunca aumenta: um teto maior que o
+     * restante é ignorado.
+     */
+    public function limitar(int $segundos): void
+    {
+        if ($this->prazo === null) {
+            return;
+        }
+
+        $this->prazo = min($this->prazo, microtime(true) + max(1, $segundos));
+    }
+
+    /**
      * Fecha o orçamento ao fim da busca.
      *
      * Sem isto, uma busca encerrada deixaria o prazo de pé e a próxima — que

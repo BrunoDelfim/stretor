@@ -83,6 +83,7 @@ class SegundaTentativaTest extends TestCase
         );
 
         $catalogo->shouldReceive('reconciliarCenso')->andReturnNull();
+        $catalogo->shouldReceive('fecharOrcamento')->andReturnNull();
 
         // Estes testes olham as fases de título, não o fallback: o stream direto
         // devolve vazio para que a lista final reflita só o que a cascata juntou.

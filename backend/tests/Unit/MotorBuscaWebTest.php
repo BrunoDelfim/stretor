@@ -413,4 +413,60 @@ class MotorBuscaWebTest extends TestCase
         $this->assertStringNotContainsString('Guzzle', $agente);
         $this->assertStringNotContainsString('curl', $agente);
     }
+
+    public function test_pagina_de_dominio_de_video_sobe_na_ordem(): void
+    {
+        $urls = [
+            'https://www.donasloja.com.br/',
+            'https://www.tokyvideo.com/br/video/desperate-housewives-pt-01x02',
+            'https://bancodeseries.com.br/index.php?action=ss&serieid=1171',
+        ];
+
+        $ordenadas = $this->invocar('priorizarPaginasDeVideo', $urls);
+
+        // O agregador com player vem primeiro; os demais mantêm a ordem original.
+        $this->assertSame('https://www.tokyvideo.com/br/video/desperate-housewives-pt-01x02', $ordenadas[0]);
+        $this->assertSame('https://www.donasloja.com.br/', $ordenadas[1]);
+        $this->assertSame('https://bancodeseries.com.br/index.php?action=ss&serieid=1171', $ordenadas[2]);
+    }
+
+    public function test_dominio_sem_player_conhecido_nao_sobe(): void
+    {
+        // O `bancodeseries.com.br` apareceu nos logs como "página sem prova de
+        // mídia": ele passa pelo filtro de domínio, mas não tem player. Não pode
+        // ocupar as primeiras páginas do orçamento.
+        $this->assertFalse($this->invocar('dominioDeVideo', 'https://bancodeseries.com.br/index.php?action=ss&serieid=1171'));
+    }
+
+    public function test_ordem_original_e_preservada_dentro_de_cada_grupo(): void
+    {
+        $urls = [
+            'https://site-a.com/pagina',
+            'https://pobreflix.bike/filme/1',
+            'https://site-b.com/pagina',
+            'https://redecanais.hair/episodio/2',
+        ];
+
+        $ordenadas = $this->invocar('priorizarPaginasDeVideo', $urls);
+
+        $this->assertSame([
+            'https://pobreflix.bike/filme/1',
+            'https://redecanais.hair/episodio/2',
+            'https://site-a.com/pagina',
+            'https://site-b.com/pagina',
+        ], $ordenadas);
+    }
+
+    public function test_dominio_parecido_nao_e_tratado_como_video(): void
+    {
+        // "naotokyvideo.com" termina com o texto, mas não é subdomínio do domínio
+        // de vídeo — a comparação é por sufixo com o ponto à frente.
+        $this->assertFalse($this->invocar('dominioDeVideo', 'https://naotokyvideo.com/video/1'));
+        $this->assertTrue($this->invocar('dominioDeVideo', 'https://www.tokyvideo.com/video/1'));
+    }
+
+    public function test_url_sem_host_nao_e_dominio_de_video(): void
+    {
+        $this->assertFalse($this->invocar('dominioDeVideo', 'nao-e-url'));
+    }
 }

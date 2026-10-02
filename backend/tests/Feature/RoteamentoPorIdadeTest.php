@@ -97,6 +97,7 @@ class RoteamentoPorIdadeTest extends TestCase
             return $diretas;
         });
         $catalogo->shouldReceive('reconciliarCenso')->andReturnNull();
+        $catalogo->shouldReceive('fecharOrcamento')->andReturnNull();
         // A segunda fase (título original) consulta a suficiência PT-BR antes de
         // rodar; sem esta expectativa o dublê estoura ao ser perguntado.
         $catalogo->shouldReceive('ptBrSuficiente')->andReturnTrue();

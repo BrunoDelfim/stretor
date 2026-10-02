@@ -98,6 +98,7 @@ class StreamDiretoTest extends TestCase
         $catalogo->shouldReceive('buscar')->andReturn($fontes);
         $catalogo->shouldReceive('buscarFallbackDireto')->andReturn($diretas);
         $catalogo->shouldReceive('reconciliarCenso')->andReturnNull();
+        $catalogo->shouldReceive('fecharOrcamento')->andReturnNull();
         $catalogo->shouldReceive('temDublado')->andReturnUsing(
             fn (array $lista): bool => collect($lista)->contains(
                 fn (array $f): bool => in_array($f['idioma'], [IdiomaFonte::DUBLADO->value, IdiomaFonte::DUAL_AUDIO->value], true)
@@ -289,6 +290,7 @@ class StreamDiretoTest extends TestCase
         $catalogo->shouldReceive('buscar')->once()->andReturn([]);
         $catalogo->shouldReceive('buscarFallbackDireto')->andReturn([]);
         $catalogo->shouldReceive('reconciliarCenso')->andReturnNull();
+        $catalogo->shouldReceive('fecharOrcamento')->andReturnNull();
 
         $servico = new TorrentService($catalogo);
 
@@ -323,6 +325,7 @@ class StreamDiretoTest extends TestCase
                 return [];
             });
         $catalogo->shouldReceive('reconciliarCenso')->andReturnNull();
+        $catalogo->shouldReceive('fecharOrcamento')->andReturnNull();
 
         $servico = new TorrentService($catalogo);
 
@@ -353,6 +356,7 @@ class StreamDiretoTest extends TestCase
                 return [];
             });
         $catalogo->shouldReceive('reconciliarCenso')->andReturnNull();
+        $catalogo->shouldReceive('fecharOrcamento')->andReturnNull();
 
         $servico = new TorrentService($catalogo);
 

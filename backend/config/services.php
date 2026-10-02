@@ -360,8 +360,14 @@ return [
          * Teto de páginas abertas por busca. Cada página é uma requisição, e o
          * fallback é socorro, não catálogo: uma vez que há links tocáveis, gastar
          * o orçamento em mais páginas só atrasa a resposta.
+         *
+         * O teto subiu de 6 para 10 porque o corte real de custo é o alvo de
+         * fontes: quando há fontes na mão, o laço para muito antes de chegar
+         * aqui. O teto só entra em cena quando a busca **não** achou nada — e aí
+         * um punhado de páginas a mais é o que dá chance de alcançar o agregador
+         * certo, em vez de morrer no meio do caminho.
          */
-        'stream_direto_max_paginas' => (int) env('TORRENTS_STREAM_DIRETO_MAX_PAGINAS', 6),
+        'stream_direto_max_paginas' => (int) env('TORRENTS_STREAM_DIRETO_MAX_PAGINAS', 10),
 
         /*
          * Alvo de fontes distintas que encerra a varredura. É diferente do teto de

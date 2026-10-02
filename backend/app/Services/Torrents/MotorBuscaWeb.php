@@ -398,6 +398,44 @@ class MotorBuscaWeb
         'http://searxng:8080/search',
     ];
 
+    /**
+     * Domínios que, pela prática, hospedam player de vídeo.
+     *
+     * A lista negra corta o lixo grosso, mas não ordena o que sobra: o motor
+     * devolve, para um título de série, uma mistura de agregadores de vídeo e
+     * sites de nome parecido que passam pelo filtro sem ter player nenhum. Como o
+     * provedor abre as páginas na ordem recebida e para no teto de páginas, um
+     * punhado de páginas inúteis no topo consumia o orçamento antes de o
+     * agregador certo ser alcançado — foi assim que o episódio 2 deixou de achar
+     * o Tokyvideo que o episódio 1 achou.
+     *
+     * Esta lista **não** é critério de aceitação: ela só reordena. A prova de
+     * mídia continua decidindo o que vira fonte, e um domínio desconhecido com
+     * player segue valendo. O ganho é gastar as primeiras páginas do orçamento
+     * com quem tem chance real de ter o vídeo.
+     */
+    private const DOMINIOS_DE_VIDEO = [
+        'tokyvideo.com',
+        'pobreflix.bike',
+        'pobreflix.com',
+        'redecanais.in',
+        'redecanais.hair',
+        'redecanais.la',
+        'redecanais.vc',
+        'hypeflixnet.com',
+        'hypeflix.com',
+        'assistaonline.tv',
+        'superflixapi.com',
+        'overflix.com.br',
+        'topflix.tv',
+        'megafilmeshd.net',
+        'filmesonlinegratis.com',
+        'dailymotion.com',
+        'archive.org',
+        'ok.ru',
+        'vimeo.com',
+    ];
+
     public function __construct(
         private readonly OrcamentoBusca $orcamento,
         private readonly ClienteHttp $cliente,
@@ -471,12 +509,73 @@ class MotorBuscaWeb
 
         $urls = array_values(array_unique($urls));
 
+        /*
+         * A reordenação vem depois da deduplicação: o mesmo agregador pode
+         * aparecer em mais de um motor, e priorizar antes de deduplicar só
+         * repetiria a mesma página no topo. O que sobe são os domínios com
+         * vocação de player; o resto mantém a ordem do motor.
+         */
+        $urls = $this->priorizarPaginasDeVideo($urls);
+
         Log::debug('Stream direto: busca concluída.', [
             'termo' => $termo,
             'total_de_links' => count($urls),
         ]);
 
         return $urls;
+    }
+
+    /**
+     * Sobe as páginas de domínios com vocação de player, preservando a ordem.
+     *
+     * A ordenação é estável: dentro de cada grupo (provável e improvável), a
+     * ordem original do motor é mantida. Isso importa porque o ranqueamento do
+     * motor ainda é sinal — só não pode ser o único, sob pena de o orçamento
+     * acabar antes de o agregador certo ser aberto.
+     *
+     * @param  array<int, string>  $urls
+     * @return array<int, string>
+     */
+    private function priorizarPaginasDeVideo(array $urls): array
+    {
+        $provaveis = [];
+        $demais = [];
+
+        foreach ($urls as $url) {
+            if ($this->dominioDeVideo($url)) {
+                $provaveis[] = $url;
+
+                continue;
+            }
+
+            $demais[] = $url;
+        }
+
+        return array_merge($provaveis, $demais);
+    }
+
+    /**
+     * Diz se a URL pertence a um domínio com vocação de player.
+     *
+     * A checagem é por sufixo de host, com o ponto à frente, para casar
+     * subdomínios (`www.tokyvideo.com`) sem casar um domínio que apenas termine
+     * com o mesmo texto.
+     */
+    private function dominioDeVideo(string $url): bool
+    {
+        $host = strtolower((string) parse_url($url, PHP_URL_HOST));
+
+        if ($host === '') {
+            return false;
+        }
+
+        foreach (self::DOMINIOS_DE_VIDEO as $dominio) {
+            if ($host === $dominio || str_ends_with($host, '.'.$dominio)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

@@ -158,6 +158,16 @@ class CatalogoProvedores
     private bool $avisouPrazo = false;
 
     /**
+     * Diz se foi este canal que abriu o orçamento da busca.
+     *
+     * O orçamento é um singleton compartilhado entre os canais, mas só quem o
+     * abriu deve fechá-lo. Sem esta posse explícita, o stream direto — que é o
+     * canal preferido das séries antigas — fecharia o relógio ao terminar e
+     * deixaria a cascata de torrents (o fallback cruzado) sem prazo nenhum.
+     */
+    private bool $orcamentoAbertoAqui = false;
+
+    /**
      * Provedor de stream direto — o fallback de conteúdo raro.
      *
      * Fica fora dos degraus de propósito: não é consultado junto com os torrents,
@@ -237,7 +247,9 @@ class CatalogoProvedores
          * O relógio é compartilhado com o [`ClienteHttp`] (mesmo singleton), para
          * que o socorro pelo FlareSolverr também encolha junto com o prazo.
          */
-        $this->orcamento->abrir((int) config('services.torrents.orcamento_busca', 45));
+        $this->orcamentoAbertoAqui = $this->orcamento->abrirSeFechado(
+            (int) config('services.torrents.orcamento_busca', 45)
+        );
         $this->avisouPrazo = false;
 
         /*
@@ -518,7 +530,29 @@ class CatalogoProvedores
 
         $inicio = microtime(true);
 
-        $this->orcamento->abrir((int) config('services.torrents.stream_direto_orcamento', 12));
+        /*
+         * O stream direto **não** reabre o orçamento. Antes ele abria o próprio
+         * relógio (12 s) e o fechava ao terminar; quando a cascata de torrents
+         * assumia, ela abria outro relógio (45 s) do zero — os dois somavam e a
+         * busca inteira podia passar de 57 s, estourando o limite do frontend.
+         *
+         * Agora o relógio é um só, ancorado por quem chega primeiro. O stream
+         * direto continua com um teto próprio menor (`stream_direto_orcamento`),
+         * mas ele é aplicado como **teto**, não como reinício: se o global já
+         * estiver de pé, o fallback respeita o que resta dele. É o que impede o
+         * socorro de virar uma segunda busca inteira.
+         */
+        $tetoProprio = (int) config('services.torrents.stream_direto_orcamento', 12);
+        $this->orcamentoAbertoAqui = $this->orcamento->abrirSeFechado($tetoProprio);
+
+        /*
+         * Quando o relógio já estava de pé (fallback cruzado), o teto próprio do
+         * stream direto entra como **limite**, não como reinício: o prazo encolhe
+         * para o menor entre o que resta do global e os 12 s do fallback. Sem
+         * isto, o `restante()` devolveria os 45 s do global e o socorro gastaria
+         * o orçamento inteiro — o timeout que a estratégia de idade veio evitar.
+         */
+        $this->orcamento->limitar($tetoProprio);
 
         try {
             /*
@@ -538,7 +572,13 @@ class CatalogoProvedores
 
             $fontes = [];
         } finally {
-            $this->orcamento->fechar();
+            /*
+             * O relógio **não** é fechado aqui. Ele é compartilhado entre os
+             * canais, e fechá-lo ao fim do stream direto deixaria a cascata de
+             * torrents — que pode entrar logo depois como fallback cruzado — sem
+             * prazo nenhum, reabrindo um orçamento novo do zero. Quem fecha é o
+             * [`TorrentService`], no fim da busca inteira, via `fecharOrcamento()`.
+             */
         }
 
         $this->censo[$id]['consultas']++;
@@ -624,6 +664,22 @@ class CatalogoProvedores
     }
 
     /**
+     * Fecha o orçamento compartilhado ao fim da busca inteira.
+     *
+     * O relógio é aberto pelo primeiro canal que chega (via `abrirSeFechado()`) e
+     * precisa continuar de pé enquanto houver um canal por rodar — a cascata de
+     * torrents e o stream direto são duas metades da mesma busca, e cada um pode
+     * ser o fallback do outro. Por isso nenhum canal fecha o orçamento sozinho: o
+     * [`TorrentService`] chama este método uma única vez, quando a busca acabou de
+     * verdade. Sem o fechamento, a próxima busca herdaria um relógio já vencido
+     * caso alguma chamada acontecesse antes do próximo `abrir()`.
+     */
+    public function fecharOrcamento(): void
+    {
+        $this->orcamento->fechar();
+    }
+
+    /**
      * Relatório da cobertura da última busca: o que cada provedor respondeu.
      *
      * É a resposta verificável a "perguntamos a todos?". Cada provedor do registro
@@ -701,9 +757,20 @@ class CatalogoProvedores
      * Roda também no construtor: assim uma busca que nunca chegou a consultar nada
      * ainda devolve o registro completo, com todo mundo em `nao_consultado`, em vez
      * de um relatório vazio que não distingue nada.
+     *
+     * O stream direto é a exceção. Ele não passa pela cascata: é acionado à parte,
+     * antes ou depois dela, e o seu censo é preenchido à mão em
+     * [`buscarFallbackDireto()`]. Quando o roteador manda a série antiga para o
+     * stream direto primeiro e ele volta vazio, o fallback cruzado chama `buscar()`
+     * — que zera o censo e apagaria o registro do stream direto. O relatório então
+     * diria `nao_consultado` de um provedor que rodou, o que é justamente a mentira
+     * que o censo existe para evitar. Preservar o registro dele aqui mantém a
+     * contagem da consulta que já aconteceu.
      */
     private function reiniciarCenso(): void
     {
+        $streamDireto = $this->censo[$this->streamDireto->identificador()] ?? null;
+
         $this->censo = [];
         $this->fontesNoCenso = [];
 
@@ -724,6 +791,10 @@ class CatalogoProvedores
                 // não devolver a chave ausente.
                 'na_lista' => 0,
             ];
+        }
+
+        if ($streamDireto !== null) {
+            $this->censo[$this->streamDireto->identificador()] = $streamDireto;
         }
     }
 
@@ -815,12 +886,11 @@ class CatalogoProvedores
     private function encerrar(array $fontes, array $titulos, ?int $temporada, ?int $episodio): array
     {
         /*
-         * O orçamento é fechado aqui porque este é o único ponto por onde todos os
-         * desfechos passam. Deixá-lo de pé faria a próxima busca — que o reabre
-         * logo no início — herdar um relógio já vencido caso alguma chamada
-         * acontecesse antes do `abrir()`.
+         * O orçamento **não** é fechado aqui. Ele é compartilhado entre os canais
+         * e precisa continuar de pé quando a cascata é só a primeira metade da
+         * busca — o fallback cruzado ainda pode entrar depois. Quem fecha é o
+         * [`TorrentService`], no fim da busca inteira, via `fecharOrcamento()`.
          */
-        $this->orcamento->fechar();
 
         $cobertura = $this->cobertura();
 
