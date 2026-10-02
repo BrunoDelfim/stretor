@@ -25,8 +25,8 @@ use Tests\TestCase;
  * 12 s, fechava, e a cascata de torrents abria 45 s do zero: os dois orçamentos
  * somavam e a busca inteira podia passar de 57 s, estourando o limite do
  * frontend. Estes testes provam que o primeiro canal ancora o prazo e os demais o
- * respeitam, e que o teto próprio do stream direto encolhe o prazo em vez de
- * reiniciá-lo.
+ * respeitam, e que o stream direto — quando é o único canal — trabalha com o
+ * orçamento inteiro.
  */
 class OrcamentoCompartilhadoTest extends TestCase
 {
@@ -83,7 +83,7 @@ class OrcamentoCompartilhadoTest extends TestCase
      * A abertura idempotente: o segundo canal não reinicia o relógio.
      *
      * É o coração da correção. Se `abrirSeFechado()` reiniciasse o prazo, o
-     * stream direto (12 s) e a cascata (45 s) voltariam a somar.
+     * stream direto e a cascata voltariam a somar os seus orçamentos.
      */
     public function test_segunda_abertura_nao_reinicia_o_relogio(): void
     {
@@ -97,67 +97,53 @@ class OrcamentoCompartilhadoTest extends TestCase
     }
 
     /**
-     * O teto próprio encolhe o prazo, nunca o estica.
+     * O caso central: o stream direto abre o orçamento global, não um teto menor.
      *
-     * Quando o global (45 s) já está de pé e o stream direto entra como fallback
-     * cruzado, o teto de 12 s precisa valer como **limite**. Sem isto, o
-     * `restante()` devolveria os 45 s do global e o socorro viraria uma segunda
-     * busca inteira.
+     * Quando o roteador manda a série antiga para o stream direto, ele é o único
+     * canal e precisa do tempo inteiro para varrer os termos e páginas até achar a
+     * fonte. Se ele abrisse um teto próprio de 12 s, o relógio global ficaria
+     * travado nesse valor — e a cascata de torrents, que pode entrar como fallback
+     * cruzado no sentido oposto, morreria sem tempo.
      */
-    public function test_limitar_encolhe_o_prazo_global(): void
+    public function test_stream_direto_abre_o_orcamento_global(): void
     {
         $orcamento = new OrcamentoBusca();
-        $orcamento->abrir(45);
+        $catalogo = $this->catalogo($orcamento);
 
-        $orcamento->limitar(12);
+        $catalogo->buscarFallbackDireto(['Donas de Casa Desesperadas'], 2004, null, 1, 1);
 
-        $this->assertLessThanOrEqual(12, $orcamento->restante(), 'O teto de 12 s precisa encolher o prazo global.');
+        $this->assertTrue($orcamento->emCurso(), 'O stream direto precisa deixar o relógio de pé.');
+        $this->assertGreaterThan(
+            12,
+            $orcamento->restante(),
+            'O stream direto precisa do orçamento global, não de um teto de 12 s.'
+        );
     }
 
     /**
-     * Um teto maior que o restante é ignorado.
+     * O stream direto não reabre o relógio da cascata.
      *
-     * O `limitar()` só diminui: se o prazo global tem 12 s e alguém pede 45 s, o
-     * relógio continua com os 12 s. Esticar seria reabrir o orçamento por outra
-     * porta.
-     */
-    public function test_limitar_nunca_estica_o_prazo(): void
-    {
-        $orcamento = new OrcamentoBusca();
-        $orcamento->abrir(12);
-
-        $orcamento->limitar(45);
-
-        $this->assertLessThanOrEqual(12, $orcamento->restante(), 'Um teto maior não pode esticar o prazo.');
-    }
-
-    /**
-     * O caso central: o stream direto não reabre o relógio da cascata.
-     *
-     * O roteador manda a série antiga para o stream direto primeiro. Ele abre o
-     * orçamento (12 s) e o deixa de pé. Quando a cascata de torrents assume como
-     * fallback cruzado, ela encontra o relógio já aberto e **não** o reinicia: o
-     * prazo continua ancorado nos 12 s do stream direto, e não nos 45 s da
-     * cascata. É o que impede a soma que estourava o frontend.
+     * Quando a cascata de torrents roda primeiro e cai no fallback cruzado, o
+     * stream direto encontra o relógio já aberto e **não** o reinicia: o prazo
+     * continua ancorado no global da cascata. É o que impede a soma que estourava
+     * o frontend.
      */
     public function test_stream_direto_nao_reabre_o_relogio_da_cascata(): void
     {
         $orcamento = new OrcamentoBusca();
         $catalogo = $this->catalogo($orcamento);
 
-        // O roteador manda a série antiga para o stream direto primeiro.
+        // A cascata roda primeiro e ancora o relógio global.
+        $catalogo->buscar(['Donas de Casa Desesperadas S01E01'], 2004, null, 1, 1);
+        $restanteAposCascata = $orcamento->restante();
+
+        // O fallback cruzado aciona o stream direto, que não pode reancorar o prazo.
         $catalogo->buscarFallbackDireto(['Donas de Casa Desesperadas'], 2004, null, 1, 1);
 
-        $this->assertTrue($orcamento->emCurso(), 'O stream direto precisa deixar o relógio de pé para a cascata.');
-        $this->assertLessThanOrEqual(12, $orcamento->restante(), 'O relógio do stream direto é de 12 s.');
-
-        // O fallback cruzado aciona a cascata, que não pode reancorar o prazo.
-        $catalogo->buscar(['Donas de Casa Desesperadas S01E01'], 2004, null, 1, 1);
-
         $this->assertLessThanOrEqual(
-            12,
+            $restanteAposCascata,
             $orcamento->restante(),
-            'A cascata não pode reabrir o relógio: o prazo continua ancorado no stream direto.'
+            'O stream direto não pode reabrir o relógio: o prazo continua ancorado na cascata.'
         );
     }
 

@@ -71,26 +71,6 @@ class OrcamentoBusca
     }
 
     /**
-     * Encolhe o prazo para o menor entre o que resta e o teto pedido.
-     *
-     * Serve para um canal que tem teto próprio **menor** que o global, mas que
-     * não pode reiniciar o relógio. O stream direto é o caso: ele tem 12 s de
-     * teto, mas quando entra como fallback cruzado o relógio global (45 s) já
-     * está de pé. Sem encolher, o `restante()` devolveria 45 s e o socorro
-     * viraria uma segunda busca inteira — exatamente o timeout que se quer
-     * evitar. Aqui o prazo só **diminui**, nunca aumenta: um teto maior que o
-     * restante é ignorado.
-     */
-    public function limitar(int $segundos): void
-    {
-        if ($this->prazo === null) {
-            return;
-        }
-
-        $this->prazo = min($this->prazo, microtime(true) + max(1, $segundos));
-    }
-
-    /**
      * Fecha o orçamento ao fim da busca.
      *
      * Sem isto, uma busca encerrada deixaria o prazo de pé e a próxima — que

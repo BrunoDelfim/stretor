@@ -126,20 +126,28 @@ class RoteamentoPorIdadeTest extends TestCase
         $this->assertSame('direto', $fontes[0]['tipo']);
     }
 
-    public function test_serie_antiga_cai_nos_torrents_se_o_stream_direto_falhar(): void
+    /**
+     * A série antiga não tem fallback cruzado para os torrents.
+     *
+     * Quando o roteador manda para o stream direto, ele é o **único** canal. O
+     * conteúdo antigo não está nos indexadores, e a cascata gastaria o orçamento
+     * inteiro procurando um release que não existe — deixando o scraper, que é
+     * quem acha, sem tempo. Por isso os torrents nem são tocados, mesmo com o
+     * stream direto voltando vazio.
+     */
+    public function test_serie_antiga_nao_cai_nos_torrents(): void
     {
         config()->set('services.torrents.busca_por_idade_habilitada', true);
         config()->set('services.torrents.busca_idade_limite_anos', 2);
 
         $ordem = [];
-        // O stream direto volta vazio: o fallback cruzado aciona os torrents.
+        // O stream direto volta vazio: ainda assim os torrents não são tocados.
         $servico = $this->servico([$this->fonteTorrent('t1')], [], $ordem);
 
         $fontes = $servico->fontes('Donas de Casa Desesperadas', 2004, null, 'Desperate Housewives', 1, 1);
 
-        $this->assertSame(['stream_direto', 'torrents'], $ordem);
-        $this->assertCount(1, $fontes);
-        $this->assertSame('torrent', $fontes[0]['tipo']);
+        $this->assertSame(['stream_direto'], $ordem, 'A série antiga não pode acionar os torrents.');
+        $this->assertSame([], $fontes);
     }
 
     public function test_serie_recente_toca_os_torrents_antes_do_stream_direto(): void

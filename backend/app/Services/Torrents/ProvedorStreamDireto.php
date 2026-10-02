@@ -159,6 +159,12 @@ class ProvedorStreamDireto implements ProvedorTorrents
          * começar uma requisição que não caberia no orçamento. Sem a margem, o
          * fallback iniciava a última consulta a 1 s do fim, esperava o teto cheio
          * e devolvia zero — o orçamento inteiro gasto sem nada entregue.
+         *
+         * O stream direto não tem mais um teto próprio de relógio: quando ele é o
+         * canal preferido (série antiga), é o único canal e trabalha com o
+         * orçamento global inteiro. O laço respeita esse orçamento via
+         * `temTempoParaConsulta()` e para quando o que resta não cobre uma
+         * consulta.
          */
         $tetoConsulta = (int) config('services.torrents.stream_direto_tempo_limite', 10);
 

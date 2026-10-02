@@ -537,22 +537,20 @@ class CatalogoProvedores
          * busca inteira podia passar de 57 s, estourando o limite do frontend.
          *
          * Agora o relógio é um só, ancorado por quem chega primeiro. O stream
-         * direto continua com um teto próprio menor (`stream_direto_orcamento`),
-         * mas ele é aplicado como **teto**, não como reinício: se o global já
-         * estiver de pé, o fallback respeita o que resta dele. É o que impede o
-         * socorro de virar uma segunda busca inteira.
+         * direto abre com o **orçamento global** (45 s), e não com o teto próprio
+         * de 12 s: quando ele é o canal preferido (série antiga), é o único canal
+         * e precisa do tempo inteiro para varrer os termos e páginas até achar a
+         * fonte. Se o global já está de pé — porque a cascata de torrents rodou
+         * primeiro e caiu no fallback cruzado —, o `abrirSeFechado()` não faz nada
+         * e o stream direto apenas respeita o prazo que já existe.
+         *
+         * O teto próprio de 12 s deixou de existir como relógio: ele encolhia o
+         * prazo global e matava a cascata de torrents quando o stream direto era
+         * o preferido. O stream direto agora trabalha com o orçamento inteiro.
          */
-        $tetoProprio = (int) config('services.torrents.stream_direto_orcamento', 12);
-        $this->orcamentoAbertoAqui = $this->orcamento->abrirSeFechado($tetoProprio);
-
-        /*
-         * Quando o relógio já estava de pé (fallback cruzado), o teto próprio do
-         * stream direto entra como **limite**, não como reinício: o prazo encolhe
-         * para o menor entre o que resta do global e os 12 s do fallback. Sem
-         * isto, o `restante()` devolveria os 45 s do global e o socorro gastaria
-         * o orçamento inteiro — o timeout que a estratégia de idade veio evitar.
-         */
-        $this->orcamento->limitar($tetoProprio);
+        $this->orcamentoAbertoAqui = $this->orcamento->abrirSeFechado(
+            (int) config('services.torrents.orcamento_busca', 45)
+        );
 
         try {
             /*

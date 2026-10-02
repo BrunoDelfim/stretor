@@ -82,17 +82,22 @@ class TorrentService
          * final, o corte de idioma e o censo são os mesmos. Por isso os dois
          * canais são métodos privados que devolvem a lista já ordenada, e não
          * blocos duplicados aqui dentro.
+         *
+         * A exceção é a série antiga. Quando o roteador manda para o stream
+         * direto, ele é o **único** canal: não há fallback cruzado para os
+         * torrents. A razão é dupla. Primeiro, o conteúdo antigo simplesmente não
+         * está nos indexadores — a cascata gastaria o orçamento inteiro
+         * procurando um release que não existe, e o scraper, que é quem acha,
+         * chegaria sem tempo. Segundo, o stream direto precisa do orçamento
+         * inteiro para varrer os termos e páginas até achar a fonte; dividi-lo
+         * com uma cascata condenada é o que produzia o timeout. O cruzamento
+         * continua valendo no sentido oposto: a série recente que os torrents não
+         * cobriram ainda cai no scraper.
          */
         $titulos = [];
 
         if ($canal === RoteadorBusca::CANAL_STREAM_DIRETO) {
             $fontes = $this->buscarPeloStreamDireto($titulo, $ano, $imdbId, $tituloOriginal, $temporada, $episodio, $titulos);
-
-            if ($fontes === []) {
-                Log::debug('Busca de torrents: stream direto (canal preferido) vazio, acionando o fallback cruzado de torrents.');
-
-                $fontes = $this->buscarPelosTorrents($titulo, $ano, $imdbId, $tituloOriginal, $temporada, $episodio, $episodioDeSerie, $titulos);
-            }
         } else {
             $fontes = $this->buscarPelosTorrents($titulo, $ano, $imdbId, $tituloOriginal, $temporada, $episodio, $episodioDeSerie, $titulos);
 

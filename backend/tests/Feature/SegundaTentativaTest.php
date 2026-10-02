@@ -131,7 +131,7 @@ class SegundaTentativaTest extends TestCase
             'Spider-Man' => [$this->fonte('en1', IdiomaFonte::ORIGINAL->value)],
         ], $chamadas);
 
-        $servico->fontes('Homem-Aranha', 2002, 'tt0145487', 'Spider-Man');
+        $servico->fontes('Homem-Aranha', 2024, 'tt0145487', 'Spider-Man');
 
         $this->assertCount(1, $chamadas, 'A segunda fase não deveria ter sido disparada.');
         $this->assertSame(['Homem-Aranha'], $chamadas[0]);
@@ -146,7 +146,7 @@ class SegundaTentativaTest extends TestCase
             'Spider-Man' => [$this->fonte('en1', IdiomaFonte::ORIGINAL->value)],
         ], $chamadas);
 
-        $servico->fontes('Homem-Aranha', 2002, 'tt0145487', 'Spider-Man');
+        $servico->fontes('Homem-Aranha', 2024, 'tt0145487', 'Spider-Man');
 
         $this->assertCount(2, $chamadas, 'A segunda fase deveria ter sido disparada.');
         $this->assertSame(['Homem-Aranha'], $chamadas[0]);
@@ -164,7 +164,7 @@ class SegundaTentativaTest extends TestCase
             'Spider-Man' => [$repetida, $this->fonte('en1', IdiomaFonte::ORIGINAL->value)],
         ], $chamadas);
 
-        $fontes = $servico->fontes('Homem-Aranha', 2002, 'tt0145487', 'Spider-Man');
+        $fontes = $servico->fontes('Homem-Aranha', 2024, 'tt0145487', 'Spider-Man');
 
         $ids = array_column($fontes, 'id');
 
@@ -186,7 +186,7 @@ class SegundaTentativaTest extends TestCase
             'Spider-Man' => [$this->fonte('en1', IdiomaFonte::ORIGINAL->value)],
         ], $chamadas);
 
-        $servico->fontes('Homem-Aranha', 2002, 'tt0145487', 'Spider-Man');
+        $servico->fontes('Homem-Aranha', 2024, 'tt0145487', 'Spider-Man');
 
         $this->assertCount(1, $chamadas, 'Com a chave desligada, só a primeira fase roda.');
         $this->assertSame(['Homem-Aranha'], $chamadas[0]);
@@ -200,7 +200,7 @@ class SegundaTentativaTest extends TestCase
             'Homem-Aranha' => [$this->fonte('pt1', IdiomaFonte::DUBLADO->value)],
         ], $chamadas);
 
-        $servico->fontes('Homem-Aranha', 2002, 'tt0145487', null);
+        $servico->fontes('Homem-Aranha', 2024, 'tt0145487', null);
 
         $this->assertCount(1, $chamadas, 'Sem título original distinto, não há segunda fase.');
         $this->assertSame(['Homem-Aranha'], $chamadas[0]);

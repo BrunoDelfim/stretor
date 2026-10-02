@@ -390,13 +390,6 @@ return [
         'stream_direto_tempo_limite' => (int) env('TORRENTS_STREAM_DIRETO_TEMPO_LIMITE', 10),
 
         /*
-         * Orçamento próprio do fallback, em segundos. É um relógio separado do
-         * `orcamento_busca` porque aquele já foi fechado quando o fallback
-         * começa — sem este, uma página lenta seguraria a resposta sem limite.
-         */
-        'stream_direto_orcamento' => (int) env('TORRENTS_STREAM_DIRETO_ORCAMENTO', 12),
-
-        /*
          * Barreira de conteúdo impróprio do scraper de stream direto.
          *
          * O buscador web é uma caixa preta: para um título conhecido, ele pode

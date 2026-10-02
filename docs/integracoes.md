@@ -3208,18 +3208,25 @@ O critério é o ano de lançamento da **série**, não o da temporada. Uma sér
 2004 continua sendo "de 2004" na décima temporada — e é isso que se quer: o
 catálogo de torrents envelhece junto com a série, não com a temporada.
 
-#### O fallback cruzado: o canal oposto é o último recurso
+#### O fallback cruzado: só a série recente tem segunda chance
 
-Inverter a ordem não podia significar perder o outro canal. Se o preferido não
-devolve nada, o oposto ainda pode ter a resposta: a série antiga que o scraper
-não achou pode ter um pack nos indexadores, e a série recente que os torrents não
-cobriram pode estar num agregador de vídeo. O cruzamento é o último recurso,
-nunca o primeiro — e só dispara com a lista **já ordenada e filtrada** vazia, que
-é o mesmo gatilho de antes.
+Inverter a ordem não podia significar perder o outro canal — mas também não podia
+significar gastar o orçamento num canal que não tem o que se procura. A distinção
+é a idade:
+
+- **Série recente**: se os torrents não devolvem nada, o stream direto ainda pode
+  ter a resposta num agregador de vídeo. O cruzamento é o último recurso, nunca o
+  primeiro — e só dispara com a lista **já ordenada e filtrada** vazia.
+- **Série antiga**: o stream direto é o **único** canal. Não há cruzamento para os
+  torrents. A premissa é que, passado o limiar, os indexadores já não têm o
+  release — insistir neles é queimar o relógio que o scraper precisa para achar a
+  fonte. Quem resolve série antiga é o scraper, e ele recebe o orçamento inteiro
+  para isso.
 
 A montagem final, o corte de idioma e o censo são idênticos nos dois caminhos: a
-única coisa que muda é a ordem. Por isso os dois canais são métodos privados que
-devolvem a lista pronta, e não blocos duplicados dentro de `fontes()`.
+única coisa que muda é a ordem (e, na série antiga, a ausência do cruzamento).
+Por isso os dois canais são métodos privados que devolvem a lista pronta, e não
+blocos duplicados dentro de `fontes()`.
 
 ##### O censo do stream direto não pode ser apagado pelo fallback cruzado
 
@@ -3252,12 +3259,19 @@ A correção troca o `abrir()` por `abrirSeFechado()`: a abertura vira **idempot
 O primeiro canal a chegar ancora o prazo; os demais o respeitam em vez de reancorar.
 O relógio passa a ser um só, de verdade, e não dois relógios que se somam.
 
-O stream direto continua com o teto próprio menor (`stream_direto_orcamento`, 12 s),
-mas ele entra como **limite**, não como reinício. Quando o global já está de pé, o
-`limitar()` encolhe o prazo para o menor entre o que resta e os 12 s do fallback —
-e nunca o estica. Sem isto, o `restante()` devolveria os 45 s do global e o socorro
-viraria uma segunda busca inteira, que é justamente o timeout que a estratégia de
-idade veio evitar.
+O primeiro desenho tentou encolher o prazo global para o teto próprio do stream
+direto (`limitar()`, 12 s) quando ele era o canal preferido. Foi um erro: o
+`limitar()` matava o socorro. Se o stream direto voltasse vazio, o cruzamento para
+os torrents entrava com 12 s ou menos e morria sem achar nada — o sintoma inverteu,
+e o usuário relatou que "o tempo está sendo muito pouco, não está retornando nenhum
+link e o tempo esgota muito rápido". O `limitar()` foi removido.
+
+Hoje o orçamento é **um só, aberto uma única vez** com o valor global
+(`orcamento_busca`, 45 s), e nenhum canal o encolhe. A série antiga, que é o caso
+em que o scraper precisa de fôlego, recebe esse orçamento inteiro — é o que garante
+que ele ache a fonte em vez de morrer no meio do caminho. O teto próprio do stream
+direto (`stream_direto_tempo_limite`, 10 s) continua valendo, mas como limite **por
+requisição**, não como reinício nem como corte do relógio global.
 
 O fechamento também mudou de dono. Antes cada canal fechava o próprio orçamento no
 `finally`; agora quem fecha é o [`TorrentService`], no fim da busca inteira, via

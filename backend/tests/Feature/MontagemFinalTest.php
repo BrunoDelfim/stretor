@@ -99,7 +99,7 @@ class MontagemFinalTest extends TestCase
             $this->fonte('legendado1', 'bt4g', IdiomaFonte::LEGENDADO->value, 30),
         ]);
 
-        $fontes = $servico->fontes('American Horror Story', 2011, 'tt1320771', null, 1, 1);
+        $fontes = $servico->fontes('American Horror Story', 2024, 'tt1320771', null, 1, 1);
 
         $this->assertCount(2, $fontes, 'A lista final deve ser só o áudio PT-BR provado.');
         $this->assertSame(
@@ -127,7 +127,7 @@ class MontagemFinalTest extends TestCase
             $this->fonte('legendado1', 'knaben', IdiomaFonte::LEGENDADO->value, 3),
         ]);
 
-        $fontes = $servico->fontes('American Horror Story', 2011, 'tt1320771', null, 1, 1);
+        $fontes = $servico->fontes('American Horror Story', 2024, 'tt1320771', null, 1, 1);
 
         $this->assertCount(0, $fontes, 'Sem PT-BR, a lista sai vazia para o fallback direto assumir.');
     }
@@ -143,7 +143,7 @@ class MontagemFinalTest extends TestCase
             $this->fonte('viva', 'knaben', IdiomaFonte::DUBLADO->value, 2),
         ]);
 
-        $fontes = $servico->fontes('American Horror Story', 2011, 'tt1320771', null, 1, 1);
+        $fontes = $servico->fontes('American Horror Story', 2024, 'tt1320771', null, 1, 1);
 
         $this->assertCount(1, $fontes);
         $this->assertSame('viva', $fontes[0]['id'], 'A fonte sem seeds não pode entrar na lista.');
@@ -163,7 +163,7 @@ class MontagemFinalTest extends TestCase
             $this->fonte('ok', 'knaben', IdiomaFonte::DUBLADO->value, 1),
         ]);
 
-        $fontes = $servico->fontes('American Horror Story', 2011, 'tt1320771', null, 1, 1);
+        $fontes = $servico->fontes('American Horror Story', 2024, 'tt1320771', null, 1, 1);
 
         $this->assertCount(1, $fontes);
         $this->assertSame('ok', $fontes[0]['id'], 'A fonte sem magnet não pode entrar na lista.');
@@ -182,7 +182,7 @@ class MontagemFinalTest extends TestCase
             $this->fonte('pack_original', 'torrentio', IdiomaFonte::ORIGINAL->value, 20, pack: true),
         ]);
 
-        $fontes = $servico->fontes('American Horror Story', 2011, 'tt1320771', null, 1, 1);
+        $fontes = $servico->fontes('American Horror Story', 2024, 'tt1320771', null, 1, 1);
 
         $this->assertCount(0, $fontes, 'O pack sem PT-BR não segura a lista: o corte de idioma a esvazia.');
     }
@@ -201,7 +201,7 @@ class MontagemFinalTest extends TestCase
 
         $servico = $this->servicoComFontes([$pack]);
 
-        $fontes = $servico->fontes('American Horror Story', 2011, 'tt1320771', null, 1, 1);
+        $fontes = $servico->fontes('American Horror Story', 2024, 'tt1320771', null, 1, 1);
 
         $this->assertCount(0, $fontes, 'O pack que declara a temporada errada não pode entrar na lista.');
     }
@@ -219,7 +219,7 @@ class MontagemFinalTest extends TestCase
         }
 
         $servico = $this->servicoComFontes($fontes);
-        $resultado = $servico->fontes('American Horror Story', 2011, 'tt1320771', null, 1, 1);
+        $resultado = $servico->fontes('American Horror Story', 2024, 'tt1320771', null, 1, 1);
 
         $this->assertCount(
             MensagensTorrent::LIMITE_FONTES,
