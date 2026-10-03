@@ -246,9 +246,16 @@ class CatalogoProvedores
          *
          * O relógio é compartilhado com o [`ClienteHttp`] (mesmo singleton), para
          * que o socorro pelo FlareSolverr também encolha junto com o prazo.
+         *
+         * O canal é fixado em `torrents` antes de abrir: a cascata pode rodar
+         * depois do stream direto (fallback cruzado), e sem esta fixação ela leria
+         * o prazo do canal errado — o do stream direto, de 90 s.
          */
+        $this->orcamento->usarCanal(OrcamentoBusca::CANAL_PADRAO);
+
         $this->orcamentoAbertoAqui = $this->orcamento->abrirSeFechado(
-            (int) config('services.torrents.orcamento_busca', 45)
+            (int) config('services.torrents.orcamento_busca', 45),
+            OrcamentoBusca::CANAL_PADRAO
         );
         $this->avisouPrazo = false;
 
@@ -531,25 +538,34 @@ class CatalogoProvedores
         $inicio = microtime(true);
 
         /*
-         * O stream direto **não** reabre o orçamento. Antes ele abria o próprio
-         * relógio (12 s) e o fechava ao terminar; quando a cascata de torrents
-         * assumia, ela abria outro relógio (45 s) do zero — os dois somavam e a
-         * busca inteira podia passar de 57 s, estourando o limite do frontend.
+         * O stream direto tem o **próprio relógio**, e não o global. O custo dos
+         * dois canais é de ordens diferentes: um provedor de torrent responde em
+         * milissegundos, enquanto o stream direto paga uma renderização de
+         * navegador (FlareSolverr) por página, de 10 a 15 s cada, e precisa de
+         * duas páginas no mínimo — a listagem da série e a do episódio. Com o
+         * prazo único de 45 s, a cascata de torrents consumia o orçamento inteiro
+         * e o stream direto, que só entra depois como fallback, nascia sem tempo:
+         * o FlareSolverr respondia 200 com a página do episódio quando chamado à
+         * mão, mas o provedor desistia antes de chamá-lo, porque `restante()` já
+         * devolvia zero.
          *
-         * Agora o relógio é um só, ancorado por quem chega primeiro. O stream
-         * direto abre com o **orçamento global** (45 s), e não com o teto próprio
-         * de 12 s: quando ele é o canal preferido (série antiga), é o único canal
-         * e precisa do tempo inteiro para varrer os termos e páginas até achar a
-         * fonte. Se o global já está de pé — porque a cascata de torrents rodou
-         * primeiro e caiu no fallback cruzado —, o `abrirSeFechado()` não faz nada
-         * e o stream direto apenas respeita o prazo que já existe.
+         * A troca de canal é o que separa os dois relógios. A partir daqui, o
+         * [`ClienteHttp`] e o trait [`ConsultaComOrcamento`] leem o prazo do canal
+         * `stream_direto` — dimensionado para o custo real do FlareSolverr —, e
+         * não o da cascata. Os dois orçamentos **não somam** para o usuário: o
+         * stream direto só roda quando a cascata falhou, então o tempo dele é o
+         * tempo da resposta.
          *
-         * O teto próprio de 12 s deixou de existir como relógio: ele encolhia o
-         * prazo global e matava a cascata de torrents quando o stream direto era
-         * o preferido. O stream direto agora trabalha com o orçamento inteiro.
+         * O `abrirSeFechado()` continua idempotente dentro do canal: se o stream
+         * direto já estiver de pé (por exemplo, quando ele é o canal preferido de
+         * uma série antiga e a cascata de torrents entra depois como fallback
+         * cruzado), o relógio não é reiniciado.
          */
+        $this->orcamento->usarCanal(OrcamentoBusca::CANAL_STREAM_DIRETO);
+
         $this->orcamentoAbertoAqui = $this->orcamento->abrirSeFechado(
-            (int) config('services.torrents.orcamento_busca', 45)
+            (int) config('services.torrents.stream_direto_orcamento', 90),
+            OrcamentoBusca::CANAL_STREAM_DIRETO
         );
 
         try {
@@ -571,12 +587,17 @@ class CatalogoProvedores
             $fontes = [];
         } finally {
             /*
-             * O relógio **não** é fechado aqui. Ele é compartilhado entre os
-             * canais, e fechá-lo ao fim do stream direto deixaria a cascata de
-             * torrents — que pode entrar logo depois como fallback cruzado — sem
-             * prazo nenhum, reabrindo um orçamento novo do zero. Quem fecha é o
+             * O relógio do stream direto **não** é fechado aqui, e o canal ativo
+             * volta para o padrão. Fechá-lo deixaria a cascata de torrents — que
+             * pode entrar logo depois como fallback cruzado — sem prazo nenhum,
+             * reabrindo um orçamento novo do zero. Quem fecha os dois canais é o
              * [`TorrentService`], no fim da busca inteira, via `fecharOrcamento()`.
+             *
+             * A volta do canal é obrigatória: sem ela, a cascata de torrents que
+             * rodasse depois leria o prazo do stream direto (90 s) em vez do
+             * próprio (45 s), e o orçamento global perderia o sentido.
              */
+            $this->orcamento->usarCanal(OrcamentoBusca::CANAL_PADRAO);
         }
 
         $this->censo[$id]['consultas']++;
@@ -674,7 +695,15 @@ class CatalogoProvedores
      */
     public function fecharOrcamento(): void
     {
-        $this->orcamento->fechar();
+        /*
+         * Fecha os dois canais de uma vez. A cascata de torrents e o stream direto
+         * têm relógios separados, e cada um pode ter sido o canal da busca — ou os
+         * dois, quando um foi o fallback do outro. Fechar só o canal ativo deixaria
+         * o outro de pé, e a próxima busca herdaria um prazo vencido se alguma
+         * chamada acontecesse antes do próximo `abrir()`.
+         */
+        $this->orcamento->fecharTudo();
+        $this->orcamento->usarCanal(OrcamentoBusca::CANAL_PADRAO);
     }
 
     /**

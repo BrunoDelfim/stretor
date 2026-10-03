@@ -18,15 +18,19 @@ use Mockery;
 use Tests\TestCase;
 
 /**
- * Trava o relógio único da busca.
+ * Trava os relógios por canal da busca.
  *
- * O orçamento é um singleton compartilhado, mas cada canal chamava `abrir()` com
- * o seu próprio valor — e cada chamada reiniciava o prazo. O stream direto abria
- * 12 s, fechava, e a cascata de torrents abria 45 s do zero: os dois orçamentos
- * somavam e a busca inteira podia passar de 57 s, estourando o limite do
- * frontend. Estes testes provam que o primeiro canal ancora o prazo e os demais o
- * respeitam, e que o stream direto — quando é o único canal — trabalha com o
- * orçamento inteiro.
+ * O orçamento era um relógio único, e isso matava o stream direto: a cascata de
+ * torrents consumia os 45 s e o fallback — que só entra depois — nascia sem
+ * tempo. O FlareSolverr respondia 200 com a página do episódio quando chamado à
+ * mão, mas o provedor desistia antes de chamá-lo, porque `restante()` já devolvia
+ * zero.
+ *
+ * A correção separou os canais: a cascata de torrents mantém o orçamento global
+ * (45 s) e o stream direto tem o próprio (90 s), dimensionado para o custo real
+ * do FlareSolverr — 10 a 15 s por página, e duas páginas no mínimo (série e
+ * episódio). Estes testes provam que os dois relógios não se contaminam e que a
+ * abertura continua idempotente dentro de cada canal.
  */
 class OrcamentoCompartilhadoTest extends TestCase
 {
@@ -54,7 +58,7 @@ class OrcamentoCompartilhadoTest extends TestCase
      * Monta o catálogo com todos os provedores substituídos por dublês.
      *
      * O stream direto responde vazio: o que interessa aqui é o efeito dele sobre
-     * o relógio compartilhado, não as fontes que devolveria.
+     * os relógios, não as fontes que devolveria.
      */
     private function catalogo(OrcamentoBusca $orcamento): CatalogoProvedores
     {
@@ -80,12 +84,12 @@ class OrcamentoCompartilhadoTest extends TestCase
     }
 
     /**
-     * A abertura idempotente: o segundo canal não reinicia o relógio.
+     * A abertura idempotente dentro do mesmo canal: o segundo pedido não reinicia.
      *
-     * É o coração da correção. Se `abrirSeFechado()` reiniciasse o prazo, o
-     * stream direto e a cascata voltariam a somar os seus orçamentos.
+     * É o coração da correção original. Se `abrirSeFechado()` reiniciasse o prazo,
+     * o mesmo canal voltaria a somar os seus orçamentos.
      */
-    public function test_segunda_abertura_nao_reinicia_o_relogio(): void
+    public function test_segunda_abertura_no_mesmo_canal_nao_reinicia_o_relogio(): void
     {
         $orcamento = new OrcamentoBusca();
 
@@ -97,73 +101,136 @@ class OrcamentoCompartilhadoTest extends TestCase
     }
 
     /**
-     * O caso central: o stream direto abre o orçamento global, não um teto menor.
+     * Os canais têm relógios independentes.
      *
-     * Quando o roteador manda a série antiga para o stream direto, ele é o único
-     * canal e precisa do tempo inteiro para varrer os termos e páginas até achar a
-     * fonte. Se ele abrisse um teto próprio de 12 s, o relógio global ficaria
-     * travado nesse valor — e a cascata de torrents, que pode entrar como fallback
-     * cruzado no sentido oposto, morreria sem tempo.
+     * Abrir o canal `torrents` não abre o `stream_direto`, e vice-versa. É o que
+     * permite ao stream direto ter um orçamento maior sem esticar o da cascata.
      */
-    public function test_stream_direto_abre_o_orcamento_global(): void
+    public function test_canais_tem_relogios_independentes(): void
     {
         $orcamento = new OrcamentoBusca();
-        $catalogo = $this->catalogo($orcamento);
 
-        $catalogo->buscarFallbackDireto(['Donas de Casa Desesperadas'], 2004, null, 1, 1);
+        $orcamento->abrir(45, OrcamentoBusca::CANAL_PADRAO);
 
-        $this->assertTrue($orcamento->emCurso(), 'O stream direto precisa deixar o relógio de pé.');
+        $this->assertTrue($orcamento->esgotado(OrcamentoBusca::CANAL_PADRAO) === false);
+        $this->assertNull(
+            $orcamento->restante(OrcamentoBusca::CANAL_STREAM_DIRETO),
+            'Abrir um canal não pode abrir o outro.'
+        );
+
+        $orcamento->abrir(90, OrcamentoBusca::CANAL_STREAM_DIRETO);
+
         $this->assertGreaterThan(
-            12,
-            $orcamento->restante(),
-            'O stream direto precisa do orçamento global, não de um teto de 12 s.'
+            45,
+            $orcamento->restante(OrcamentoBusca::CANAL_STREAM_DIRETO),
+            'O canal do stream direto tem o próprio prazo, maior que o global.'
+        );
+        $this->assertLessThanOrEqual(
+            45,
+            $orcamento->restante(OrcamentoBusca::CANAL_PADRAO),
+            'O canal global não pode ter sido esticado pelo do stream direto.'
         );
     }
 
     /**
-     * O stream direto não reabre o relógio da cascata.
+     * O caso central: o stream direto abre o próprio orçamento, não o global.
      *
-     * Quando a cascata de torrents roda primeiro e cai no fallback cruzado, o
-     * stream direto encontra o relógio já aberto e **não** o reinicia: o prazo
-     * continua ancorado no global da cascata. É o que impede a soma que estourava
-     * o frontend.
+     * Quando o roteador manda a série antiga para o stream direto, ele precisa de
+     * tempo para pagar o FlareSolverr de cada página. Se ele usasse o orçamento
+     * global de 45 s, a renderização da série mais a do episódio já o estourariam.
      */
-    public function test_stream_direto_nao_reabre_o_relogio_da_cascata(): void
+    public function test_stream_direto_abre_o_proprio_orcamento(): void
     {
         $orcamento = new OrcamentoBusca();
         $catalogo = $this->catalogo($orcamento);
 
-        // A cascata roda primeiro e ancora o relógio global.
-        $catalogo->buscar(['Donas de Casa Desesperadas S01E01'], 2004, null, 1, 1);
-        $restanteAposCascata = $orcamento->restante();
-
-        // O fallback cruzado aciona o stream direto, que não pode reancorar o prazo.
         $catalogo->buscarFallbackDireto(['Donas de Casa Desesperadas'], 2004, null, 1, 1);
+
+        /*
+         * A leitura é feita no canal do stream direto, e não no ativo: ao
+         * terminar, o provedor devolve o canal ativo ao padrão, mas o relógio do
+         * stream direto continua de pé até o `fecharOrcamento()` da busca inteira.
+         *
+         * O que importa não é o valor ser maior que o global, e sim o relógio ser
+         * **próprio** e cobrir a descida. O custo real é de duas renderizações do
+         * FlareSolverr (a listagem da série e a página do episódio), de 10 a 15 s
+         * cada: o orçamento precisa sobrar pelo menos 30 s para as duas caberem.
+         */
+        $restante = $orcamento->restante(OrcamentoBusca::CANAL_STREAM_DIRETO);
+
+        $this->assertNotNull(
+            $restante,
+            'O stream direto precisa deixar o próprio relógio de pé.'
+        );
+        $this->assertGreaterThanOrEqual(
+            30,
+            $restante,
+            'O orçamento do stream direto precisa cobrir as duas páginas da descida.'
+        );
+    }
+
+    /**
+     * O stream direto não contamina o relógio da cascata.
+     *
+     * Depois de o stream direto rodar, o canal ativo volta para `torrents`. Sem
+     * isso, a cascata que entrasse como fallback cruzado leria o prazo do stream
+     * direto em vez do próprio.
+     */
+    public function test_stream_direto_devolve_o_canal_ativo_ao_padrao(): void
+    {
+        $orcamento = new OrcamentoBusca();
+        $catalogo = $this->catalogo($orcamento);
+
+        $catalogo->buscarFallbackDireto(['Donas de Casa Desesperadas'], 2004, null, 1, 1);
+
+        $this->assertSame(
+            OrcamentoBusca::CANAL_PADRAO,
+            $orcamento->canalAtivo(),
+            'Ao terminar, o stream direto precisa devolver o canal ativo ao padrão.'
+        );
+    }
+
+    /**
+     * A cascata de torrents usa o orçamento global, não o do stream direto.
+     */
+    public function test_cascata_usa_o_orcamento_global(): void
+    {
+        $orcamento = new OrcamentoBusca();
+        $catalogo = $this->catalogo($orcamento);
+
+        $catalogo->buscar(['Donas de Casa Desesperadas S01E01'], 2004, null, 1, 1);
 
         $this->assertLessThanOrEqual(
-            $restanteAposCascata,
+            45,
             $orcamento->restante(),
-            'O stream direto não pode reabrir o relógio: o prazo continua ancorado na cascata.'
+            'A cascata de torrents precisa do orçamento global de 45 s.'
         );
     }
 
     /**
-     * O fechamento explícito libera o relógio para a próxima busca.
+     * O fechamento explícito libera os dois relógios para a próxima busca.
      *
-     * Sem o `fecharOrcamento()`, uma busca encerrada deixaria o prazo de pé e a
+     * Sem o `fecharOrcamento()`, uma busca encerrada deixaria os prazos de pé e a
      * próxima herdaria um relógio já vencido.
      */
-    public function test_fechar_orcamento_libera_o_relogio(): void
+    public function test_fechar_orcamento_libera_os_dois_relogios(): void
     {
         $orcamento = new OrcamentoBusca();
         $catalogo = $this->catalogo($orcamento);
 
         $catalogo->buscarFallbackDireto(['Donas de Casa Desesperadas'], 2004, null, 1, 1);
-        $this->assertTrue($orcamento->emCurso());
+        $this->assertNotNull(
+            $orcamento->restante(OrcamentoBusca::CANAL_STREAM_DIRETO),
+            'Antes de fechar, o relógio do stream direto está de pé.'
+        );
 
         $catalogo->fecharOrcamento();
 
         $this->assertFalse($orcamento->emCurso(), 'Depois de fechar, não há mais busca em curso.');
-        $this->assertNull($orcamento->restante(), 'Sem busca em curso, não há prazo global a respeitar.');
+        $this->assertNull($orcamento->restante(), 'Sem busca em curso, não há prazo a respeitar.');
+        $this->assertNull(
+            $orcamento->restante(OrcamentoBusca::CANAL_STREAM_DIRETO),
+            'O canal do stream direto também precisa ter sido fechado.'
+        );
     }
 }

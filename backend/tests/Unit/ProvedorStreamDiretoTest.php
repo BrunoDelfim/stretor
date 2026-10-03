@@ -175,4 +175,169 @@ class ProvedorStreamDiretoTest extends TestCase
         $this->assertFalse($this->invocar('alvoAtingido', $fontes, 0));
         $this->assertFalse($this->invocar('alvoAtingido', $fontes, -1));
     }
+
+    /**
+     * O `assistaonline.tv` respondia 200 com a página "Deployment Paused" do
+     * Vercel — o status não denuncia, mas o corpo sim.
+     */
+    public function test_pagina_de_site_morto_e_reconhecida(): void
+    {
+        $html = '<html><body><h1>Deployment Paused</h1><p>This deployment has been paused.</p></body></html>';
+
+        $this->assertTrue($this->invocar('pareceSiteMorto', $html));
+    }
+
+    public function test_pagina_de_dominio_estacionado_e_reconhecida(): void
+    {
+        $this->assertTrue($this->invocar('pareceSiteMorto', '<html><body>This domain is for sale</body></html>'));
+        $this->assertTrue($this->invocar('pareceSiteMorto', '<html><body>Account suspended</body></html>'));
+    }
+
+    public function test_pagina_normal_nao_e_site_morto(): void
+    {
+        $html = '<html><head><title>American Horror Story 1x01</title></head><body><video src="https://cdn.exemplo.com/ahs.mp4"></video></body></html>';
+
+        $this->assertFalse($this->invocar('pareceSiteMorto', $html));
+    }
+
+    /**
+     * A comparação é por frase inteira: "paused" sozinho apareceria num player
+     * pausado e não pode derrubar a página.
+     */
+    public function test_palavra_solta_nao_marca_site_morto(): void
+    {
+        $this->assertFalse($this->invocar('pareceSiteMorto', '<html><body>O player foi paused pelo usuário</body></html>'));
+    }
+
+    public function test_corpo_vazio_nao_e_site_morto(): void
+    {
+        $this->assertFalse($this->invocar('pareceSiteMorto', ''));
+    }
+
+    /**
+     * O caso que motivou a descida: a busca aberta devolve a ficha da série
+     * (`/series/american-horror-story`), que lista os episódios mas não tem
+     * player. O player mora na página do episódio, um clique abaixo.
+     */
+    public function test_link_do_episodio_e_achado_na_listagem_da_serie(): void
+    {
+        $html = <<<'HTML'
+        <html><body>
+            <a href="/series/american-horror-story/temporada-1/episodio-1">Episódio 1</a>
+            <a href="/series/american-horror-story/temporada-1/episodio-2">Episódio 2</a>
+        </body></html>
+        HTML;
+
+        $link = $this->invocar(
+            'linkDoEpisodio',
+            $html,
+            'https://www.verpobreflix.net/series/american-horror-story',
+            1,
+            1
+        );
+
+        $this->assertSame('https://www.verpobreflix.net/series/american-horror-story/temporada-1/episodio-1', $link);
+    }
+
+    /**
+     * A outra grafia que os agregadores usam: temporada e episódio num único
+     * segmento (`temporada-1-episodio-1`).
+     */
+    public function test_link_do_episodio_aceita_grafia_de_segmento_unico(): void
+    {
+        $html = '<a href="/series/ahs/temporada-2-episodio-3">T2E3</a>';
+
+        $link = $this->invocar('linkDoEpisodio', $html, 'https://site.com/series/ahs', 2, 3);
+
+        $this->assertSame('https://site.com/series/ahs/temporada-2-episodio-3', $link);
+    }
+
+    /**
+     * Sem temporada ou episódio pedidos não há o que descer — a página de filme
+     * não tem numeração.
+     */
+    public function test_sem_episodio_pedido_nao_ha_descida(): void
+    {
+        $html = '<a href="/series/ahs/temporada-1/episodio-1">Episódio 1</a>';
+
+        $this->assertNull($this->invocar('linkDoEpisodio', $html, 'https://site.com/series/ahs', null, null));
+        $this->assertNull($this->invocar('linkDoEpisodio', $html, 'https://site.com/series/ahs', 1, null));
+    }
+
+    /**
+     * A trava contra a recursão infinita: se a página aberta já é a do episódio
+     * e mesmo assim não tem player, descer de novo voltaria ao mesmo lugar.
+     */
+    public function test_pagina_que_ja_e_do_episodio_nao_desce_de_novo(): void
+    {
+        $html = '<a href="/series/ahs/temporada-1/episodio-1">Episódio 1</a>';
+
+        $link = $this->invocar(
+            'linkDoEpisodio',
+            $html,
+            'https://site.com/series/ahs/temporada-1/episodio-1',
+            1,
+            1
+        );
+
+        $this->assertNull($link);
+    }
+
+    public function test_listagem_sem_o_episodio_pedido_devolve_nulo(): void
+    {
+        $html = '<a href="/series/ahs/temporada-1/episodio-2">Episódio 2</a>';
+
+        $this->assertNull($this->invocar('linkDoEpisodio', $html, 'https://site.com/series/ahs', 1, 1));
+    }
+
+    public function test_corpo_vazio_nao_tem_link_de_episodio(): void
+    {
+        $this->assertNull($this->invocar('linkDoEpisodio', '', 'https://site.com/series/ahs', 1, 1));
+    }
+
+    /**
+     * O link pode vir absoluto, relativo à raiz ou relativo ao caminho atual.
+     */
+    public function test_endereco_absoluto_e_preservado(): void
+    {
+        $link = $this->invocar('resolverEndereco', 'https://outro.com/ep/1', 'https://site.com/series/ahs');
+
+        $this->assertSame('https://outro.com/ep/1', $link);
+    }
+
+    public function test_endereco_relativo_a_raiz_recebe_o_host(): void
+    {
+        $link = $this->invocar('resolverEndereco', '/series/ahs/temporada-1/episodio-1', 'https://site.com/series/ahs');
+
+        $this->assertSame('https://site.com/series/ahs/temporada-1/episodio-1', $link);
+    }
+
+    public function test_endereco_relativo_ao_caminho_atual_recebe_o_diretorio(): void
+    {
+        // `/series/ahs` é o "arquivo" atual; o diretório dele é `/series`. Um
+        // link relativo resolve contra esse diretório, como manda a semântica
+        // de URL — não contra o caminho inteiro.
+        $link = $this->invocar('resolverEndereco', 'temporada-1/episodio-1', 'https://site.com/series/ahs');
+
+        $this->assertSame('https://site.com/series/temporada-1/episodio-1', $link);
+    }
+
+    public function test_endereco_relativo_usa_o_diretorio_com_barra_final(): void
+    {
+        // Com barra final, o caminho já é um diretório e o relativo entra dentro
+        // dele sem cortar o último segmento.
+        $link = $this->invocar('resolverEndereco', 'temporada-1/episodio-1', 'https://site.com/series/ahs/');
+
+        $this->assertSame('https://site.com/series/ahs/temporada-1/episodio-1', $link);
+    }
+
+    public function test_endereco_vazio_nao_resolve(): void
+    {
+        $this->assertNull($this->invocar('resolverEndereco', '   ', 'https://site.com/series/ahs'));
+    }
+
+    public function test_endereco_com_pagina_sem_host_nao_resolve(): void
+    {
+        $this->assertNull($this->invocar('resolverEndereco', 'temporada-1/episodio-1', '/caminho/solto'));
+    }
 }

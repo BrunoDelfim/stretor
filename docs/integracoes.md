@@ -2542,7 +2542,7 @@ reordená-las junto com os torrents só as misturaria a uma lista que, por
 definição, está vazia.
 
 O fallback abre um **orçamento próprio** (`TORRENTS_STREAM_DIRETO_ORCAMENTO`,
-padrão 12 s) porque o orçamento global já foi consumido pelos três degraus. Sem
+padrão 45 s) porque o orçamento global já foi consumido pelos três degraus. Sem
 isso, a consulta direta nasceria sem tempo para responder.
 
 ##### A cascata não aborta com a lista de títulos vazia
@@ -2637,6 +2637,125 @@ O fluxo tem quatro etapas, cada uma num arquivo próprio:
    [`docker/searxng/settings.yml`](../docker/searxng/settings.yml:1). Se um dia for
    preciso redundância, ela deve vir de **outra instância SearXNG** — nunca de um
    buscador comercial que bloqueia o IP dos containers.
+
+#### O `plenoflu.com` tem API aberta, mas ela não entrega vídeo
+
+O `plenoflu.com` (que se apresenta como "Pobre Play" / "SuperCDN") é o agregador
+de embed que o `verpobreflix.net` usa por baixo. Ele tem site, documentação em
+`/doc/` e uma API em `POST /api` — e a pergunta natural foi se dava para falar
+com essa API em vez de raspar HTML. A resposta curta é **sim, a API responde sem
+cadastro — mas ela não resolve o problema**, e vale registrar por quê.
+
+**A API funciona sem registro.** O cadastro do site está desativado, mas as
+ações de leitura não exigem conta. O único requisito é um cabeçalho `Referer`
+(qualquer valor serve): sem ele, o site devolve `403 Acesso proibido`; com ele,
+`200`. Duas ações bastam para chegar aos players:
+
+- `action=getOptions` com `contentid` (o ID interno do episódio, que a própria
+  página do embed expõe como `DIRECT_EPISODE_ID`) devolve a lista de opções de
+  player — dublado e legendado.
+- `action=getPlayer` com `video_id` devolve, em `data.video_url`, a URL do
+  player **codificada em base64** (`base64_decode` revela o endereço).
+
+Para "American Horror Story" S01E01, a cadeia inteira respondeu: `getOptions`
+devolveu quatro opções, e `getPlayer` devolveu quatro provedores —
+`vaiquecol.com`, `superflixapi.quest`, `streambetter.shop` e `vidsrc.sh`.
+
+**O problema é o que vem depois.** Nenhum desses quatro provedores entrega um
+arquivo de vídeo; todos entregam **outra página de player**, e cada uma tem a
+sua própria blindagem:
+
+- `vaiquecol.com` usa o **FirePlayer** com o código empacotado (`eval`), e o
+  endpoint `getVideo` responde "Video not found" para qualquer ID que não venha
+  da sessão do navegador.
+- `superflixapi.quest` e `streambetter.shop` estão atrás do **Cloudflare
+  Turnstile** — o FlareSolverr devolve a página de "Verificação", não o player.
+- `vidsrc.sh` delega ao `cloudorchestranova.com`, cujo token `vs` **expira** e
+  cuja API (`data.vidsrc.sh`) devolve só metadados; o `stream_urls` vem cifrado
+  em **ChaCha20 via WebAssembly** (`vsdec.js`), decifrado apenas no navegador.
+
+Ou seja: a API do `plenoflu.com` é um **catálogo de embeds**, não uma fonte de
+vídeo. Ela economiza a etapa de raspar a página do agregador, mas entrega
+exatamente o que o contrato da fonte direta recusa — uma URL de player, não um
+`.mp4`/`.m3u8`. O [`prepararSessaoDireta()`](../media-service/src/services/sessoes.js:441)
+do media-service exige uma extensão em `EXTENSOES_DIRETAS` e rejeita o resto com
+`formato_desconhecido`; oferecer um embed como fonte só produziria uma sessão
+que morre na primeira checagem.
+
+**A conclusão prática:** integrar a API do `plenoflu.com` moveria o problema um
+degrau adiante, não o resolveria. O que falta não é descobrir o embed — é
+**resolver o embed** (executar o JavaScript do player, vencer o Turnstile,
+decifrar o ChaCha20), e isso é trabalho de um navegador headless com sessão, não
+de um cliente HTTP. Enquanto esse resolvedor não existir, a API do `plenoflu.com`
+não tem lugar no caminho da fonte direta.
+
+##### O FlareSolverr não socorre estes provedores — e o motivo é o IP
+
+Vale registrar o teste que fecha a questão, porque ele descarta a saída mais
+óbvia ("é só renderizar com o FlareSolverr"). O FlareSolverr **é** um Chromium
+headless e executa JavaScript, mas ele falha nos quatro provedores por um motivo
+que nenhuma renderização resolve: **o IP do container**.
+
+- `vaiquecol.com/embed2/1413-1-1` devolveu **404** — o caminho mudou desde a
+  primeira sondagem. Estes provedores trocam de endereço com frequência.
+- `vidsrc.sh/embed/tv/1413/1/1` devolveu **39 bytes** e terminou em
+  `about:blank`: um bloqueio ativo, não uma página. O servidor recusou o IP de
+  datacenter antes de servir qualquer HTML.
+
+O padrão é o mesmo dos trackers PT-BR que já saíram do ar: **o IP do container é
+o problema, não o cliente**. Um navegador headless rodando do mesmo IP recebe o
+mesmo bloqueio. Só um proxy residencial (ou o IP do usuário final) mudaria a
+resposta — e isso é uma decisão de infraestrutura, não de código.
+
+Por isso a fonte direta continua valendo o que sempre valeu: ela acha o que
+está **aberto** (um `.mp4`/`.m3u8` servido sem cerimônia), e devolve zero quando
+o único caminho é um embed blindado. Zero é a resposta honesta nesse caso — o
+alternativo seria entregar ao usuário uma sessão que morre na primeira checagem.
+
+##### O levantamento das APIs de embed: todas param no mesmo muro
+
+Depois do `plenoflu.com`, a pergunta seguinte foi natural: **existe outra API
+gratuita e ilimitada que devolva o arquivo de vídeo direto?** Foi feito um
+levantamento das APIs de embed mais conhecidas, testadas de dentro do container
+(que é o IP que o sistema realmente usa). O resultado é uniforme, e vale
+registrar para não repetir a busca.
+
+| API | Resposta | O que devolveu |
+| --- | --- | --- |
+| `plenoflu.com` (`/api`) | 200 | Catálogo de embeds (4 provedores), não vídeo |
+| `2embed.cc` | 200 | Outro embed (`vidsrc.buzz`), que responde 403 |
+| `vidsrc.to` | 200 | Outro embed (`vsembed.ru`) |
+| `vsembed.ru` (`/vs_src.php`) | 200 | Outro embed (`cloudorchestranova.com`) com token `vs` |
+| `cloudorchestranova.com` | 200 | Player com `vsdec.js` (ChaCha20/WASM) |
+| `data.vidsrc.sh` (`/api.php`) | 200 | **Só metadados** — sem `stream_urls` |
+| `vidlink.pro` | 200 | App Next.js; a API interna devolve `null` |
+| `vidsrc.xyz` / `vidsrc.me` / `vidsrc.cc` | 301/403 | Redirecionamento ou bloqueio |
+| `embed.su` / `superembed.stream` | 000/404 | Inacessível ou fora do ar |
+| `consumet.org` / `anify.tv` | 301 | Mudou de endereço |
+
+**O padrão é sempre o mesmo: uma API de embed devolve outra API de embed.** A
+cadeia só termina num player que monta o vídeo por JavaScript, e cada elo tem
+uma trava própria — Turnstile, token que expira, ou cifra ChaCha20 via
+WebAssembly. Nenhuma das APIs testadas devolveu um `.mp4`/`.m3u8` utilizável
+diretamente.
+
+O caso do `cloudorchestranova.com` é o mais instrutivo, porque foi o mais longe
+que se chegou. O `vsdec.js` documenta o mecanismo no próprio cabeçalho: a API
+devolve `data.stream_urls` como **uma string cifrada** (base64 de
+`nonce||ciphertext` em ChaCha20), junto de um `vs: { w, wasm_url }` que aponta
+para o decifrador WASM daquela janela de 5 minutos. O navegador baixa o WASM,
+decifra e só então tem a URL do vídeo. Chamando a API direto (com ou sem o token
+`vs`), a resposta traz **apenas metadados** — o `stream_urls` nem aparece. A
+cifra só é servida a quem o player reconhece como navegador legítimo, e o
+FlareSolverr, mesmo executando o JavaScript, terminou com um HTML de 160 bytes:
+o WASM não completou a decifração.
+
+**A conclusão do levantamento:** não existe, hoje, uma API gratuita e ilimitada
+que entregue o arquivo de vídeo direto. Todas são **catálogos de embed** — o
+mesmo papel do `plenoflu.com`. O que separa uma fonte utilizável de um embed
+inútil não é a API, é o **resolvedor** que executa o player até o fim. Enquanto
+esse resolvedor não existir (e ele esbarra no bloqueio por IP de datacenter),
+nenhuma dessas APIs tem lugar no caminho da fonte direta.
 
    ##### Os tipos de motor que restaram
 
@@ -2881,13 +3000,15 @@ O fluxo tem quatro etapas, cada uma num arquivo próprio:
 
    A versão inicial somava uma margem fixa ao teto: só começava se o restante
    cobrisse `teto + margem`. Parecia razoável, mas era aritmética impossível
-   para o próprio fallback que a motivou. O orçamento do stream direto é de
+   para o próprio fallback que a motivou. O orçamento do stream direto era de
    **12 s** (`stream_direto_orcamento`) e o teto de cada consulta é de **10 s**
    (`stream_direto_tempo_limite`). Com margem de 2 s, a conta "10 + 2 = 12"
    fechava **apenas no instante zero**: assim que a primeira consulta consumisse
    1 s, o restante caía para 11 s e nenhum termo seguinte era tentado. O
    fallback parava depois do primeiro termo, com orçamento de sobra — o log
-   mostrava `termos_com_resultado: 1` e `paginas_visitadas: 0`.
+   mostrava `termos_com_resultado: 1` e `paginas_visitadas: 0`. (O valor hoje é
+   45 s; a conta acima descreve o desenho antigo, que motivou a troca da soma
+   pela proporção.)
 
    A correção foi trocar a soma pela proporção. A margem deixa de ser um valor
    somado ao teto e passa a ser o **piso proporcional** que separa "cabe" de
@@ -2962,6 +3083,34 @@ O fluxo tem quatro etapas, cada uma num arquivo próprio:
    do **conteúdo** — um fórum ou uma página de catálogo que escapou da lista negra
    não tem player e cai aqui.
 
+   ##### A relevância pelo título é o segundo critério
+
+   Ter player não basta. Uma página de fandom *sobre* a série embute o trailer no
+   YouTube e passa na prova de mídia; um agregador devolve um episódio qualquer de
+   outro programa quando o título pedido não está no acervo. Nos dois casos o
+   player existe, mas o vídeo não é o pedido — foi assim que "American Horror
+   Story" abriu um episódio aleatório vindo do `dramatotal.fandom.com` e um
+   `historia-4` do Tokyvideo.
+
+   Por isso o provedor faz uma segunda pergunta, antes mesmo da prova de mídia:
+   **esta página é sobre o título?** A resposta vem da trait
+   [`RelevanciaTitulo`](../backend/app/Services/Torrents/RelevanciaTitulo.php:1),
+   que extrai as **palavras-chave** do título — sem as palavras de ligação ("de",
+   "the", "of") e sem a numeração do episódio ("1x01", "S01E01") — e confere
+   quantas aparecem no endereço ou no `<title>` da página. A comparação é
+   normalizada (minúsculas, sem acento), para que "História" case com "historia".
+
+   O limiar padrão é **2** (`stream_direto_min_palavras_chave`): um título
+   composto ("American Horror Story") precisa de duas palavras distintas
+   ("american" + "story") para provar relevância. Uma só ("american") casaria com
+   `americanas.com.br` e `americansportshop.com.br`, que apareceram no log. Um
+   título de uma palavra só ("Dexter") não tem como exigir duas — o limiar é
+   limitado ao que o título oferece. Zero desliga a checagem e volta ao critério
+   antigo, só a prova de mídia.
+
+   A página que não passa é descartada com um `debug` **"página sem relação com o
+   título descartada"**, antes de a extração gastar orçamento nela.
+
 4. **A normalização** — o que sai do extrator passa por
    [`NormalizaFonte::montarFonteDireta()`](../backend/app/Services/Torrents/NormalizaFonte.php:96),
    exatamente como antes. O scraper não inventa um contrato novo: ele só troca a
@@ -2982,8 +3131,9 @@ deixar um "zero fontes" mudo:
 - `debug` **"consultando motores de busca"** — o termo e os motores da vez.
 - `debug` **"motor respondeu"** — quantos links aquele motor devolveu.
 - `debug` **"domínios de catálogo ignorados"** — quantas URLs da lista negra
-  (JustWatch, IMDb, Plex, YouTube, Wikipédia, TMDB) foram descartadas e quais
-  hosts. É o que separa "o filtro barrou o lixo" de "a busca não achou nada".
+  (JustWatch, IMDb, Plex, YouTube, Wikipédia, TMDB, fandom/wiki) foram descartadas
+  e quais hosts. É o que separa "o filtro barrou o lixo" de "a busca não achou
+  nada".
 - `debug` **"domínios consultados"** — os hosts únicos das páginas que passaram
   pelo filtro e foram efetivamente abertas. É o par do log acima: um diz o que
   foi barrado, o outro diz para onde o orçamento foi de fato.
@@ -2993,6 +3143,10 @@ deixar um "zero fontes" mudo:
 - `warning` **"motor bloqueou a consulta"** — rate limit/captcha detectado.
 - `warning` **"motor devolveu erro HTTP"** / **"não respondeu"** — falha de rede
   ou status ruim.
+- `debug` **"página sem relação com o título descartada"** — a página tinha
+  player, mas o endereço e o `<title>` não traziam as palavras-chave do título
+  buscado. É o que separa "o vídeo é o pedido" de "o vídeo é um episódio
+  aleatório".
 - `debug` **"vídeos extraídos da página"** — quantos links de vídeo saíram do HTML.
 - `debug` **"página sem vídeo extraível"** — a página abriu, mas não tinha vídeo.
 - `debug` **"busca concluída"** — termos com resultado, páginas visitadas e total
@@ -3244,40 +3398,52 @@ stream direto em `reiniciarCenso()`: a cascata zera os demais, mas mantém o que
 fallback direto já contou. Assim `nao_consultado` volta a significar "não foi
 perguntado" — e não "foi perguntado, mas a cascata passou por cima do registro".
 
-##### O relógio é um só: os canais não podem somar orçamentos
+##### Dois relógios nomeados: o stream direto tem orçamento próprio
 
-O [`OrcamentoBusca`] é um singleton compartilhado, mas cada canal chamava `abrir()`
-com o seu próprio valor — e cada chamada **reiniciava** o prazo. O stream direto
-abria 12 s, fechava, e a cascata de torrents abria 45 s do zero. Os dois orçamentos
-somavam: no caso real, o stream direto gastou 13 s em páginas inúteis (um HTTP 402,
-um site sem mídia e um que não respondeu) e a cascata ainda levou mais 21 s até o
-Torznab esgotar o teto. Trinta e quatro segundos no total, acima do que o frontend
-espera — e o sintoma era exatamente o que o usuário relatou: "deveria ser rápido,
-já que pega 2 fontes só".
+O [`OrcamentoBusca`] começou com um relógio só, e a abertura idempotente
+(`abrirSeFechado()`) resolvia a soma indevida: o primeiro canal a chegar ancorava o
+prazo e os demais o respeitavam. Mas o relógio único tinha um defeito de fundo — os
+dois canais têm **custos de ordens diferentes**, e um prazo só não serve aos dois.
 
-A correção troca o `abrir()` por `abrirSeFechado()`: a abertura vira **idempotente**.
-O primeiro canal a chegar ancora o prazo; os demais o respeitam em vez de reancorar.
-O relógio passa a ser um só, de verdade, e não dois relógios que se somam.
+Um provedor de torrent responde em milissegundos. O stream direto paga uma
+renderização de navegador (FlareSolverr) por página, de 10 a 15 s cada, e precisa
+de **duas** no mínimo: a listagem da série e a página do episódio, onde o player
+mora. Com o prazo único de 45 s, a cascata de torrents consumia o orçamento inteiro
+e o stream direto — que só entra depois, como fallback — nascia sem tempo. O
+sintoma era cruel: o FlareSolverr respondia 200 com a página do episódio quando
+chamado à mão, mas o provedor desistia antes de chamá-lo, porque `restante()` já
+devolvia zero. O usuário via "nenhuma fonte encontrada" para um episódio que
+existia.
 
-O primeiro desenho tentou encolher o prazo global para o teto próprio do stream
-direto (`limitar()`, 12 s) quando ele era o canal preferido. Foi um erro: o
-`limitar()` matava o socorro. Se o stream direto voltasse vazio, o cruzamento para
-os torrents entrava com 12 s ou menos e morria sem achar nada — o sintoma inverteu,
-e o usuário relatou que "o tempo está sendo muito pouco, não está retornando nenhum
-link e o tempo esgota muito rápido". O `limitar()` foi removido.
+A correção dá a cada canal o seu **próprio relógio, nomeado**. O canal `torrents`
+mantém o orçamento global (`orcamento_busca`, 45 s); o canal `stream_direto` tem o
+seu (`stream_direto_orcamento`, 45 s), dimensionado para o custo real do
+FlareSolverr. O canal ativo é uma propriedade do objeto, e não um parâmetro
+espalhado: o [`ClienteHttp`] e o trait [`ConsultaComOrcamento`] leem o relógio sem
+saber de qual canal se trata, e quem troca o canal é o [`CatalogoProvedores`], no
+ponto exato em que aciona cada metade da busca.
 
-Hoje o orçamento é **um só, aberto uma única vez** com o valor global
-(`orcamento_busca`, 45 s), e nenhum canal o encolhe. A série antiga, que é o caso
-em que o scraper precisa de fôlego, recebe esse orçamento inteiro — é o que garante
-que ele ache a fonte em vez de morrer no meio do caminho. O teto próprio do stream
-direto (`stream_direto_tempo_limite`, 10 s) continua valendo, mas como limite **por
-requisição**, não como reinício nem como corte do relógio global.
+Os dois orçamentos **não somam** para o usuário: o stream direto só roda quando a
+cascata de torrents falhou, então o tempo dele é o tempo da resposta, não uma
+adição ao da cascata. O `abrirSeFechado()` continua idempotente **dentro** de cada
+canal: se o stream direto já estiver de pé (por exemplo, quando ele é o canal
+preferido de uma série antiga e a cascata entra depois como fallback cruzado), o
+relógio não é reiniciado.
 
-O fechamento também mudou de dono. Antes cada canal fechava o próprio orçamento no
-`finally`; agora quem fecha é o [`TorrentService`], no fim da busca inteira, via
-`fecharOrcamento()`. É o único ponto por onde todos os desfechos passam, então é
-ali que o relógio encerra — e a próxima busca começa limpa, sem herdar um prazo
-vencido.
+O valor do orçamento do stream direto precisa cobrir a descida inteira. Com os
+12 s herdados do desenho antigo, a primeira página consumia o orçamento todo e a
+página do episódio nascia com `restante: 0` — a descida era descoberta e
+abandonada no mesmo instante. Os 45 s cobrem as duas renderizações com folga sem
+deixar a resposta passar de um minuto.
+
+O fechamento mudou de dono. Antes cada canal fechava o próprio orçamento no
+`finally`; agora quem fecha **os dois** é o [`TorrentService`], no fim da busca
+inteira, via `fecharOrcamento()` — que chama `fecharTudo()` e devolve o canal ativo
+ao padrão. É o único ponto por onde todos os desfechos passam, então é ali que os
+relógios encerram — e a próxima busca começa limpa, sem herdar um prazo vencido. O
+`finally` do `buscarFallbackDireto()` **não** fecha o relógio do stream direto: só
+devolve o canal ativo ao padrão, para a cascata que entrar depois como fallback
+cruzado ler o prazo certo.
 
 #### O alvo de fontes: parar quando já há o suficiente
 
@@ -3322,6 +3488,247 @@ sem player segue sendo descartado. A lista só decide **em que ordem** o orçame
 Um domínio que apareceu nos logs como "sem prova de mídia" não entra na lista: o
 `bancodeseries.com.br` foi removido justamente por isso. A lista é uma aposta
 baseada na prática, e a prática corrige a lista.
+
+#### O FlareSolverr devolvia uma promessa, não uma resposta
+
+O socorro do FlareSolverr (o proxy que resolve o desafio do CloudFlare) tinha um
+defeito que só aparecia em produção: a montagem da resposta usava o factory
+`Http::response()` do Laravel, e esse factory pode estar com um handler
+assíncrono — ou com um `Http::fake()` residual de teste — e nesse caso devolve
+uma `FulfilledPromise` em vez da `Response`. O tipo de retorno declarado é
+`?Response`, então o PHP estourava com:
+
+```
+ClienteHttp::chamarFlareSolverr(): Return value must be of type
+?Illuminate\Http\Client\Response, GuzzleHttp\Promise\FulfilledPromise returned
+```
+
+O efeito era cruel: páginas **legítimas** que dependiam do proxy para passar pelo
+CloudFlare — como o `assistaonline.tv`, que tem o episódio — morriam com erro de
+tipo em vez de serem lidas. O bug não tinha relação com o conteúdo da página; era
+o estado global do cliente HTTP vazando para dentro do método.
+
+A correção em [`ClienteHttp::chamarFlareSolverr()`](../backend/app/Services/Torrents/ClienteHttp.php:337)
+constrói a resposta **direto sobre o PSR-7**:
+
+```php
+return new Response(new Psr7Response(200, ['Content-Type' => 'text/html; charset=UTF-8'], $html));
+```
+
+Com `use GuzzleHttp\Psr7\Response as Psr7Response;`. Montar a resposta na mão
+elimina a dependência do estado global do cliente HTTP — o método passa a
+devolver sempre uma `Response`, independentemente de haver um fake ou um handler
+assíncrono registrado.
+
+#### A lista negra ganhou os homônimos de empresa
+
+O motor de busca casa o título com o nome de empresas quando as palavras
+coincidem. "American Horror Story" devolveu a **American Airlines**
+(`aa.com.br`, `aa.com`) e a **Câmara Americana de Comércio** (`amcham.com.br`) —
+três páginas que não têm vídeo nenhum e consumiram o orçamento curto do fallback.
+O mesmo vale para "Donas de Casa Desesperadas", que puxa páginas de imobiliárias
+e classificados de aluguel.
+
+O [`MotorBuscaWeb`](../backend/app/Services/Torrents/MotorBuscaWeb.php:84) ganhou
+uma seção nova em `DOMINIOS_IGNORADOS` — **"Empresas, marcas e instituições
+homônimas de títulos"** — com companhias aéreas (`aa.com`, `latam.com`,
+`gol.com.br`, `azul.com.br`, `avianca.com`), agências de viagem (`cvc.com.br`,
+`decolar.com`, `booking.com`, `airbnb.com`, `trivago.com.br`) e portais
+imobiliários (`quintoandar.com.br`, `zapimoveis.com.br`, `vivareal.com.br`,
+`imovelweb.com.br`, `loft.com.br`). Nenhum deles é fonte de mídia.
+
+O casamento continua por **host inteiro com o ponto à frente**, então
+`americanas.com` (a loja) é barrado sem barrar um hipotético domínio que apenas
+termine com o mesmo texto.
+
+#### O player carregado por JavaScript também é prova de mídia
+
+A prova de mídia original só enxergava o que estava no HTML estático: tags
+`<video>`, `<source>`, scripts de player conhecidos e iframes de embed. Isso
+deixava de fora os sites PT-BR que montam o player **por JavaScript** — o
+`pobreflix.bike`, por exemplo, entrega a URL do vídeo num atributo `data-*` que o
+JS lê depois, ou num iframe genérico que só ganha `src` em runtime. A página era
+descartada como "sem prova de mídia" mesmo tendo o episódio.
+
+O [`ExtratorVideo`](../backend/app/Services/Torrents/ExtratorVideo.php:41) ganhou
+três mecanismos novos:
+
+- **`ATRIBUTOS_DE_DADOS`** — uma lista de atributos `data-*` que costumam carregar
+  a URL do vídeo (`data-src`, `data-video`, `data-video-src`, `data-file`,
+  `data-player`, `data-embed`, `data-hls`, `data-m3u8`, `data-stream`,
+  `data-source`, `data-lazy-src`, `data-original`, entre outros). O método
+  `dosAtributosDeDados()` varre o HTML atrás deles e desescapa o valor antes de
+  testar se é vídeo.
+- **`HOSTS_DE_IFRAME_IGNORADOS`** — a lista de hosts que **nunca** são player:
+  redes de anúncio (`googlesyndication.com`, `doubleclick.net`, `taboola.com`,
+  `outbrain.com`), redes sociais (`facebook.com`, `twitter.com`, `x.com`,
+  `linkedin.com`), captcha (`recaptcha.net`, `hcaptcha.com`), analytics
+  (`google-analytics.com`, `hotjar.com`, `clarity.ms`) e chat (`intercom.io`,
+  `zendesk.com`, `tawk.to`, `crisp.chat`).
+- **`dosIframesGenericos()`** — aceita qualquer iframe que **não** seja de host
+  ignorado como prova de mídia. Antes só os iframes de `HOSTS_DE_EMBED`
+  (YouTube, Vimeo, Dailymotion...) valiam; agora um player desconhecido, hospedado
+  num domínio qualquer, também conta — desde que não seja anúncio nem widget.
+
+A precedência importa: o host ignorado **vence** a lista de embeds conhecidos. O
+Facebook é o caso — ele está em `HOSTS_DE_EMBED` porque hospeda vídeo, mas o mesmo
+domínio serve o plugin de "curtir", que não é player. Sem essa precedência, uma
+página de notícia com o botão social passaria na prova de mídia. Por isso
+`dosIframesDeEmbed()` pula o host quando `hostDeIframeIgnorado()` o reconhece.
+
+O `temMidia()` passou a considerar `temIframeGenerico()` e `temEmbedEmAtributo()`
+como provas válidas, e o `extrair()` passou a incluir `dosAtributosDeDados()` na
+colheita de URLs.
+
+#### Duas colheitas: arquivo de vídeo e URL de embed
+
+Nem todo player entrega o arquivo. Alguns entregam só a URL de embed, que o
+media-service resolve depois. Para não perder esses casos, o
+[`ProvedorStreamDireto::rasparPagina()`](../backend/app/Services/Torrents/ProvedorStreamDireto.php:283)
+passou a fazer **duas colheitas** e combiná-las:
+
+```php
+$urls = array_merge(
+    $this->extrator->extrair($corpo),
+    $this->extrator->extrairEmbeds($corpo),
+);
+```
+
+O `extrair()` pega os arquivos de vídeo (`.mp4`, `.m3u8`...); o `extrairEmbeds()`
+pega as URLs de embed — iframes de player e atributos `data-*` que o JavaScript
+transforma em player depois. Sem a segunda, os sites de streaming PT-BR que
+montam o player por JS ficariam de fora mesmo tendo o episódio.
+
+#### A capa do TMDB não é fonte de vídeo
+
+A prova de mídia por iframe genérico e por atributo `data-*` aceita **qualquer
+URL absoluta** que não seja de host ignorado — o que é necessário para os players
+de domínio próprio. O efeito colateral apareceu no primeiro teste real: as
+"fontes" devolvidas eram as **capas da série** no TMDB
+(`image.tmdb.org/t/p/w185/....jpg`).
+
+A causa é o lazy loading. O `data-src` de um `<img>` é uma URL absoluta como
+qualquer outra, e o `dosAtributosDeDados()` o captura junto com os `data-*` de
+player. Como o host não estava na lista de anúncios, a capa passava na prova de
+mídia e virava fonte direta — o player tentava abrir um `.jpg`.
+
+A defesa é uma lista de **extensões que nunca são mídia**
+(`EXTENSOES_NAO_MIDIA`: `jpg`, `png`, `gif`, `webp`, `svg`, `css`, `js`, `json`,
+`pdf`, `zip`...), aplicada por `pareceNaoMidia()` em **quatro pontos**:
+
+- `extrairEmbeds()` — a colheita de embeds não devolve imagem.
+- `temEmbedEmAtributo()` — uma página que só tem capas não passa na prova.
+- `temIframeGenerico()` — um iframe de imagem não é player.
+- `dosIframesGenericos()` — a colheita de iframes também recusa imagem.
+
+A checagem é pela extensão do **caminho**, sem a query string — o mesmo cuidado
+do `pareceVideo()`, porque muitos CDNs penduram parâmetros depois do `?`. O
+`image.tmdb.org` também entrou em `HOSTS_DE_IFRAME_IGNORADOS`, como segunda
+camada. O player legítimo sem extensão de arquivo (`/embed/abc123`) continua
+valendo: a recusa é por extensão de imagem/asset, não por ausência de extensão.
+
+#### O player que só nasce depois do JavaScript
+
+O `Http::get()` lê o HTML que o servidor entrega, e só ele. Isso basta para os
+sites que já mandam o `<video>` ou o `<iframe>` no corpo — mas não para os
+streaming PT-BR de verdade. O `pobreflix.bike`, o `assistaonline.tv` e o
+`verpobreflix.net` entregam uma página **estática sem player nenhum**: o
+`<video>` só existe depois que o JavaScript chama o `player-resolve` por AJAX e
+injeta o iframe no DOM. O HTML cru tem apenas o link da própria página
+(`data-url="/assistir/serie/american-horror-story/"`) e as capas do TMDB
+(`data-src="...jpg"`). Nenhum dos dois é vídeo.
+
+O resultado era o pior possível: as páginas **certas** eram visitadas e
+descartadas por "sem prova de mídia", porque a prova olhava um HTML que ainda
+não tinha o player. O log mostrava o descarte e parecia que o site não tinha o
+episódio — quando o episódio estava lá, esperando o script rodar.
+
+A correção é uma **segunda tentativa renderizada**. Quando a prova de mídia
+falha no HTML estático, o `ProvedorStreamDireto` entrega a página ao Chromium do
+FlareSolverr pelo novo `ClienteHttp::getRenderizado()`. O navegador executa o
+JavaScript até o player aparecer e devolve o DOM já montado; a prova de mídia e
+a extração são refeitas sobre esse HTML. É o mesmo caminho do socorro contra
+Cloudflare, só que sem esperar por um bloqueio para começar — quem chama já sabe
+que a versão estática não bastou.
+
+O `getRenderizado()` é deliberadamente separado do `get()`: o `get()` só aciona
+o proxy quando fareja bloqueio (status 403/429/503 ou a marca do desafio), e
+forçá-lo a renderizar toda página saudável pagaria o custo do navegador em cada
+requisição. A renderização é o **último recurso**, acionada apenas quando a
+página passou na relevância mas não provou mídia. Sem `FLARESOLVERR_URL`
+configurada, o método devolve `null` e o provedor fica com o HTML estático que
+já tinha — o comportamento antigo, sem quebra.
+
+Assim o scraper cobre os três formatos que o conteúdo raro usa: o **HTML** puro
+(`<video src>`), o **embed** (iframe e `data-*`) e o **player em JavaScript**
+(renderizado pelo navegador). Os testes ficam em `ClienteHttpBloqueioTest`
+(`test_renderizacao_*`), que exercitam o caminho com e sem proxy.
+
+#### As quatro travas contra o lixo da busca aberta
+
+O scraper é a última linha de defesa do conteúdo raro, e por isso mesmo é o que
+mais apanha da internet aberta. Depois de meses vendo o motor gastar quarenta
+segundos para voltar de mãos vazias — ou pior, voltar com um vídeo aleatório do
+Tokyvideo —, a busca ganhou quatro travas que trabalham juntas: uma lista
+branca, uma lista negra, uma validação de relevância no vídeo e um orçamento
+menor. Nenhuma delas sozinha resolve; o problema era o conjunto.
+
+**A lista branca de vídeo foi enxugada.** O `DOMINIOS_DE_VIDEO` do
+`MotorBuscaWeb` nasceu com vinte e um domínios, quase todos clones piratas que
+aparecem e somem a cada trimestre. A lista não aceita nem recusa nada — ela só
+**sobe a página na ordem** de raspagem, para o candidato bom ser visitado antes
+do lixo. Só que subir um domínio morto na frente é pior do que não subir: o
+scraper gasta o orçamento no `pobreflix.bike` (que hoje é SEO spam) e nunca
+chega no `tokyvideo.com`. A lista ficou com sete endereços que comprovadamente
+hospedam player nativo e limpo: `tokyvideo.com`, `cinepoca.com.br`,
+`cinepoca.com`, `dailymotion.com`, `archive.org`, `ok.ru` e `vimeo.com`. Os
+clones instáveis saíram — se um deles voltar a funcionar, volta para a lista
+com prova, não por herança.
+
+**A lista negra ganhou o adware e o site morto.** Dois problemas novos, dois
+mecanismos novos. O primeiro é o `DOMINIOS_DE_ADWARE`, com os domínios que a
+investigação flagrou no fim da cadeia de redirecionamento do player do
+`pobreflix.bike`: `guiadecapital.com` e `fgtd.online`. O player "respondia" com
+sucesso e mandava o usuário para uma página de aposta de cavalo — o clássico
+adware disfarçado de fonte. O `motivoDoDescarte()` agora devolve `adware` para
+eles, e o descarte acontece na origem, antes de qualquer requisição. O segundo é
+o `MARCAS_DE_SITE_MORTO`, que fareja o corpo da página atrás das assinaturas de
+hospedagem expirada: `deployment paused`, `site not found`, `account suspended`,
+`domain is parked`, `this domain is for sale` e afins. O `assistaonline.tv`
+devolvia exatamente a página "Deployment Paused" do Vercel — o site estava
+morto, mas o domínio ainda respondia 200, e o scraper tratava aquilo como
+página viva. Agora o `ProvedorStreamDireto::pareceSiteMorto()` corta a página
+antes de perder tempo extraindo título e vídeo dela.
+
+**O vídeo extraído precisa ter a cara do título.** Esta é a trava que fecha o
+falso positivo clássico: a página passa na relevância (o título dela fala do
+episódio), mas o vídeo embutido é qualquer coisa. O `videoRelevante()` da trait
+`RelevanciaTitulo` exige que a **URL do vídeo** carregue ao menos uma palavra
+principal do termo buscado. Buscando "American Horror Story", o vídeo precisa
+ter `american`, `horror` ou `story` no slug; um `/video/historia-4` ou um slug
+numérico puro é descartado na hora, antes de virar fonte. O limiar aqui é
+deliberadamente mais frouxo que o da página — **uma** palavra basta, não duas —
+porque o slug do vídeo é curto e muitas vezes carrega só o nome da série. Os
+hosts de embed conhecidos (`youtube.com`, `youtu.be`, `youtube-nocookie.com`,
+`vimeo.com`) ficam isentos: o ID deles é opaco por natureza e não há slug para
+validar.
+
+**O orçamento encolheu para caber no que é viável.** As páginas que sobram
+depois das travas acima são poucas e boas, então não faz sentido manter o
+orçamento de quando a busca varria vinte candidatos ruins. Os padrões do
+`config/services.php` caíram: `stream_direto_max_termos` de 8 para 5,
+`stream_direto_max_paginas` de 10 para 6, `stream_direto_tempo_limite` de 10
+para 8 segundos, e o intervalo entre requisições de 800–2200 ms para 400–1200
+ms. O intervalo menor é seguro justamente porque há menos requisições: o teto
+de tempo por página é que segura o abuso, não a pausa entre elas. O efeito
+prático é a busca voltar em segundos, e não em quarenta, quando não há fonte.
+
+As quatro travas se cobrem: a lista branca decide **quem** visitar primeiro, a
+lista negra corta **o que** nem chega a ser visitado, a relevância do vídeo
+recusa **o que** foi extraído errado, e o orçamento garante que o conjunto
+inteiro caiba num tempo aceitável. Os testes vivem em `MotorBuscaWebTest`
+(`test_dominio_de_adware_*`, `test_dominio_morto_*`), `RelevanciaTituloTest`
+(`test_video_*`) e `ProvedorStreamDiretoTest` (`test_pagina_de_site_morto_*`).
 
 #### Sem ano conhecido, a aposta é o fluxo normal
 

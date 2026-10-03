@@ -43,10 +43,13 @@ class TermosStreamDiretoTest extends TestCase
 
         $intencoes = $this->termos('intencoesDeStreaming');
 
-        // O motor de busca ordena por relevância e, para um título conhecido,
-        // empurra catálogos (JustWatch, IMDb) para o topo. Os termos que puxam
-        // agregadores de vídeo precisam vir antes dos genéricos.
-        $this->assertSame('assistir online dublado', $intencoes[0]);
+        // Medição, não preferência: o termo genérico "assistir online" é o que
+        // alcança o agregador que de fato hospeda o episódio. O "dublado" faz o
+        // motor devolver plataformas pagas (Prime Video, JustWatch, Disney+) e
+        // clones de fachada que queimam o orçamento curto do fallback antes de a
+        // página boa ser aberta. Por isso o genérico vem primeiro.
+        $this->assertSame('assistir online', $intencoes[0]);
+        $this->assertContains('assistir online dublado', $intencoes);
         $this->assertContains('filme completo dublado', $intencoes);
         $this->assertContains('serie completa dublada', $intencoes);
     }
@@ -71,10 +74,11 @@ class TermosStreamDiretoTest extends TestCase
 
         $termos = $this->termos('termosDeStreaming', 'Cidade de Deus');
 
-        // Sem âncora de domínio, o termo mais preciso é o que junta título e
-        // intenção de streaming — é o que tem a maior chance de achar a página
-        // do player já na primeira consulta.
-        $this->assertSame('Cidade de Deus assistir online dublado', $termos[0]);
+        // O termo de abertura é o genérico: é o que o motor responde com o
+        // agregador que hospeda a mídia, e não com as plataformas pagas que o
+        // "dublado" atrai. A intenção de idioma continua na lista, logo depois.
+        $this->assertSame('Cidade de Deus assistir online', $termos[0]);
+        $this->assertContains('Cidade de Deus assistir online dublado', $termos);
     }
 
     public function test_episodio_abre_com_titulo_numeracao_e_intencao(): void
@@ -84,8 +88,9 @@ class TermosStreamDiretoTest extends TestCase
         $termos = $this->termos('termosDeStreaming', 'Donas de Casa Desesperadas', 1, 1);
 
         // A numeração entra junto da intenção para o episódio não virar a série
-        // inteira na página encontrada.
-        $this->assertSame('Donas de Casa Desesperadas 1x01 assistir online dublado', $termos[0]);
+        // inteira na página encontrada. A intenção de abertura é a genérica,
+        // pelo mesmo motivo do filme: é a que alcança o agregador de verdade.
+        $this->assertSame('Donas de Casa Desesperadas 1x01 assistir online', $termos[0]);
         $this->assertContains('Donas de Casa Desesperadas S01E01 assistir online dublado', $termos);
     }
 
@@ -144,10 +149,10 @@ class TermosStreamDiretoTest extends TestCase
     {
         $termos = $this->termos('termosDeStreaming', 'Donas de Casa Desesperadas', 1, 1);
 
-        // O provedor para assim que junta páginas suficientes, então o termo
-        // mais específico precisa ser o primeiro da lista — e o mais específico
-        // é o que junta título, numeração e intenção de streaming.
-        $this->assertSame('Donas de Casa Desesperadas 1x01 assistir online dublado', $termos[0]);
+        // O provedor para assim que junta páginas suficientes, então o primeiro
+        // termo precisa ser o que rende página de player. A medição mostrou que
+        // é o genérico — o "dublado" traz plataformas pagas e clones de fachada.
+        $this->assertSame('Donas de Casa Desesperadas 1x01 assistir online', $termos[0]);
     }
 
     public function test_numeracao_de_dois_digitos_e_preservada(): void
@@ -257,11 +262,11 @@ class TermosStreamDiretoTest extends TestCase
 
         $termos = $this->termos('termosDeStreaming', 'Donas de Casa Desesperadas', 1, 1);
 
-        // A lista vem do mais preciso ao mais amplo, então o corte descarta a
-        // cauda genérica e mantém os termos que juntam numeração e intenção —
-        // que são os que mais rendem página de player por consulta.
-        $this->assertSame('Donas de Casa Desesperadas 1x01 assistir online dublado', $termos[0]);
-        $this->assertSame('Donas de Casa Desesperadas 1x01 assistir online legendado', $termos[1]);
+        // O corte mantém a cabeça da lista, que é a ordem de rendimento medida:
+        // o genérico primeiro, a variação dublada em seguida. A cauda (as
+        // grafias de numeração e o título original) é o que sobra para depois.
+        $this->assertSame('Donas de Casa Desesperadas 1x01 assistir online', $termos[0]);
+        $this->assertSame('Donas de Casa Desesperadas 1x01 assistir online dublado', $termos[1]);
     }
 
     public function test_teto_zero_desliga_o_corte(): void

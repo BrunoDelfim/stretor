@@ -2,6 +2,7 @@
 
 namespace App\Services\Torrents;
 
+use GuzzleHttp\Psr7\Response as Psr7Response;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
@@ -52,13 +53,18 @@ class ClienteHttp
     }
 
     /**
-     * Status que denunciam bloqueio por Cloudflare ou rate limit.
+     * Status que denunciam bloqueio por Cloudflare, paywall ou rate limit.
      *
      * O 403 é o clássico do desafio; o 429 é o "calma lá" do rate limit; o 503
-     * aparece quando o Cloudflare põe a página em modo de espera. Nenhum deles é
-     * resposta legítima de um tracker saudável, então valem a segunda tentativa.
+     * aparece quando o Cloudflare põe a página em modo de espera. O 402 (Payment
+     * Required) entrou depois: os agregadores de vídeo que hospedam o conteúdo
+     * raro respondem 402 quando o acesso é pago, e sem reconhecê-lo o provedor
+     * lia a página como se fosse resultado legítimo — gastava o teto inteiro e a
+     * descartava por "sem prova de mídia", sem nunca acionar o socorro. Nenhum
+     * deles é resposta legítima de um site saudável, então valem a segunda
+     * tentativa.
      */
-    private const STATUS_DE_BLOQUEIO = [403, 429, 503];
+    private const STATUS_DE_BLOQUEIO = [402, 403, 429, 503];
 
     /**
      * Marcas do desafio do Cloudflare no corpo da resposta.
@@ -170,6 +176,53 @@ class ClienteHttp
         }
 
         return $direta;
+    }
+
+    /**
+     * Faz um GET forçando a passagem pelo navegador do FlareSolverr.
+     *
+     * O `get()` comum só aciona o proxy quando fareja bloqueio. Isso resolve o
+     * Cloudflare, mas não resolve o outro tipo de página que o stream direto
+     * encontra: o site que responde 200 com um HTML estático **sem player**,
+     * porque o player só é montado depois, por JavaScript — uma chamada AJAX ao
+     * `player-resolve`, um `eval` que injeta o `<iframe>`, um `data-*` que o
+     * script lê e transforma em vídeo. O `Http::get()` nunca executa esse script,
+     * então a prova de mídia falha e a página legítima é descartada como se não
+     * tivesse vídeo.
+     *
+     * Aqui a página é entregue ao Chromium do FlareSolverr, que roda o JavaScript
+     * até o player aparecer e devolve o DOM já montado. É o mesmo caminho do
+     * socorro contra bloqueio, só que sem esperar por um bloqueio para começar:
+     * quem chama já sabe que a versão estática não bastou.
+     *
+     * Devolve `null` quando o proxy não está configurado ou não conseguiu
+     * renderizar — o provedor então fica com o HTML estático que já tinha.
+     */
+    public function getRenderizado(string $url, ?int $timeout = null): ?Response
+    {
+        if (! $this->proxyDisponivel()) {
+            return null;
+        }
+
+        $timeout = $this->tempoDisponivel($timeout ?? (int) config('services.torrents.tempo_limite', 15));
+
+        if ($timeout <= 0) {
+            return null;
+        }
+
+        $renderizada = $this->chamarFlareSolverr([
+            'cmd' => 'request.get',
+            'url' => $url,
+            'maxTimeout' => $timeout * 1000,
+        ]);
+
+        if ($renderizada !== null && ! $renderizada->failed()) {
+            Log::info('Stream direto: página renderizada pelo FlareSolverr.', ['url' => $url]);
+
+            return $renderizada;
+        }
+
+        return null;
     }
 
     /**
@@ -397,11 +450,29 @@ class ClienteHttp
          * FlareSolverr devolveu. Assim o provedor continua lendo `->body()` e
          * `->json()` como sempre, sem um caminho paralelo só para o proxy.
          *
-         * `Http::response()` monta a resposta sem exigir o Guzzle direto — ele
-         * vem como dependência transitiva do Laravel, e amarrar o código nele
-         * seria frágil.
+         * A montagem é feita direto sobre a `Response` do PSR-7, e não pelo
+         * `Http::response()`. O factory do Laravel pode estar com um handler
+         * assíncrono (ou um `Http::fake()` residual de teste), e nesse caso ele
+         * devolve uma `FulfilledPromise` em vez da `Response` — foi o que
+         * derrubou páginas legítimas como o `assistaonline.tv` com o erro
+         * "Return value must be of type ?Response, FulfilledPromise returned".
+         * Construir a resposta na mão elimina essa dependência do estado global
+         * do cliente HTTP.
          */
-        return Http::response($html, 200, ['Content-Type' => 'text/html; charset=UTF-8']);
+        return new Response(new Psr7Response(200, ['Content-Type' => 'text/html; charset=UTF-8'], $html));
+    }
+
+    /**
+     * Diz se a resposta veio bloqueada, para quem chamou decidir o descarte.
+     *
+     * O provedor precisa dessa resposta antes de tentar extrair mídia: uma página
+     * com 402/403 não tem player para achar, e varrê-la só gasta o orçamento. O
+     * método é público porque a decisão de abandonar é do provedor, não do
+     * cliente — o cliente só sabe ler o status.
+     */
+    public function bloqueada(Response $resposta): bool
+    {
+        return $this->pareceBloqueio($resposta);
     }
 
     /**

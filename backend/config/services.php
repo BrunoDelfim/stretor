@@ -225,6 +225,27 @@ return [
          */
         'orcamento_busca' => (int) env('TORRENTS_ORCAMENTO_BUSCA', 45),
 
+        /*
+         * Orçamento de tempo, em segundos, só para o canal do stream direto.
+         *
+         * Ele é separado do global porque o custo é de outra ordem. Um provedor de
+         * torrent responde em milissegundos; o stream direto paga uma renderização
+         * de navegador (FlareSolverr) por página, de 10 a 15 s cada, e precisa de
+         * duas páginas no mínimo — a listagem da série e a do episódio. Com o
+         * prazo único de 45 s, a cascata de torrents consumia o orçamento inteiro
+         * e o stream direto, que só entra depois como fallback, nascia sem tempo:
+         * o FlareSolverr respondia 200 com a página do episódio quando chamado à
+         * mão, mas o provedor desistia antes de chamá-lo, porque `restante()` já
+         * devolvia zero.
+         *
+         * Os dois orçamentos **não somam** para o usuário: o stream direto só roda
+         * quando a cascata de torrents falhou, então o tempo dele é o tempo da
+         * resposta, não uma adição ao da cascata. O valor padrão cobre a descida
+         * (série → episódio) com folga para o FlareSolverr de cada página, sem
+         * deixar a resposta passar de um minuto.
+         */
+        'stream_direto_orcamento' => (int) env('TORRENTS_STREAM_DIRETO_ORCAMENTO', 45),
+
         // --- Degrau 2: indexador Torznab (Prowlarr) ---
 
         /*
@@ -344,30 +365,40 @@ return [
          * de uma vez é o caminho mais curto para o rate limit. O corte mantém os
          * termos mais precisos — que são os primeiros da lista — e descarta a
          * cauda.
+         *
+         * O teto caiu de 8 para 5: com a lista de domínios de vídeo enxugada e a
+         * validação estrita do vídeo, os termos da cauda quase nunca acrescentam
+         * candidato novo — só gastam orçamento. Os cinco primeiros já cobrem as
+         * grafias de numeração e as intenções principais.
          */
-        'stream_direto_max_termos' => (int) env('TORRENTS_STREAM_DIRETO_MAX_TERMOS', 8),
+        'stream_direto_max_termos' => (int) env('TORRENTS_STREAM_DIRETO_MAX_TERMOS', 5),
 
         /*
          * Intervalo, em milissegundos, entre duas consultas ao motor de busca. O
          * atraso é sorteado entre o mínimo e o máximo a cada consulta, para que a
          * cadência não seja um relógio fixo — que também é padrão de bot. Zero
          * desliga a espera (útil em teste).
+         *
+         * O intervalo caiu (de 800–2200 para 400–1200): o teto de termos menor já
+         * reduz o número de consultas, e a espera entre elas pode ser mais curta
+         * sem virar rajada. O sorteio continua, para a cadência não ser fixa.
          */
-        'stream_direto_intervalo_min' => (int) env('TORRENTS_STREAM_DIRETO_INTERVALO_MIN', 800),
-        'stream_direto_intervalo_max' => (int) env('TORRENTS_STREAM_DIRETO_INTERVALO_MAX', 2200),
+        'stream_direto_intervalo_min' => (int) env('TORRENTS_STREAM_DIRETO_INTERVALO_MIN', 400),
+        'stream_direto_intervalo_max' => (int) env('TORRENTS_STREAM_DIRETO_INTERVALO_MAX', 1200),
 
         /*
          * Teto de páginas abertas por busca. Cada página é uma requisição, e o
          * fallback é socorro, não catálogo: uma vez que há links tocáveis, gastar
          * o orçamento em mais páginas só atrasa a resposta.
          *
-         * O teto subiu de 6 para 10 porque o corte real de custo é o alvo de
-         * fontes: quando há fontes na mão, o laço para muito antes de chegar
-         * aqui. O teto só entra em cena quando a busca **não** achou nada — e aí
-         * um punhado de páginas a mais é o que dá chance de alcançar o agregador
-         * certo, em vez de morrer no meio do caminho.
+         * O teto voltou de 10 para 6. O valor alto fazia sentido quando a lista
+         * de domínios de vídeo estava inflada com clones mortos: era preciso
+         * abrir muitas páginas para, por sorte, alcançar o agregador certo. Com a
+         * lista enxuta (só quem tem player nativo) e a validação estrita do
+         * vídeo, as primeiras páginas já são as boas — e o teto menor evita que a
+         * busca gaste 40 s abrindo lixo quando não há nada a achar.
          */
-        'stream_direto_max_paginas' => (int) env('TORRENTS_STREAM_DIRETO_MAX_PAGINAS', 10),
+        'stream_direto_max_paginas' => (int) env('TORRENTS_STREAM_DIRETO_MAX_PAGINAS', 6),
 
         /*
          * Alvo de fontes distintas que encerra a varredura. É diferente do teto de
@@ -386,8 +417,13 @@ return [
          * página de streaming). Curto de propósito: o fallback roda depois do
          * orçamento principal e não pode empurrar a resposta além dos 60 s que o
          * frontend espera.
+         *
+         * O teto caiu de 10 para 8. Com a lista de domínios enxuta e o descarte
+         * de site morto antes da extração, a página que não responde rápido
+         * dificilmente é a boa — e 8 s ainda cobrem a renderização do FlareSolverr
+         * nos sites que montam o player por JavaScript.
          */
-        'stream_direto_tempo_limite' => (int) env('TORRENTS_STREAM_DIRETO_TEMPO_LIMITE', 10),
+        'stream_direto_tempo_limite' => (int) env('TORRENTS_STREAM_DIRETO_TEMPO_LIMITE', 8),
 
         /*
          * Barreira de conteúdo impróprio do scraper de stream direto.
@@ -405,6 +441,27 @@ return [
          * scraper volta a abrir qualquer página que o motor devolver.
          */
         'stream_direto_filtro_adulto' => (bool) env('TORRENTS_STREAM_DIRETO_FILTRO_ADULTO', true),
+
+        /*
+         * Relevância da página pelo título, no scraper de stream direto.
+         *
+         * A prova de mídia responde "aqui tem player?", mas não "o vídeo é o
+         * pedido?". Uma página de fandom *sobre* a série embute o trailer e passa
+         * na prova de mídia; um agregador devolve um episódio qualquer de outro
+         * programa quando o título pedido não está no acervo. Foi assim que
+         * "American Horror Story" abriu um episódio aleatório vindo do
+         * `dramatotal.fandom.com` e um `historia-4` do Tokyvideo.
+         *
+         * Com esta chave, a página só é aceita se o endereço ou o `<title>`
+         * trouxerem ao menos este número de palavras-chave distintas do título
+         * (sem as palavras de ligação e sem a numeração do episódio). O padrão é
+         * 2: um título composto ("American Horror Story") precisa de duas
+         * palavras ("american" + "story") para provar relevância — uma só
+         * ("american") casaria com `americanas.com.br` e `americansportshop.com.br`,
+         * que apareceram no log. Zero desliga a checagem e volta ao critério
+         * antigo, só a prova de mídia.
+         */
+        'stream_direto_min_palavras_chave' => (int) env('TORRENTS_STREAM_DIRETO_MIN_PALAVRAS_CHAVE', 2),
 
         /*
          * Estratégia de roteamento por idade da série.

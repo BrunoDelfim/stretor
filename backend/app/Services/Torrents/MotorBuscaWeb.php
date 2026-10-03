@@ -200,6 +200,65 @@ class MotorBuscaWeb
         'deezer.com',
         'spotify.com',
         'soundcloud.com',
+        /*
+         * Empresas, marcas e instituições homônimas de títulos.
+         *
+         * O motor de busca casa o título com o nome da empresa quando as
+         * palavras coincidem. "American Horror Story" devolveu a American
+         * Airlines (`aa.com.br`, `aa.com`) e a Câmara Americana de Comércio
+         * (`amcham.com.br`) — três páginas que não têm vídeo nenhum e
+         * consumiram o orçamento curto do fallback. O mesmo vale para
+         * "Donas de Casa Desesperadas", que puxa páginas de imobiliárias e
+         * classificados de aluguel. Nenhuma delas é fonte de mídia.
+         */
+        'aa.com',
+        'aa.com.br',
+        'amcham.com.br',
+        'americanas.com',
+        'americanairlines.com',
+        'americanairlines.com.br',
+        'latam.com',
+        'gol.com.br',
+        'voegol.com.br',
+        'azul.com.br',
+        'voeazul.com.br',
+        'tam.com.br',
+        'avianca.com',
+        'cvc.com.br',
+        'decolar.com',
+        'booking.com',
+        'airbnb.com',
+        'airbnb.com.br',
+        'trivago.com.br',
+        'quintoandar.com.br',
+        'zapimoveis.com.br',
+        'vivareal.com.br',
+        'imovelweb.com.br',
+        'chavesnamao.com.br',
+        'loft.com.br',
+        'quintoandar.com',
+        /*
+         * Wikis de fandom e enciclopédias colaborativas.
+         *
+         * A armadilha é sutil: uma página de fandom *sobre* a série embute
+         * player de vídeo (o YouTube oficial do trailer, o clipe da cena), então
+         * ela passa pela prova de mídia e vira fonte — mas o vídeo que ela
+         * embute é um trecho aleatório, não o episódio. Foi o que aconteceu com
+         * "American Horror Story": o `dramatotal.fandom.com` rendeu seis vídeos
+         * que nada tinham a ver com o episódio 1. Wiki não hospeda o episódio;
+         * hospeda o verbete sobre ele.
+         */
+        'fandom.com',
+        'wikia.com',
+        'wikia.org',
+        'wiki.gg',
+        'shoutwiki.com',
+        'miraheze.org',
+        'wikidot.com',
+        'wikitia.com',
+        'wikiwand.com',
+        'fextralife.com',
+        'gamepedia.com',
         // Enciclopédias, notícias e portais.
         'britannica.com',
         'g1.globo.com',
@@ -274,6 +333,22 @@ class MotorBuscaWeb
         'significados.com.br',
         'priberam.org',
         'infopedia.pt',
+        /*
+         * Agregadores de fachada e clones mortos.
+         *
+         * São páginas que se anunciam como "assistir online" mas não hospedam
+         * mídia: ou embrulham o player de um terceiro que exige `Referer` e
+         * devolve 403 (o `plenoflu.com` por trás do `verpobreflix.net`), ou já
+         * morreram e servem só de isca de SEO. O custo de abrir cada uma é alto —
+         * a página demora a responder e a prova de mídia falha no fim —, e o
+         * orçamento curto do fallback acaba antes de o agregador que funciona ser
+         * alcançado. O `pobreflix.bike` e o `assistaonline.tv` foram medidos:
+         * juntos consumiram 39 s de uma janela de 45 s e não entregaram fonte.
+         */
+        'pobreflix.bike',
+        'pobreflix.tv',
+        'assistaonline.tv',
+        'assistironline.tv',
         // Sites adultos conhecidos (reforço da barreira de conteúdo).
         'xvideos.com',
         'xvideos-cdn.com',
@@ -382,6 +457,83 @@ class MotorBuscaWeb
     ];
 
     /**
+     * Domínios que só existem para redirecionar para adware.
+     *
+     * A cadeia foi rastreada na prática: o player do `pobreflix.bike` devolvia
+     * uma URL do `guiadecapital.com`, que redirecionava para o `fgtd.online`,
+     * que por fim abria um artigo aleatório sobre investimento em cavalos de
+     * corrida. Não há vídeo em ponto nenhum da cadeia — é tráfego comprado, e o
+     * "player" é só a isca. Um domínio assim nunca vira fonte, e deixá-lo passar
+     * só gasta orçamento e polui o log.
+     *
+     * A lista é de **sufixos de host**, como a lista negra principal: `fgtd.online`
+     * cobre `cdn.fgtd.online` sem casar um domínio que apenas termine com o texto.
+     *
+     * @var array<int, string>
+     */
+    private const DOMINIOS_DE_ADWARE = [
+        'guiadecapital.com',
+        'fgtd.online',
+    ];
+
+    /**
+     * Marcas no corpo que denunciam um site morto, não uma página de vídeo.
+     *
+     * O `assistaonline.tv` respondia 200 com uma página do Vercel dizendo
+     * "Deployment Paused" — o projeto expirou e o domínio ficou apontando para o
+     * placeholder da hospedagem. O status é 200, então a checagem de bloqueio não
+     * pega; o corpo, porém, é inequívoco. Procurar essas marcas antes da extração
+     * evita gastar a prova de mídia e a renderização do FlareSolverr numa página
+     * que nunca vai ter player.
+     *
+     * As marcas são frases inteiras, não palavras soltas: "paused" sozinho
+     * apareceria num player pausado, e "deployment" num blog sobre deploy. A
+     * combinação exata é o que identifica o placeholder da hospedagem.
+     *
+     * @var array<int, string>
+     */
+    private const MARCAS_DE_SITE_MORTO = [
+        'deployment paused',
+        'this deployment has been paused',
+        'site not found',
+        'this site is temporarily unavailable',
+        'account suspended',
+        'domain is parked',
+        'this domain is for sale',
+    ];
+
+    /**
+     * Termos que denunciam loja ou comércio, não agregador de vídeo.
+     *
+     * A armadilha é o título que contém uma palavra comum de comércio. "Donas de
+     * Casa Desesperadas" fez o motor devolver `donasloja.com.br`,
+     * `donasacessorios.com.br` e `donasbijoux.com.br` — lojas que casam com
+     * "Donas" e não têm vídeo nenhum. Cada uma custava uma requisição e um
+     * pedaço do orçamento, e o agregador certo (`cinepoca`) só aparecia depois.
+     *
+     * A checagem é por **sufixo de segmento** do host ou do caminho: `donasloja`
+     * termina em `loja` e casa; `lojado` termina em `jado` e não casa. É o mesmo
+     * cuidado do [`FiltroConteudoAdulto`], que evita casar pedaço de palavra.
+     */
+    private const TERMOS_DE_COMERCIO = [
+        'loja',
+        'lojas',
+        'shop',
+        'store',
+        'acessorios',
+        'bijoux',
+        'bijuterias',
+        'produtos',
+        'carrinho',
+        'checkout',
+        'comprar',
+        'preco',
+        'promocao',
+        'mercado',
+        'ecommerce',
+    ];
+
+    /**
      * Motores padrão, na ordem em que são tentados.
      *
      * O SearXNG interno do compose é o único motor padrão: ele sobe junto com o
@@ -413,23 +565,34 @@ class MotorBuscaWeb
      * mídia continua decidindo o que vira fonte, e um domínio desconhecido com
      * player segue valendo. O ganho é gastar as primeiras páginas do orçamento
      * com quem tem chance real de ter o vídeo.
+     *
+     * ## A lista foi enxugada: só quem tem player nativo e limpo
+     *
+     * A versão anterior misturava agregadores de verdade com clones piratas
+     * instáveis e sites que já morreram. O custo disso era alto: o provedor
+     * abria primeiro o `pobreflix.bike` (que responde com um player de anúncio
+     * que redireciona para adware) e o `assistaonline.tv` (que hoje devolve uma
+     * página "Deployment Paused" do Vercel), gastando o orçamento antes de
+     * chegar ao `tokyvideo.com` — o único que de fato entrega o vídeo.
+     *
+     * O critério agora é estreito: entra quem **comprovadamente** hospeda o
+     * vídeo num player nativo e limpo, sem depender de cadeia de redirecionamento
+     * de anúncio. O `tokyvideo.com` é o caso de referência. Os clones de
+     * `redecanais.*` saíram porque trocam de domínio toda semana e hoje caem em
+     * estacionamento de domínio; os `pobreflix.*` de fachada saíram porque o
+     * player deles é um redirecionador de adware, não um player.
+     *
+     * O `verpobreflix.net` é a exceção que confirma a regra: apesar do nome, é o
+     * agregador que de fato monta a página do episódio e embute o player (o
+     * `plenoflu.com` por trás). Ele entra no topo porque é o domínio que a busca
+     * genérica alcança e que rende a fonte — subir na ordem faz o orçamento curto
+     * chegar nele antes dos catálogos.
      */
     private const DOMINIOS_DE_VIDEO = [
+        'verpobreflix.net',
         'tokyvideo.com',
-        'pobreflix.bike',
-        'pobreflix.com',
-        'redecanais.in',
-        'redecanais.hair',
-        'redecanais.la',
-        'redecanais.vc',
-        'hypeflixnet.com',
-        'hypeflix.com',
-        'assistaonline.tv',
-        'superflixapi.com',
-        'overflix.com.br',
-        'topflix.tv',
-        'megafilmeshd.net',
-        'filmesonlinegratis.com',
+        'cinepoca.com.br',
+        'cinepoca.com',
         'dailymotion.com',
         'archive.org',
         'ok.ru',
@@ -886,7 +1049,7 @@ class MotorBuscaWeb
      * no log, e o descarte precisa ser inequívoco. É a barreira que impede o
      * `xvideos-cdn.com` de virar candidato a página.
      *
-     * @return string|null `adulto`, `extensao`, `dominio`, `tld` ou `null`
+     * @return string|null `adulto`, `extensao`, `loja`, `dominio`, `adware`, `tld` ou `null`
      */
     private function motivoDoDescarte(string $url): ?string
     {
@@ -908,9 +1071,32 @@ class MotorBuscaWeb
             }
         }
 
+        /*
+         * A loja é descartada antes da lista negra: o host dela não está lá, e
+         * sem esta checagem ela passaria e consumiria uma requisição. O descarte
+         * é por segmento, não por substring — "donasloja" casa "loja", mas
+         * "lojado" não.
+         */
+        if ($this->pareceLoja($host, $caminho)) {
+            return 'loja';
+        }
+
         foreach (self::DOMINIOS_IGNORADOS as $dominio) {
             if ($host === $dominio || str_ends_with($host, '.'.$dominio)) {
                 return 'dominio';
+            }
+        }
+
+        /*
+         * O adware é classificado à parte da lista negra comum: no log, saber
+         * que um link caiu por ser redirecionador de anúncio é diferente de
+         * saber que caiu por ser fórum. A checagem vem depois da lista negra
+         * principal porque os dois conjuntos não se sobrepõem — é só para o
+         * motivo ficar preciso.
+         */
+        foreach (self::DOMINIOS_DE_ADWARE as $dominio) {
+            if ($host === $dominio || str_ends_with($host, '.'.$dominio)) {
+                return 'adware';
             }
         }
 
@@ -921,6 +1107,38 @@ class MotorBuscaWeb
         }
 
         return null;
+    }
+
+    /**
+     * Diz se o host ou o caminho tem cara de loja, não de agregador de vídeo.
+     *
+     * A checagem quebra o host e o caminho em segmentos e compara cada um com a
+     * lista de termos de comércio. A comparação é por **sufixo do segmento**, e
+     * não por igualdade: `donasloja` termina em `loja` e casa; `donasacessorios`
+     * termina em `acessorios` e casa. Já `lojado` termina em `jado` e não casa —
+     * o cuidado é não confundir uma palavra que apenas contém o termo com uma
+     * que o carrega no fim, que é como as lojas de fato se nomeiam.
+     *
+     * O caminho entra na conta porque muitas lojas usam o host genérico e
+     * separam o setor na URL (`/produtos/`, `/carrinho/`).
+     */
+    private function pareceLoja(string $host, string $caminho): bool
+    {
+        $segmentos = preg_split('/[.\-\/]+/', $host.'/'.$caminho) ?: [];
+
+        foreach ($segmentos as $segmento) {
+            if ($segmento === '') {
+                continue;
+            }
+
+            foreach (self::TERMOS_DE_COMERCIO as $termo) {
+                if (str_ends_with($segmento, $termo)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**

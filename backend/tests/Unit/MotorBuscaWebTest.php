@@ -220,6 +220,68 @@ class MotorBuscaWebTest extends TestCase
         $this->assertTrue($this->invocar('dominioIgnorado', 'https://t.me/canal'));
     }
 
+    /**
+     * O caso que motivou a correção: o `dramatotal.fandom.com` apareceu para
+     * "American Horror Story" e rendeu seis vídeos que nada tinham a ver com o
+     * episódio. A página de fandom embute o trailer no YouTube, então passa pela
+     * prova de mídia — mas o vídeo que ela embute é um trecho aleatório, não o
+     * episódio. Wiki não hospeda o episódio; hospeda o verbete sobre ele.
+     */
+    public function test_wikis_de_fandom_sao_ignoradas(): void
+    {
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://dramatotal.fandom.com/pt-br/wiki/Gwen'));
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://americanhorrorstory.fandom.com/wiki/American_Horror_Story'));
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://qualquer.wikia.com/wiki/X'));
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://qualquer.wiki.gg/wiki/X'));
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://qualquer.miraheze.org/wiki/X'));
+        $this->assertSame('dominio', $this->invocar('motivoDoDescarte', 'https://dramatotal.fandom.com/pt-br/wiki/Gwen'));
+    }
+
+    public function test_dominio_parecido_com_fandom_nao_e_ignorado(): void
+    {
+        // O casamento é pelo host inteiro: um domínio que apenas termina com o
+        // mesmo texto não pode ser confundido com a lista negra.
+        $this->assertFalse($this->invocar('dominioIgnorado', 'https://naofandom.com/filme'));
+        $this->assertFalse($this->invocar('dominioIgnorado', 'https://meuwikia.com/video'));
+    }
+
+    /**
+     * O caso que motivou a ampliação: "American Horror Story" devolveu a
+     * American Airlines (`aa.com.br`, `aa.com`) e a Câmara Americana de Comércio
+     * (`amcham.com.br`). Três páginas sem vídeo nenhum que consumiram o
+     * orçamento curto do fallback. O motor casa o título com o nome da empresa
+     * quando as palavras coincidem.
+     */
+    public function test_empresas_homonimas_sao_ignoradas(): void
+    {
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://www.aa.com.br/homePage.do'));
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://www.aa.com/homePage.do'));
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://www.amcham.com.br/'));
+        $this->assertSame('dominio', $this->invocar('motivoDoDescarte', 'https://www.aa.com.br/homePage.do'));
+    }
+
+    /**
+     * "Donas de Casa Desesperadas" puxa páginas de imobiliária e classificados
+     * de aluguel. Nenhuma delas é fonte de mídia.
+     */
+    public function test_sites_de_imovel_e_viagem_sao_ignorados(): void
+    {
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://www.quintoandar.com.br/imovel/123'));
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://www.zapimoveis.com.br/aluguel/x'));
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://www.booking.com/hotel/br/x.html'));
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://www.airbnb.com.br/rooms/123'));
+    }
+
+    /**
+     * O controle: um domínio que apenas contém o texto de uma empresa da lista
+     * não pode ser barrado. O casamento é pelo host inteiro.
+     */
+    public function test_dominio_parecido_com_empresa_nao_e_ignorado(): void
+    {
+        $this->assertFalse($this->invocar('dominioIgnorado', 'https://meuaa.com/filme'));
+        $this->assertFalse($this->invocar('dominioIgnorado', 'https://naoamcham.com.br/video'));
+    }
+
     public function test_tld_estrangeiro_e_ignorado(): void
     {
         // O SearXNG agrega instâncias do mundo inteiro e devolve enciclopédias e
@@ -267,6 +329,34 @@ class MotorBuscaWebTest extends TestCase
         $this->assertSame('extensao', $this->invocar('motivoDoDescarte', 'https://site.com/x.pdf'));
         $this->assertSame('dominio', $this->invocar('motivoDoDescarte', 'https://www.imdb.com/title/tt1'));
         $this->assertSame('tld', $this->invocar('motivoDoDescarte', 'https://site.ru/filme'));
+        $this->assertNull($this->invocar('motivoDoDescarte', 'https://agregador.com/assistir/filme'));
+    }
+
+    /**
+     * O caso que motivou a correção: "Donas de Casa Desesperadas" fez o motor
+     * devolver lojas que casam com a palavra "Donas". Cada uma custava uma
+     * requisição e um pedaço do orçamento, e o agregador certo só aparecia depois.
+     */
+    public function test_loja_e_descartada_na_origem(): void
+    {
+        $this->assertSame('loja', $this->invocar('motivoDoDescarte', 'https://www.donasloja.com.br/'));
+        $this->assertSame('loja', $this->invocar('motivoDoDescarte', 'https://www.donasacessorios.com.br/'));
+        $this->assertSame('loja', $this->invocar('motivoDoDescarte', 'https://donasbijoux.com.br/'));
+        $this->assertSame('loja', $this->invocar('motivoDoDescarte', 'https://www.donasloja.com.br/produtos/'));
+    }
+
+    public function test_loja_no_caminho_tambem_e_descartada(): void
+    {
+        // Muitas lojas usam host genérico e separam o setor na URL.
+        $this->assertSame('loja', $this->invocar('motivoDoDescarte', 'https://site.com/produtos/123'));
+        $this->assertSame('loja', $this->invocar('motivoDoDescarte', 'https://site.com/carrinho'));
+    }
+
+    public function test_palavra_que_apenas_contem_termo_de_loja_nao_e_descartada(): void
+    {
+        // A checagem é por segmento, não por substring: "lojado" não é loja, e um
+        // agregador legítimo não pode cair por causa de um pedaço de palavra.
+        $this->assertNull($this->invocar('motivoDoDescarte', 'https://lojado.com/assistir/filme'));
         $this->assertNull($this->invocar('motivoDoDescarte', 'https://agregador.com/assistir/filme'));
     }
 
@@ -442,19 +532,44 @@ class MotorBuscaWebTest extends TestCase
     {
         $urls = [
             'https://site-a.com/pagina',
-            'https://pobreflix.bike/filme/1',
+            'https://www.tokyvideo.com/br/video/1',
             'https://site-b.com/pagina',
-            'https://redecanais.hair/episodio/2',
+            'https://cinepoca.com.br/episodio/2',
         ];
 
         $ordenadas = $this->invocar('priorizarPaginasDeVideo', $urls);
 
         $this->assertSame([
-            'https://pobreflix.bike/filme/1',
-            'https://redecanais.hair/episodio/2',
+            'https://www.tokyvideo.com/br/video/1',
+            'https://cinepoca.com.br/episodio/2',
             'https://site-a.com/pagina',
             'https://site-b.com/pagina',
         ], $ordenadas);
+    }
+
+    public function test_dominio_morto_ou_de_adware_nao_sobe_na_ordem(): void
+    {
+        // O `pobreflix.bike` (player de adware) e o `assistaonline.tv` (site
+        // morto) saíram da lista de domínios de vídeo. Eles não podem mais subir
+        // na ordem — o orçamento tem de ir para quem de fato entrega o vídeo.
+        $this->assertFalse($this->invocar('dominioDeVideo', 'https://pobreflix.bike/filme/1'));
+        $this->assertFalse($this->invocar('dominioDeVideo', 'https://assistaonline.tv/serie/1'));
+        $this->assertFalse($this->invocar('dominioDeVideo', 'https://redecanais.hair/episodio/2'));
+    }
+
+    public function test_dominio_de_adware_e_descartado_na_origem(): void
+    {
+        // A cadeia de redirecionamento do player do `pobreflix.bike` terminava no
+        // `guiadecapital.com` e no `fgtd.online`, que só servem adware.
+        $this->assertSame('adware', $this->invocar('motivoDoDescarte', 'https://guiadecapital.com/campaign.php?token=abc'));
+        $this->assertSame('adware', $this->invocar('motivoDoDescarte', 'https://cdn.fgtd.online/redirect'));
+    }
+
+    public function test_dominio_parecido_com_adware_nao_e_descartado(): void
+    {
+        // A comparação é por sufixo de host com o ponto à frente: um domínio que
+        // apenas termina com o texto não é o adware.
+        $this->assertNull($this->invocar('motivoDoDescarte', 'https://naoguiadecapital.com/pagina'));
     }
 
     public function test_dominio_parecido_nao_e_tratado_como_video(): void
@@ -463,6 +578,15 @@ class MotorBuscaWebTest extends TestCase
         // de vídeo — a comparação é por sufixo com o ponto à frente.
         $this->assertFalse($this->invocar('dominioDeVideo', 'https://naotokyvideo.com/video/1'));
         $this->assertTrue($this->invocar('dominioDeVideo', 'https://www.tokyvideo.com/video/1'));
+    }
+
+    public function test_cinepoca_e_reconhecido_como_dominio_de_video(): void
+    {
+        // O `cinepoca` apareceu nos logs com o conteúdo do episódio, mas atrás de
+        // Cloudflare. Sem entrar na lista, ele não subia na ordem e o orçamento
+        // acabava antes de chegar nele.
+        $this->assertTrue($this->invocar('dominioDeVideo', 'https://app.cinepoca.com.br/serie/1'));
+        $this->assertTrue($this->invocar('dominioDeVideo', 'https://cinepoca.com.br/filme/1'));
     }
 
     public function test_url_sem_host_nao_e_dominio_de_video(): void

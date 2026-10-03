@@ -124,14 +124,16 @@ trait TermosStreamDireto
      * como reserva porque uma página legendada ainda é melhor que nada quando o
      * dublado não existe.
      *
-     * A ordem começa pelos termos que puxam **agregadores de vídeo** ("assistir
-     * online", "dublado") e só depois abre para os genéricos. O motivo é o
-     * ranqueamento do motor de busca: para qualquer título conhecido, as primeiras
-     * posições são ocupadas por páginas de catálogo e metadados (JustWatch, IMDb,
-     * Plex, YouTube oficial) — que a lista negra do [`MotorBuscaWeb`] descarta. Um
-     * termo que já nasce apontado para streaming ("assistir online dublado") faz o
-     * motor trazer os sites que de fato hospedam o vídeo para as primeiras
-     * posições, reduzindo o desperdício de orçamento com páginas inúteis.
+     * A ordem começa pelo termo **genérico** ("assistir online") e só depois
+     * estreita para o idioma. A inversão é deliberada e veio de medição: o termo
+     * com "dublado" faz o motor devolver, nas primeiras posições, as plataformas
+     * pagas (Prime Video, JustWatch, Plex, Disney+) e os agregadores de fachada
+     * que só embrulham o player de terceiros — páginas que a lista negra descarta
+     * ou que não provam mídia, mas que ainda assim queimam orçamento ao serem
+     * abertas. O termo genérico, sem o adjetivo de idioma, alcança o agregador
+     * que de fato hospeda o episódio (o "Pobreflix" da vez) já na primeira
+     * consulta. O idioma continua sendo cobrado depois, na normalização da fonte,
+     * e não precisa ser adivinhado na query.
      *
      * @return array<int, string>
      */
@@ -147,9 +149,9 @@ trait TermosStreamDireto
         }
 
         return [
+            'assistir online',
             'assistir online dublado',
             'assistir online legendado',
-            'assistir online',
             'filme completo dublado',
             'serie completa dublada',
         ];

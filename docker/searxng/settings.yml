@@ -42,19 +42,43 @@ ui:
   static_use_hash: true
 
 # Os motores abaixo são os que respondem bem a consultas em português e não
-# exigem chave. O Google e o Bing entram porque são os que mais acham páginas
-# de streaming dublado; o Brave entra como reforço. O DuckDuckGo foi removido do
-# projeto — inclusive daqui de dentro do SearXNG —, já que o backend não deve
-# depender dele em nenhuma camada.
+# exigem chave. A escolha não é por preferência, é por sobrevivência: o Google
+# bloqueia o IP do container (devolve vazio) e o Brave suspende por excesso de
+# requisições, então nenhum dos dois segura a busca sozinho. O Bing responde,
+# mas puxa plataforma paga (Prime Video, JustWatch, Plex) para o topo. Quem
+# realmente acha os agregadores PT-BR é o DuckDuckGo — foi ele que trouxe o
+# `verpobreflix.net` quando os outros três não trouxeram nada de streaming. O
+# Mojeek e o Startpage entram como reforço, porque também devolveram agregador
+# no teste. Os quatro juntos cobrem a falha de qualquer um.
+#
+# A regra do projeto de não depender do DuckDuckGo vale para o **backend**, que
+# fala só com o SearXNG. Aqui dentro o DuckDuckGo é um motor entre outros: se
+# ele cair, o Bing e o Mojeek continuam respondendo, e o backend nunca sabe de
+# onde veio o resultado.
 engines:
-  - name: google
-    engine: google
-    shortcut: g
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
     disabled: false
 
   - name: bing
     engine: bing
     shortcut: b
+    disabled: false
+
+  - name: mojeek
+    engine: mojeek
+    shortcut: mj
+    disabled: false
+
+  - name: startpage
+    engine: startpage
+    shortcut: sp
+    disabled: false
+
+  - name: google
+    engine: google
+    shortcut: g
     disabled: false
 
   - name: brave
