@@ -243,15 +243,26 @@ direta, todas marcadas como privadas.
 
 ### Preencher o TMDB_API_KEY no Space
 
-O `.env` nasce do `.env.example`, que vem sem segredos. A única variável
-obrigatória é `TMDB_API_KEY` — sem ela a Home não carrega filmes. Como o `.env`
-não é versionado, ela precisa ser preenchida uma vez em cada Space novo:
+O `.env` **não existe no repositório** — ele é ignorado pelo git por conter
+segredos. Quem o cria é o [`post-create.sh`](../.devcontainer/post-create.sh:1),
+automaticamente, quando o Space termina de montar. Se você acabou de abrir o
+Space e o arquivo ainda não aparece na árvore de arquivos, aguarde o
+`post-create` terminar (acompanhe pelo painel de criação do Codespace) ou rode
+o script na mão:
 
 ```bash
-# 1. Edite o .env e preencha a chave
-nano .env   # ou use o editor do VS Code
+bash .devcontainer/post-create.sh
+```
 
-# 2. Faça o backend reler o .env (recria o container e limpa os caches)
+Com o `.env` criado, a única variável obrigatória é `TMDB_API_KEY` — sem ela a
+Home não carrega filmes. Preencha-a uma vez em cada Space novo:
+
+1. Abra o `.env` no editor do VS Code (clique no arquivo na árvore de arquivos)
+   e preencha a linha `TMDB_API_KEY=`. Não use `nano`: a imagem base do
+   Codespace não o traz instalado.
+2. Faça o backend reler o `.env`:
+
+```bash
 make aplicar
 ```
 
@@ -259,6 +270,14 @@ O alvo `aplicar` do [`Makefile`](../Makefile:31) recria o backend com
 `--force-recreate` e roda `config:clear` e `cache:clear`. É necessário porque
 variáveis de ambiente só entram no container na criação dele — um simples
 `restart` não basta.
+
+> **Alternativa sem sair do terminal:** se preferir editar por linha de comando,
+> use `sed` em vez de `nano`:
+>
+> ```bash
+> sed -i 's|^TMDB_API_KEY=.*|TMDB_API_KEY=sua_chave_aqui|' .env
+> make aplicar
+> ```
 
 ### Diferenças em relação ao PC local
 

@@ -33,10 +33,17 @@ echo "[codespace] Docker disponível."
 # 2. Garante o .env
 # ---------------------------------------------------------------------------
 # Se o Space foi recriado sem passar pelo post-create (caso raro), recria o
-# .env a partir do exemplo para não travar a subida.
+# .env a partir do exemplo para não travar a subida. O ajuste do HMR é
+# reaplicado aqui também, senão o Vite tentaria recarregar pela porta 80 e a
+# recarga automática não funcionaria no proxy HTTPS do Codespaces.
 if [ ! -f .env ]; then
   echo "[codespace] .env ausente; criando a partir do .env.example"
   cp .env.example .env
+fi
+
+if ! grep -q '^VITE_HMR_CLIENT_PORT=' .env; then
+  printf '\n# Porta pública do HMR do Vite atrás do proxy HTTPS do Codespaces.\n' >> .env
+  printf 'VITE_HMR_CLIENT_PORT=443\n' >> .env
 fi
 
 # ---------------------------------------------------------------------------
@@ -58,3 +65,11 @@ docker compose ps
 echo ""
 echo "[codespace] Stretor no ar. Acesse pela aba 'Ports' do Codespaces, na porta 80."
 echo "[codespace] Logs: docker compose logs -f"
+
+# Lembrete da única variável obrigatória. O .env nasce do exemplo, sem a chave,
+# e sem ela a Home não carrega filmes. Avisar aqui evita a caçada ao erro.
+if ! grep -q '^TMDB_API_KEY=.\+' .env; then
+  echo ""
+  echo "[codespace] ATENÇÃO: TMDB_API_KEY está vazia no .env."
+  echo "[codespace] A Home não carrega filmes sem ela. Preencha e rode: make aplicar"
+fi
