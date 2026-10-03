@@ -53,8 +53,40 @@ fi
 # compose é idempotente: containers já no ar são apenas reconciliados, e o
 # entrypoint de cada serviço pula o que já está pronto (vendor, node_modules,
 # migrations). É o equivalente ao `make up` do PC local.
-echo "[codespace] Executando docker compose up -d --build..."
-docker compose up -d --build
+#
+# A subida é repetida até o stack convergir. Na retomada do Space o daemon do
+# Docker-in-Docker às vezes aceita a conexão antes de estar pronto para criar
+# containers, e o `up` retorna tendo subido só parte dos serviços — foi assim
+# que o Nginx e o frontend ficaram de fora e a porta 80 respondia 404. Repetir
+# o comando é seguro: o compose só cria o que falta.
+SERVICOS_ESPERADOS="backend frontend media-service nginx postgres redis prowlarr flaresolverr searxng"
+TENTATIVAS_UP=0
+while :; do
+  TENTATIVAS_UP=$((TENTATIVAS_UP + 1))
+  echo "[codespace] Executando docker compose up -d --build (tentativa $TENTATIVAS_UP)..."
+  docker compose up -d --build || true
+
+  FALTANDO=""
+  for servico in $SERVICOS_ESPERADOS; do
+    if ! docker compose ps --status running --services 2>/dev/null | grep -qx "$servico"; then
+      FALTANDO="$FALTANDO $servico"
+    fi
+  done
+
+  if [ -z "$FALTANDO" ]; then
+    echo "[codespace] Todos os serviços estão no ar."
+    break
+  fi
+
+  if [ "$TENTATIVAS_UP" -ge 3 ]; then
+    echo "[codespace] AVISO: serviços ainda ausentes após 3 tentativas:$FALTANDO"
+    echo "[codespace] Veja o motivo com: docker compose logs --tail=50"
+    break
+  fi
+
+  echo "[codespace] Ainda faltam:$FALTANDO — aguardando 5s e repetindo."
+  sleep 5
+done
 
 # ---------------------------------------------------------------------------
 # 4. Relatório de estado
