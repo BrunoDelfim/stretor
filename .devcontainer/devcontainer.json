@@ -1,0 +1,113 @@
+{
+  // Configuração do GitHub Codespaces para o Stretor.
+  //
+  // O projeto inteiro roda em containers (backend, frontend, media-service,
+  // Postgres, Redis, Prowlarr, FlareSolverr e SearXNG), então o Codespace só
+  // precisa de um Docker funcional dentro dele. O recurso "docker-in-docker"
+  // instala o daemon e o CLI do Docker na própria máquina do Space, e o
+  // docker-compose.yml da raiz sobe o stack como faria no PC local.
+  "name": "Stretor",
+
+  // A imagem base já traz Docker, Node e ferramentas de linha de comando.
+  // O Codespaces usa a variante Debian, que é a mesma família do ambiente local.
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-22.04",
+
+  "features": {
+    // Docker-in-Docker: o daemon roda dentro do Space. É o que permite o
+    // `docker compose up` funcionar sem depender do host.
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "version": "latest",
+      "moby": true,
+      "dockerDashComposeVersion": "v2"
+    },
+    // Node 20 é a mesma versão usada pelas imagens do frontend e do
+    // media-service. Ter o Node no Space ajuda a rodar ferramentas pontuais
+    // (npm, vite) sem entrar no container.
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "20"
+    },
+    // PHP 8.3 com as extensões do projeto, para quem quiser rodar o artisan
+    // direto no Space sem passar pelo container.
+    "ghcr.io/devcontainers/features/php:1": {
+      "version": "8.3",
+      "installComposer": true
+    },
+    // Utilitários de linha de comando usados nos scripts de bootstrap.
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "installZsh": true,
+      "configureZshAsDefaultShell": false,
+      "installOhMyZsh": false,
+      "upgradePackages": false
+    }
+  },
+
+  // Portas encaminhadas pelo Codespaces. O Nginx (80) é a porta principal do
+  // sistema; as demais ficam disponíveis para inspeção direta dos serviços.
+  // O Codespaces gera uma URL pública para cada uma e as marca como privadas
+  // por padrão — só quem tem acesso ao Space consegue abrir.
+  "forwardPorts": [80, 3000, 5173, 5432, 6379, 9696],
+  "portsAttributes": {
+    "80": {
+      "label": "Stretor (Nginx)",
+      "onAutoForward": "openBrowser",
+      "visibility": "private"
+    },
+    "3000": {
+      "label": "Media Service",
+      "onAutoForward": "silent",
+      "visibility": "private"
+    },
+    "5173": {
+      "label": "Vite (frontend)",
+      "onAutoForward": "silent",
+      "visibility": "private"
+    },
+    "5432": {
+      "label": "PostgreSQL",
+      "onAutoForward": "silent",
+      "visibility": "private"
+    },
+    "6379": {
+      "label": "Redis",
+      "onAutoForward": "silent",
+      "visibility": "private"
+    },
+    "9696": {
+      "label": "Prowlarr",
+      "onAutoForward": "silent",
+      "visibility": "private"
+    }
+  },
+
+  // O Codespaces roda como usuário "vscode". O Docker-in-Docker exige que ele
+  // esteja no grupo docker para falar com o daemon sem sudo.
+  "remoteUser": "vscode",
+  "containerUser": "vscode",
+
+  // Na criação do Space: prepara o .env e deixa o Docker pronto.
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+
+  // A cada vez que o Space liga (inclusive ao retomar de suspensão): sobe o
+  // stack inteiro, exatamente como o `make up` faz no PC local.
+  "postStartCommand": "bash .devcontainer/post-start.sh",
+
+  // Espera o Docker responder antes de rodar os comandos de ciclo de vida.
+  "waitFor": "postCreateCommand",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "bmewburn.vscode-intelephense-client",
+        "onecentlin.laravel-blade",
+        "Vue.volar",
+        "dbaeumer.vscode-eslint",
+        "ms-azuretools.vscode-docker",
+        "EditorConfig.EditorConfig"
+      ],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash",
+        "files.eol": "\n"
+      }
+    }
+  }
+}

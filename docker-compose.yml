@@ -212,6 +212,9 @@ services:
     image: nginx:1.27-alpine
     container_name: stretor_nginx
     restart: unless-stopped
+    # O Codespaces encaminha a porta 80 do Space para uma URL HTTPS pública.
+    # Manter o mapeamento em 80:80 faz o Nginx ser a porta principal do sistema
+    # tanto no PC local quanto no Space, sem precisar de configuração extra.
     ports:
       - "${HTTP_PORT:-80}:80"
     volumes:

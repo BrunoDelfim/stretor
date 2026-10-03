@@ -56,6 +56,11 @@ media-service/storage/*
 media-service/tmp/*
 !media-service/tmp/.gitkeep
 
+# --- Artefatos de runtime do Laravel ---
+# Arquivos temporários que o backend cria em execução (ex.: unpack.php).
+/backend/storage/app/*
+!/backend/storage/app/.gitkeep
+
 # --- IDE / Editor ---
 .idea/
 .vscode/
@@ -64,6 +69,11 @@ media-service/tmp/*
 *~
 .DS_Store
 Thumbs.db
+
+# --- GitHub Codespaces ---
+# A configuração do devcontainer é versionada de propósito: é ela que faz o
+# Space subir o sistema inteiro sozinho. Só o estado local do Space é ignorado.
+.devcontainer/.env
 
 # --- Docker ---
 docker-compose.override.yml

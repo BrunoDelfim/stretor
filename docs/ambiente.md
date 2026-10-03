@@ -208,6 +208,69 @@ bootstrap já foi executado com sucesso, permitindo que subidas seguintes usem
 `make up-fast` (sem rebuild e sem reexecutar o init). Para forçar o bootstrap de
 novo, use `make reset-init` ou `make fresh`.
 
+## GitHub Codespaces
+
+O projeto roda inteiro no GitHub Codespaces sem nenhuma configuração manual além
+do `.env` — e mesmo esse é criado sozinho. A pasta
+[`.devcontainer/`](../.devcontainer/devcontainer.json:1) é versionada e descreve
+como o Space se monta.
+
+### O que acontece ao abrir o Space
+
+| Momento | O que roda | Arquivo |
+|---------|-----------|---------|
+| Criação do Space | Instala Docker-in-Docker, Node 20 e PHP 8.3; cria o `.env` a partir do `.env.example` e ajusta o HMR do Vite para HTTPS | [`post-create.sh`](../.devcontainer/post-create.sh:1) |
+| Cada vez que o Space liga | Espera o daemon do Docker e roda `docker compose up -d --build` | [`post-start.sh`](../.devcontainer/post-start.sh:1) |
+
+O `post-start` é o equivalente ao `make up` do PC local: ele sobe o stack
+inteiro (backend, frontend, media-service, Postgres, Redis, Prowlarr,
+FlareSolverr e SearXNG) toda vez que o Space é retomado, já que o Codespaces
+suspende os containers por inatividade.
+
+### Como acessar
+
+O Codespaces encaminha as portas do Space e publica cada uma numa URL HTTPS
+própria. A porta **80** (Nginx) é a principal e abre sozinha no navegador assim
+que o stack sobe — é por ela que se acessa a aplicação. As demais portas
+(3000, 5173, 5432, 6379, 9696) ficam disponíveis na aba **Ports** para inspeção
+direta, todas marcadas como privadas.
+
+> **HMR do Vite:** no Codespaces o proxy é HTTPS, então o websocket de recarga
+> precisa apontar para a porta 443 em `wss`. O `post-create.sh` grava
+> `VITE_HMR_CLIENT_PORT=443` no `.env` e o
+> [`vite.config.js`](../frontend/vite.config.js:1) lê essa variável. No PC local
+> o valor continua 80, sem mudança de comportamento.
+
+### Diferenças em relação ao PC local
+
+- **Recursos:** o plano free do Codespaces oferece 2 núcleos e 8 GB de RAM, o
+  mesmo teto do notebook local. O stack inteiro cabe, mas o primeiro `--build`
+  é demorado (compila PHP, Node e baixa as imagens do Prowlarr, FlareSolverr e
+  SearXNG).
+- **Persistência:** os volumes do Docker (`postgres_data`, `redis_data`,
+  `media_storage`, `prowlarr_config`) vivem dentro do Space. Ao **deletar** o
+  Space, eles se vão; ao apenas **suspender**, permanecem. Para recomeçar do
+  zero, rode `make fresh` no terminal do Space.
+- **Rede:** o DNS dos containers continua fixado em Cloudflare/Google pelo
+  compose, o que é ainda mais importante no Codespaces, onde o resolver do
+  datacenter pode filtrar domínios de tracker.
+
+### Comandos úteis no terminal do Space
+
+```bash
+# Ver o estado dos containers
+docker compose ps
+
+# Acompanhar os logs
+docker compose logs -f
+
+# Subir manualmente (o post-start já faz isso na retomada)
+make up
+
+# Recomeçar do zero (apaga volumes)
+make fresh
+```
+
 ## Próximos passos
 
 - Comandos do dia a dia: [Comandos](comandos.md)
