@@ -241,6 +241,25 @@ direta, todas marcadas como privadas.
 > [`vite.config.js`](../frontend/vite.config.js:1) lê essa variável. No PC local
 > o valor continua 80, sem mudança de comportamento.
 
+### Preencher o TMDB_API_KEY no Space
+
+O `.env` nasce do `.env.example`, que vem sem segredos. A única variável
+obrigatória é `TMDB_API_KEY` — sem ela a Home não carrega filmes. Como o `.env`
+não é versionado, ela precisa ser preenchida uma vez em cada Space novo:
+
+```bash
+# 1. Edite o .env e preencha a chave
+nano .env   # ou use o editor do VS Code
+
+# 2. Faça o backend reler o .env (recria o container e limpa os caches)
+make aplicar
+```
+
+O alvo `aplicar` do [`Makefile`](../Makefile:31) recria o backend com
+`--force-recreate` e roda `config:clear` e `cache:clear`. É necessário porque
+variáveis de ambiente só entram no container na criação dele — um simples
+`restart` não basta.
+
 ### Diferenças em relação ao PC local
 
 - **Recursos:** o plano free do Codespaces oferece 2 núcleos e 8 GB de RAM, o
