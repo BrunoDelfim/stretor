@@ -3276,17 +3276,18 @@ passa esse callback comparando o último percentual visto.
 #### Configuração
 
 ```env
-TORRENTS_STREAM_DIRETO_HABILITADO=false
+TORRENTS_STREAM_DIRETO_HABILITADO=true
 TORRENTS_STREAM_DIRETO_MOTORES=http://searxng:8080/search
 TORRENTS_STREAM_DIRETO_BRAVE_KEY=
 TORRENTS_STREAM_DIRETO_TERMOS=
-TORRENTS_STREAM_DIRETO_MAX_TERMOS=8
-TORRENTS_STREAM_DIRETO_INTERVALO_MIN=800
-TORRENTS_STREAM_DIRETO_INTERVALO_MAX=2200
-TORRENTS_STREAM_DIRETO_MAX_PAGINAS=10
+TORRENTS_STREAM_DIRETO_MAX_TERMOS=5
+TORRENTS_STREAM_DIRETO_INTERVALO_MIN=400
+TORRENTS_STREAM_DIRETO_INTERVALO_MAX=1200
+TORRENTS_STREAM_DIRETO_MAX_PAGINAS=6
 TORRENTS_STREAM_DIRETO_MAX_FONTES=2
-TORRENTS_STREAM_DIRETO_TEMPO_LIMITE=10
-TORRENTS_STREAM_DIRETO_ORCAMENTO=12
+TORRENTS_STREAM_DIRETO_TEMPO_LIMITE=8
+TORRENTS_STREAM_DIRETO_ORCAMENTO=45
+TORRENTS_STREAM_DIRETO_MIN_PALAVRAS_CHAVE=2
 TORRENTS_STREAM_DIRETO_FILTRO_ADULTO=true
 TORRENTS_BUSCA_POR_IDADE_HABILITADA=true
 TORRENTS_BUSCA_IDADE_LIMITE_ANOS=2
@@ -3308,7 +3309,7 @@ online`). A query é natural: não há mais operador `site:` nem lista de plataf
 a configurar. Quem filtra o resultado é a lista negra do `MotorBuscaWeb` e, na
 ponta, a prova de mídia da extração.
 `TORRENTS_STREAM_DIRETO_MAX_PAGINAS` limita quantas páginas o scraper abre por
-consulta (padrão 10). `TORRENTS_STREAM_DIRETO_MAX_FONTES` é o alvo de fontes
+consulta (padrão 6). `TORRENTS_STREAM_DIRETO_MAX_FONTES` é o alvo de fontes
 distintas que encerra a varredura (padrão 2): assim que há este número de fontes
 na mão, o laço para, sem gastar o orçamento restante atrás de mais opções. É
 diferente do teto de páginas — uma página pode render várias fontes, e o que o
@@ -3323,10 +3324,10 @@ uma instância pública, troque o endereço em `TORRENTS_STREAM_DIRETO_MOTORES` 
 formato aceito é `https://instancia/search`.
 
 `TORRENTS_STREAM_DIRETO_MAX_TERMOS` limita quantos termos são consultados por
-busca (padrão 8); zero desliga o corte. `TORRENTS_STREAM_DIRETO_INTERVALO_MIN` e
+busca (padrão 5); zero desliga o corte. `TORRENTS_STREAM_DIRETO_INTERVALO_MIN` e
 `TORRENTS_STREAM_DIRETO_INTERVALO_MAX` definem a janela, em milissegundos, do
-atraso sorteado entre consultas ao motor (padrão 800–2200). Os dois são a defesa
-contra o rate limit do DuckDuckGo: menos termos e cadência humana.
+atraso sorteado entre consultas ao motor (padrão 400–1200). Os dois são a defesa
+contra o rate limit do motor de busca: menos termos e cadência humana.
 
 `TORRENTS_STREAM_DIRETO_FILTRO_ADULTO` liga a barreira de conteúdo impróprio
 (padrão `true`). Com ela ligada, qualquer endereço de domínio adulto conhecido ou
@@ -3334,8 +3335,9 @@ que carregue palavra-chave imprópria é descartado antes de a página ser abert
 o título da página aberta também é conferido. Desligar só faz sentido para
 depurar um falso positivo — em produção, mantenha ligada.
 
-Desligado por padrão. Diferente da versão anterior, **não há mais API externa a
-configurar**: ligar a chave já basta para o scraper funcionar. Vale saber que o
+O `.env.example` sobe com a chave ligada; no código o padrão é `false`. Diferente
+da versão anterior, **não há mais API externa a configurar**: ligar a chave já
+basta para o scraper funcionar. Vale saber que o
 scraper depende de páginas de terceiros, então a taxa de acerto varia com o
 acervo — conteúdo muito raro pode não ter página nenhuma, e a lista continua
 vazia.

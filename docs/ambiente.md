@@ -188,9 +188,21 @@ valores reais. As variáveis que exigem atenção:
 | `MEDIA_TETO_PECAS_MS` | Não | Teto absoluto, em milissegundos, da espera por um trecho, independente de progresso (padrão `900000`, 15 min). Rede de segurança contra a fonte que pinga um byte a cada minuto e prenderia a sessão para sempre. |
 | `MEDIA_PEERS_ESCASSOS` | Não | A partir de quantos peers (inclusive) a malha é considerada escassa e a janela de leitura é ampliada (padrão `3`). |
 | `MEDIA_FATOR_JANELA_ESCASSOS` | Não | Multiplicador da janela de leitura quando há poucos peers (padrão `2`). Com mais peças elegíveis, o seletor do WebTorrent escolhe entre peers vizinhos em vez de depender de um único fornecedor do trecho. |
-| `TORRENTS_STREAM_DIRETO_HABILITADO` | Não | Liga o fallback de stream direto (MP4/HLS), a rede de segurança para conteúdo raro. Desligado por padrão. |
+| `TORRENTS_STREAM_DIRETO_HABILITADO` | Não | Liga o fallback de stream direto (MP4/HLS), a rede de segurança para conteúdo raro. O `.env.example` sobe com `true`; o padrão do código é `false`. |
+| `TORRENTS_STREAM_DIRETO_ORCAMENTO` | Não | Orçamento próprio do canal direto, em segundos (padrão `45`). Não soma ao da cascata: cobre as duas renderizações que o FlareSolverr paga (listagem da série + página do episódio). |
 | `TORRENTS_STREAM_DIRETO_MOTORES` | Não | Motores de busca do fallback, separados por vírgula. O padrão é o **SearXNG interno** (`http://searxng:8080/search`), que sobe junto com o stack e devolve JSON limpo. O tipo é inferido do endereço (`searx` → SearXNG, `brave` → Brave) ou forçado com o prefixo `tipo:url`. O DuckDuckGo foi removido do projeto. |
 | `TORRENTS_STREAM_DIRETO_BRAVE_KEY` | Não | Chave da API oficial do Brave Search. Sem ela, um motor do tipo `brave` é descartado da lista antes de qualquer requisição. |
+| `TORRENTS_STREAM_DIRETO_TERMOS` | Não | Termos extras de busca do fallback, separados por vírgula. Vazio deixa o provedor montar os termos em camadas a partir do título. |
+| `TORRENTS_STREAM_DIRETO_MAX_TERMOS` | Não | Quantos termos são consultados por busca (padrão `5`). Zero desliga o corte. |
+| `TORRENTS_STREAM_DIRETO_MAX_PAGINAS` | Não | Quantas páginas o scraper abre, no máximo (padrão `6`). |
+| `TORRENTS_STREAM_DIRETO_MAX_FONTES` | Não | Alvo de fontes distintas que encerra a varredura (padrão `2`). Zero desliga o corte. |
+| `TORRENTS_STREAM_DIRETO_TEMPO_LIMITE` | Não | Teto de tempo, em segundos, por página raspada (padrão `8`). |
+| `TORRENTS_STREAM_DIRETO_INTERVALO_MIN` | Não | Piso, em milissegundos, do atraso sorteado entre consultas ao motor (padrão `400`). |
+| `TORRENTS_STREAM_DIRETO_INTERVALO_MAX` | Não | Teto, em milissegundos, do atraso entre consultas ao motor (padrão `1200`). |
+| `TORRENTS_STREAM_DIRETO_MIN_PALAVRAS_CHAVE` | Não | Quantas palavras-chave do título a página precisa carregar para passar na relevância (padrão `2`). Zero desliga a checagem e volta a aceitar só pela prova de mídia. |
+| `TORRENTS_STREAM_DIRETO_FILTRO_ADULTO` | Não | Barreira de conteúdo impróprio: descarta domínio adulto ou palavra-chave imprópria antes de abrir a página (padrão `true`). |
+| `TORRENTS_BUSCA_POR_IDADE_HABILITADA` | Não | Liga a estratégia de canal por idade da série (padrão `true`). Desligada, o roteador devolve sempre o canal de torrents e o fluxo volta ao de antes. |
+| `TORRENTS_BUSCA_IDADE_LIMITE_ANOS` | Não | Limiar, em anos, que separa série recente de antiga (padrão `2`, **inclusivo**: com 2, uma série de dois anos ainda é recente e uma de três já é antiga). Zero ou negativo desliga o corte na prática. |
 | `SEARXNG_SECRET` | Não | Chave usada para assinar as requisições internas do SearXNG. Não é segredo de verdade: o serviço só é alcançável pela rede do compose. |
 | `FLARESOLVERR_URL` | Não | Endereço interno do FlareSolverr (padrão `http://flaresolverr:8191`). O backend o cadastra como proxy no Prowlarr e liga o 1337x a ele por tag. |
 | `FLARESOLVERR_DNS_OVER_HTTPS` | Não | Faz o Chromium do FlareSolverr resolver por DoH, fora do UDP/53 do provedor (padrão `true`). É o caminho que resta quando o resolver da operadora bloqueia o tracker. |
