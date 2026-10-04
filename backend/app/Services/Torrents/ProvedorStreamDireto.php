@@ -33,6 +33,12 @@ use Illuminate\Support\Facades\Log;
  * 4. **Montagem.** [`NormalizaFonte::montarFonteDireta()`] traduz o link no
  *    contrato do frontend.
  *
+ * Há uma quinta etapa, que só roda quando a extração volta vazia: o
+ * [`ResolvedorEmbed`] percorre o iframe de player conhecido — o `plenoflu.com`,
+ * que o `verpobreflix.net` embute — até o arquivo de vídeo. Sem ela, a página
+ * que só embute o player de terceiro era descartada: o iframe prova que há
+ * mídia, mas não é mídia.
+ *
  * A descoberta é autônoma: não há mais dependência de uma API externa estática
  * em `stream_direto_fontes`. O provedor só precisa estar ligado
  * (`stream_direto_habilitado`) para funcionar.
@@ -75,6 +81,7 @@ class ProvedorStreamDireto implements ProvedorTorrents
         private readonly ExtratorVideo $extrator,
         private readonly ClienteHttp $cliente,
         private readonly BuscaAgregadores $agregadores,
+        private readonly ResolvedorEmbed $resolvedor,
     ) {
     }
 
@@ -572,10 +579,31 @@ class ProvedorStreamDireto implements ProvedorTorrents
          * `temMidia()` usa para aceitar a página), mas não como fonte. Uma página
          * cujo único player é um embed inacessível agora é descartada em vez de
          * gerar uma fonte quebrada.
+         *
+         * O que mudou desde então foi o destino do embed **acessível**: ele deixou
+         * de ser beco sem saída. Quando a página não entrega arquivo nenhum — e o
+         * `verpobreflix.net` nunca entrega —, o [`ResolvedorEmbed`] percorre a
+         * cadeia do player até o vídeo que estava dentro do iframe, e é esse
+         * vídeo que vira fonte (ver `fonteResolvida()`). A recusa do **iframe**
+         * como fonte segue de pé; o que entrou no lugar dele é o que ele escondia.
          */
         $urls = $this->extrator->extrair($corpo);
 
         if ($urls === []) {
+            /*
+             * Sem arquivo na página, o embed conhecido ainda pode levar a um. É
+             * onde entra o [`ResolvedorEmbed`]: quando o agregador só embute o
+             * player de terceiro — o `plenoflu.com`, no caso do
+             * `verpobreflix.net` —, o vídeo mora do outro lado do iframe, e a
+             * cadeia até ele se percorre sem navegador (o `master.m3u8` assinado
+             * que o FirePlayer devolve é a prova disso).
+             */
+            $resolvido = $this->resolvedor->resolver($corpo, $pagina, $teto);
+
+            if ($resolvido !== null) {
+                return $this->fonteResolvida($resolvido, $titulo, $pagina);
+            }
+
             Log::debug('Stream direto: página sem arquivo de vídeo extraível.', ['pagina' => $pagina]);
 
             return [];
@@ -643,6 +671,46 @@ class ProvedorStreamDireto implements ProvedorTorrents
         }
 
         return $fontes;
+    }
+
+    /**
+     * Monta a fonte de um vídeo achado dentro de um embed.
+     *
+     * O caminho é separado do que monta as fontes lidas do HTML da página porque
+     * as duas não passam pelas mesmas provas. O vídeo resolvido chega por uma
+     * cadeia que **já** provou ser sobre o título — a relevância foi conferida na
+     * página do episódio —, e a URL em si é um caminho de hash num CDN
+     * (`/cdn/hls/831b0172.../master.m3u8?md5=...`), sem uma palavra do título para
+     * conferir. Passar essa URL pelo [`videoRelevante()`] recusaria justamente o
+     * link que a cadeia provou ser o certo.
+     *
+     * A barreira de conteúdo impróprio continua valendo: o CDN de destino pode
+     * ser adulto mesmo quando a página e o player não são.
+     *
+     * @param  array{url: string, idioma: ?string}  $resolvido
+     * @return array<int, array<string, mixed>>
+     */
+    private function fonteResolvida(array $resolvido, string $titulo, string $pagina): array
+    {
+        if ($this->filtroAdultoAtivo() && FiltroConteudoAdulto::urlBloqueada($resolvido['url'])) {
+            Log::warning('Stream direto: vídeo de origem imprópria descartado.', [
+                'pagina' => $pagina,
+                'video' => $resolvido['url'],
+            ]);
+
+            return [];
+        }
+
+        Log::debug('Stream direto: embed percorrido até o arquivo.', [
+            'pagina' => $pagina,
+            'video' => $resolvido['url'],
+        ]);
+
+        return [$this->montarFonteDireta([
+            'url' => $resolvido['url'],
+            'titulo' => $this->limparTexto($titulo),
+            'idioma' => $resolvido['idioma'] ?? $this->idiomaDaPagina($pagina),
+        ], $this->identificador(), $this->rotulo())];
     }
 
     /**

@@ -267,6 +267,18 @@ class StreamDiretoTest extends TestCase
      */
     public function test_provedor_direto_vem_desligado_por_padrao(): void
     {
+        /*
+         * A chave é limpa do ambiente antes da leitura, e a limpeza é o ponto
+         * do teste. O `docker compose` exporta o `.env` para dentro do
+         * container, então quem ligou o fallback para testá-lo tem a chave
+         * valendo `true` no processo — e o `env()` leria o `.env` em vez do
+         * padrão que o repositório entrega. Sem isolar o ambiente, o contrato
+         * que este teste protege desaparecia justamente na configuração mais
+         * comum de desenvolvimento.
+         */
+        putenv('TORRENTS_STREAM_DIRETO_HABILITADO');
+        unset($_ENV['TORRENTS_STREAM_DIRETO_HABILITADO'], $_SERVER['TORRENTS_STREAM_DIRETO_HABILITADO']);
+
         $padrao = require config_path('services.php');
 
         $this->assertFalse(

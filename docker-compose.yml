@@ -184,6 +184,10 @@ services:
       # perguntar ao motor onde o episódio mora, o provedor pergunta à busca
       # interna do próprio agregador (verpobreflix, tokyvideo).
       - TORRENTS_STREAM_DIRETO_BUSCA_DIRETA=${TORRENTS_STREAM_DIRETO_BUSCA_DIRETA:-true}
+      # Travessia de players de embed: quando o agregador só embute um iframe de
+      # terceiro (plenoflu.com), o provedor percorre a cadeia até o master.m3u8
+      # assinado em vez de descartar a página.
+      - TORRENTS_STREAM_DIRETO_RESOLVER_EMBEDS=${TORRENTS_STREAM_DIRETO_RESOLVER_EMBEDS:-true}
     depends_on:
       init:
         condition: service_completed_successfully

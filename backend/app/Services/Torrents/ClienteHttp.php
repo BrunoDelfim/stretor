@@ -144,9 +144,16 @@ class ClienteHttp
      * O Knaben é o caso de uso: a API dele é um POST JSON, e ele também pode
      * ficar atrás de bloqueio. O corpo é reenviado intacto ao FlareSolverr.
      *
+     * Os cabeçalhos extras existem para os endpoints que se comportam de maneira
+     * diferente conforme quem pede — o `getVideo` do FirePlayer devolve o JSON do
+     * player para uma chamada de AJAX e a própria página do embed para o resto.
+     * Sem o `X-Requested-With`, o resolvedor de embeds recebia HTML onde esperava
+     * dados.
+     *
      * @param  array<string, mixed>  $corpo
+     * @param  array<string, string>  $cabecalhos  Cabeçalhos extras, mesclados por cima dos de navegador
      */
-    public function post(string $url, array $corpo = [], ?string $userAgent = null, ?int $timeout = null): ?Response
+    public function post(string $url, array $corpo = [], ?string $userAgent = null, ?int $timeout = null, array $cabecalhos = []): ?Response
     {
         $timeout = $this->tempoDisponivel($timeout ?? (int) config('services.torrents.tempo_limite', 15));
 
@@ -154,7 +161,7 @@ class ClienteHttp
             return null;
         }
 
-        $direta = $this->tentarDiretoPost($url, $corpo, $userAgent, $timeout);
+        $direta = $this->tentarDiretoPost($url, $corpo, $userAgent, $timeout, $cabecalhos);
 
         if ($direta !== null && ! $this->pareceBloqueio($direta)) {
             return $direta;
@@ -293,11 +300,12 @@ class ClienteHttp
 
     /**
      * @param  array<string, mixed>  $corpo
+     * @param  array<string, string>  $cabecalhos
      */
-    private function tentarDiretoPost(string $url, array $corpo, ?string $userAgent, int $timeout): ?Response
+    private function tentarDiretoPost(string $url, array $corpo, ?string $userAgent, int $timeout, array $cabecalhos = []): ?Response
     {
         try {
-            return $this->requisicao($userAgent, $timeout)->asJson()->post($url, $corpo);
+            return $this->requisicao($userAgent, $timeout, $cabecalhos)->asJson()->post($url, $corpo);
         } catch (\Throwable) {
             return null;
         }

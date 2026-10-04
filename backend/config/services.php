@@ -482,6 +482,25 @@ return [
         'stream_direto_busca_direta' => (bool) env('TORRENTS_STREAM_DIRETO_BUSCA_DIRETA', true),
 
         /*
+         * Travessia de players de embed, depois da extração do HTML.
+         *
+         * Há página em que o player não está na página: o agregador embute um
+         * iframe de um serviço de terceiro (o `plenoflu.com`, no caso do
+         * `verpobreflix.net`) e é lá dentro que o vídeo mora. A extração comum só
+         * enxerga o iframe — que serve de prova de mídia e nada mais —, então a
+         * página era descartada como "sem arquivo de vídeo" com o episódio a uma
+         * chamada de distância. Com esta chave ligada, o [`ResolvedorEmbed`]
+         * percorre a cadeia conhecida até o master.m3u8 assinado.
+         *
+         * Só cadeias abertas entram: os provedores atrás de Cloudflare Turnstile
+         * ou de cifra dentro do navegador continuam fora de alcance, com o motivo
+         * documentado em `docs/integracoes.md`. Desligar restaura o
+         * comportamento anterior, de aceitar apenas o que a página entrega pronta
+         * em texto claro.
+         */
+        'stream_direto_resolver_embeds' => (bool) env('TORRENTS_STREAM_DIRETO_RESOLVER_EMBEDS', true),
+
+        /*
          * Estratégia de roteamento por idade da série.
          *
          * Uma série recente tem release fresco nos indexadores de torrent e o

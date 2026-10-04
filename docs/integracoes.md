@@ -2720,9 +2720,10 @@ episódio está certo — o HTML estático dele traz o iframe
 e o [`ProvedorStreamDireto`](../backend/app/Services/Torrents/ProvedorStreamDireto.php:1)
 só aceita arquivo tocável. É exatamente o segundo caminho já registrado na
 reverificação logo abaixo: atravessar o player cifrado. A busca direta fez a sua
-parte — o que falta não é achar a página, é o player dela.
+parte — o que faltava não era achar a página, era o player dela, e **hoje ele é
+atravessado**: a cadeia inteira está em *A travessia do embed*, mais abaixo.
 
-#### O `plenoflu.com` tem API aberta, mas ela não entrega vídeo
+#### O `plenoflu.com` não entrega vídeo — mas abre a cadeia que entrega
 
 O `plenoflu.com` (que se apresenta como "Pobre Play" / "SuperCDN") é o agregador
 de embed que o `verpobreflix.net` usa por baixo. Ele tem site, documentação em
@@ -2749,9 +2750,13 @@ devolveu quatro opções, e `getPlayer` devolveu quatro provedores —
 arquivo de vídeo; todos entregam **outra página de player**, e cada uma tem a
 sua própria blindagem:
 
-- `vaiquecol.com` usa o **FirePlayer** com o código empacotado (`eval`), e o
-  endpoint `getVideo` responde "Video not found" para qualquer ID que não venha
-  da sessão do navegador.
+- `vaiquecol.com` usa o **FirePlayer**, com o código do player empacotado
+  (`eval`). Numa primeira sondagem o `getVideo` respondeu "Video not found" para
+  o ID tentado, e a leitura foi que ele exigia a sessão do navegador. Era engano:
+  faltavam o **hash** certo (no parâmetro `data`) e o cabeçalho
+  `X-Requested-With`, que é o que separa a resposta JSON da página do player.
+  Corrigidas as duas coisas, este é o provedor que **entrega o vídeo** — ver a
+  subseção *A travessia do embed* abaixo.
 - `superflixapi.quest` e `streambetter.shop` estão atrás do **Cloudflare
   Turnstile** — o FlareSolverr devolve a página de "Verificação", não o player.
 - `vidsrc.sh` delega ao `cloudorchestranova.com`, cujo token `vs` **expira** e
@@ -2766,12 +2771,17 @@ do media-service exige uma extensão em `EXTENSOES_DIRETAS` e rejeita o resto co
 `formato_desconhecido`; oferecer um embed como fonte só produziria uma sessão
 que morre na primeira checagem.
 
-**A conclusão prática:** integrar a API do `plenoflu.com` moveria o problema um
-degrau adiante, não o resolveria. O que falta não é descobrir o embed — é
-**resolver o embed** (executar o JavaScript do player, vencer o Turnstile,
-decifrar o ChaCha20), e isso é trabalho de um navegador headless com sessão, não
-de um cliente HTTP. Enquanto esse resolvedor não existir, a API do `plenoflu.com`
-não tem lugar no caminho da fonte direta.
+**A conclusão prática, revista depois:** integrar a API do `plenoflu.com` sozinha
+moveria o problema um degrau adiante — de "achar a página" para "achar o player"
+—, e na primeira leitura isso parecia o fim da linha, porque resolver um embed
+soava como executar o JavaScript do player e vencer o Turnstile. A investigação
+seguinte mostrou que **um dos quatro provedores não exige nada disso**: o
+FirePlayer monta o vídeo a partir de um hash que está no próprio HTML da página, e
+o servidor entrega a URL final a quem pergunta do jeito certo. Nada de navegador
+headless, nada de sessão — duas leituras de texto e uma requisição. A cadeia
+completa está na subseção *A travessia do embed*, e é ela que o
+[`ResolvedorEmbed`](../backend/app/Services/Torrents/ResolvedorEmbed.php:1)
+percorre hoje para transformar a página do `verpobreflix.net` numa fonte tocável.
 
 ##### O FlareSolverr não socorre estes provedores — e o motivo é o IP
 
@@ -2780,8 +2790,10 @@ Vale registrar o teste que fecha a questão, porque ele descarta a saída mais
 headless e executa JavaScript, mas ele falha nos quatro provedores por um motivo
 que nenhuma renderização resolve: **o IP do container**.
 
-- `vaiquecol.com/embed2/1413-1-1` devolveu **404** — o caminho mudou desde a
-  primeira sondagem. Estes provedores trocam de endereço com frequência.
+- `vaiquecol.com/embed2/1413-1-1` devolveu **404** naquela sondagem — e **200** na
+  seguinte, com o player empacotado no corpo. O caminho destes provedores oscila, e
+  é por isso que o resolvedor confere o que recebe em vez de confiar no endereço: o
+  que responde hoje pode ser o que some amanhã.
 - `vidsrc.sh/embed/tv/1413/1/1` devolveu **39 bytes** e terminou em
   `about:blank`: um bloqueio ativo, não uma página. O servidor recusou o IP de
   datacenter antes de servir qualquer HTML.
@@ -2793,8 +2805,85 @@ resposta — e isso é uma decisão de infraestrutura, não de código.
 
 Por isso a fonte direta continua valendo o que sempre valeu: ela acha o que
 está **aberto** (um `.mp4`/`.m3u8` servido sem cerimônia), e devolve zero quando
-o único caminho é um embed blindado. Zero é a resposta honesta nesse caso — o
-alternativo seria entregar ao usuário uma sessão que morre na primeira checagem.
+o único caminho é um embed blindado. Zero continua sendo a resposta honesta nesses
+casos — o alternativo seria entregar ao usuário uma sessão que morre na primeira
+checagem.
+
+O que mudou depois deste registro foi o escopo do "aberto": o
+`vaiquecol.com/embed2/...` voltou a responder, e por ele a cadeia se resolve **sem
+navegador nenhum**. Não foi a blindagem que cedeu — é que um dos quatro provedores
+nunca precisou dela.
+
+##### A travessia do embed — do iframe ao `master.m3u8`
+
+O caminho que faltava está descrito aqui inteiro, porque é curto e porque quem
+esbarrar no próximo player de embed vai querer saber onde ele começa.
+
+O [`ResolvedorEmbed`](../backend/app/Services/Torrents/ResolvedorEmbed.php:1) entra
+em cena quando a extração do HTML volta vazia — quando a página **tem** mídia (o
+embed prova isso) mas não entrega arquivo. Ele recebe o HTML da página já aberta e
+o endereço dela como `Referer`.
+
+1. **O iframe diz para onde ir.** A página do episódio do `verpobreflix.net` traz
+   `<iframe src="https://plenoflu.com/tvshow/1413/1/1">`. Só hosts conhecidos são
+   seguidos: cada cadeia tem a sua receita, e seguir um iframe desconhecido seria
+   adivinhação.
+2. **O id do episódio está na própria página do embed.** O HTML declara
+   `DIRECT_EPISODE_ID = 77601` numa variável solta. Sem ele a API não tem o que
+   responder.
+3. **`POST /api?action=getOptions&contentid=77601`** devolve as quatro opções de
+   player. Os parâmetros vão na **query string** — o endpoint lê `$_GET`, não o
+   corpo —, então um POST sem corpo basta e o
+   [`ClienteHttp`](../backend/app/Services/Torrents/ClienteHttp.php:1) serve sem
+   alteração. O único requisito é um `Referer` qualquer: sem ele, `403`.
+4. **`POST /api?action=getPlayer&video_id=<id>`** devolve, em `data.video_url`, o
+   endereço do provedor em **base64**.
+5. **O player empacotado.** O `vaiquecol.com` não recebe o vídeo por parâmetro: um
+   `<script>` chama `FirePlayer("<hash>", {...})`, e esse script vem no **packer
+   clássico** (`eval(function(p,a,c,k,e,d){...})`). Desempacotar não é executar
+   JavaScript: o packer troca cada palavra por um índice em base62 e publica o
+   dicionário com o que cada índice significa — desfazer isso é aritmética, e o
+   `desempacotar()` do resolvedor faz exatamente a conta. Sai o hash.
+6. **`POST /player/index.php?data=<hash>&do=getVideo`** devolve o JSON do player.
+   O `X-Requested-With: XMLHttpRequest` é obrigatório: sem ele o mesmo endpoint
+   responde com a **página** do player, e a resposta deixa de ser dado. Não há
+   cookie, sessão nem token — a chamada é stateless, e por isso cabe no
+   `ClienteHttp` sem um cliente novo.
+7. **A URL vem em `securedLink`**: um `master.m3u8` **assinado**
+   (`?md5=...&expires=...`). Quando o player declara `hls: false`, ele não manda o
+   `securedLink` e cifra cada `videoSources[].file` no formato da biblioteca
+   `cryptojs-aes-format` — um JSON com `ct`/`iv`/`s`, chave derivada do sal por
+   `EVP_BytesToKey` em MD5. A decifragem está no `decifrar()`, e só é aceita
+   quando o texto claro é uma URL.
+8. **A playlist é aberta antes de virar fonte.** Um `securedLink` expirado é uma
+   URL que só falharia na tela do usuário; abrir a playlist custa alguns
+   kilobytes e prova que a assinatura está viva. É dali também que sai o idioma: o
+   `#EXT-X-MEDIA` declara `LANGUAGE="por"`, e uma faixa em português é a diferença
+   entre dublado e legendado. Arquivo progressivo (`.mp4`) é a exceção: não se
+   abre um filme inteiro só para dizer "existe", e a conferência fica na extensão.
+
+**O que ficou de fora, e por quê.** Dos quatro provedores, só o `vaiquecol` é
+seguido: o `superflixapi.quest` e o `streambetter.shop` continuam atrás do
+Turnstile, e o `vidsrc.sh` continua cifrando a resposta em ChaCha20 dentro de um
+WebAssembly. O resolvedor registra o descarte com o nome do host — quem investigar
+depois sabe que o provedor foi visto e recusado com motivo, e não por descuido.
+
+**A verificação ao vivo.** Para "American Horror Story" S01E01, a cadeia fecha em
+torno de 2 s a partir do iframe e devolve
+`https://vaiquecol.com/cdn/hls/831b.../master.m3u8?md5=...&expires=...`, com a
+faixa `LANGUAGE="por"` — idioma `dublado`. Rodando pelo provedor inteiro (busca →
+página do episódio → travessia), o fallback devolve uma fonte em ~28 s de um
+orçamento de 45 s. Antes desta etapa, o mesmo episódio terminava em
+`sem arquivo de vídeo extraível`, com o log confirmando que a página estava certa.
+
+**Onde ele não encosta.** O `ResolvedorEmbed` não substitui a extração: só roda
+quando não há arquivo nenhum na página. E o que ele devolve **não** passa pela
+conferência de palavras do `videoRelevante()` — a URL de um CDN é um caminho de
+hash (`/cdn/hls/831b0172.../master.m3u8`) sem uma palavra do título para conferir,
+e a relevância já foi provada na página do episódio. A barreira de conteúdo
+impróprio continua valendo, porque o CDN de destino pode ser adulto mesmo quando a
+página e o player não são. Desligar a travessia é
+`TORRENTS_STREAM_DIRETO_RESOLVER_EMBEDS=false`.
 
 ##### O levantamento das APIs de embed: todas param no mesmo muro
 
@@ -3233,6 +3322,13 @@ deixar um "zero fontes" mudo:
   aleatório".
 - `debug` **"vídeos extraídos da página"** — quantos links de vídeo saíram do HTML.
 - `debug` **"página sem vídeo extraível"** — a página abriu, mas não tinha vídeo.
+- `debug` **"embed percorrido até o arquivo"** — a página não entregava arquivo, o
+  iframe do player foi seguido e a travessia terminou numa playlist válida. É o
+  rastro que separa "não havia vídeo" de "havia, do outro lado do iframe".
+- `debug` **"player sem caminho aberto descartado"** — a cadeia chegou a um
+  provedor blindado (Turnstile, ChaCha20) e parou ali, sem gastar requisição com
+  ele. O host vai no registro, para a próxima investigação saber que o provedor foi
+  visto e recusado com motivo.
 - `debug` **"busca concluída"** — termos com resultado, páginas visitadas e total
   de fontes.
 - `info` **"nenhuma fonte encontrada"** — o resumo final quando nada saiu.
@@ -3374,6 +3470,7 @@ TORRENTS_STREAM_DIRETO_ORCAMENTO=45
 TORRENTS_STREAM_DIRETO_MIN_PALAVRAS_CHAVE=2
 TORRENTS_STREAM_DIRETO_FILTRO_ADULTO=true
 TORRENTS_STREAM_DIRETO_BUSCA_DIRETA=true
+TORRENTS_STREAM_DIRETO_RESOLVER_EMBEDS=true
 TORRENTS_BUSCA_POR_IDADE_HABILITADA=true
 TORRENTS_BUSCA_IDADE_LIMITE_ANOS=2
 ```
@@ -3428,6 +3525,16 @@ contra a suspensão dos buscadores comerciais, que hoje deixa o fallback sem nen
 agregador na lista. As páginas que voltam passam pelo mesmo crivo das que vêm do
 motor, e o motor continua rodando em seguida como redundância. Desligar restaura o
 fluxo antigo, só pelo motor de busca.
+
+`TORRENTS_STREAM_DIRETO_RESOLVER_EMBEDS` liga a **travessia de players de embed**
+(padrão `true`). É o degrau que fecha o episódio quando a página certa não entrega
+arquivo: o agregador embute o player de um terceiro (o `plenoflu.com`, no caso do
+`verpobreflix.net`) e o vídeo mora do outro lado do iframe. Com a chave ligada, o
+[`ResolvedorEmbed`](../backend/app/Services/Torrents/ResolvedorEmbed.php:1) percorre
+a cadeia até o `master.m3u8` assinado; desligada, volta a regra antiga — só o que a
+página entrega em texto claro. A travessia roda **depois** de a extração voltar
+vazia e não substitui nenhuma prova anterior: a relevância pelo título e a prova de
+mídia continuam sendo conferidas na página do agregador.
 
 O `.env.example` sobe com a chave ligada; no código o padrão é `false`. Diferente
 da versão anterior, **não há mais API externa a configurar**: ligar a chave já
