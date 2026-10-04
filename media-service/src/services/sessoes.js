@@ -459,7 +459,7 @@ async function prepararSessaoDireta(sessao) {
   let analise = null
 
   try {
-    analise = await analisarArquivo(sessao.url)
+    analise = await analisarArquivo(sessao.url, extensao)
   } catch (erro) {
     logger.warn(
       `[sessao ${sessao.id}] ffprobe não leu a fonte direta (${erro.message}); seguindo com transcodificação`

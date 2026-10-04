@@ -382,7 +382,7 @@ reescrito para longe (o clamp do browser, por exemplo). Sem essa guarda, uma
 reescrita logo depois da busca ficava sem quem a corrigisse.
 
 O servidor também deixou de publicar segmentos pela metade: os `-hls_flags` de
-[`iniciarConversao()`](../media-service/src/services/hls.js:324) ganharam
+[`iniciarConversao()`](../media-service/src/services/hls.js:610) ganharam
 `temp_file`, que escreve `segmento-N.ts.tmp` e só renomeia ao fechar o arquivo.
 Antes, o nome entrava na playlist antes de o arquivo terminar de ser escrito e um
 pedido logo em seguida lia um trecho incompleto — o que abortava a carga e, na

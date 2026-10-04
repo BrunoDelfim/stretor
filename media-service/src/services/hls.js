@@ -98,6 +98,81 @@ const FORMATOS_CONTAINER = {
 }
 
 /**
+ * Extensões que o demuxer HLS do FFmpeg aceita ver num segmento de playlist.
+ *
+ * A lista é a mesma que o FFmpeg 8 traz de fábrica (`ffmpeg -h demuxer=hls`) —
+ * declarada aqui porque passar a opção **substitui** o padrão, e perder `aac`,
+ * `vtt` ou `fmp4` quebraria playlists legítimas — mais a família de extensões
+ * falsas que os agregadores de embed usam para despistar: o mesmo MPEG-TS é
+ * anunciado como `.js`, `.css`, `.woff` ou `.html`, girando a cada segmento.
+ *
+ * O conteúdo desses arquivos é o de sempre (a extensão é decorativa: o CDN
+ * devolve os mesmos bytes para qualquer sufixo), mas o FFmpeg recusa o playlist
+ * inteiro quando encontra um segmento fora da lista — o que fazia a fonte do
+ * embed morrer com `Invalid data found when processing input`.
+ */
+const EXTENSOES_SEGMENTO_HLS = [
+  // O padrão do FFmpeg, preservado.
+  '3gp', 'aac', 'avi', 'ac3', 'eac3', 'flac', 'mkv', 'm3u8', 'm4a', 'm4s', 'm4v',
+  'mpg', 'mov', 'mp2', 'mp3', 'mp4', 'mpeg', 'mpegts', 'ogg', 'ogv', 'oga', 'ts',
+  'vob', 'vtt', 'wav', 'webvtt', 'cmfv', 'cmfa', 'ec3', 'fmp4', 'html',
+  // As falsas que os embeds pregam nos segmentos.
+  'js', 'css', 'woff', 'woff2', 'jpg', 'jpeg', 'png', 'gif', 'webp', 'svg',
+  'ico', 'txt', 'json', 'xml', 'pdf', 'php', 'htm', 'wasm', 'bin', 'dat',
+]
+
+/**
+ * Diz se a origem é um endereço remoto (e não um arquivo em disco).
+ *
+ * É a distinção que separa o torrent do stream direto dentro da conversão: um
+ * caminho local é buscável e dispensa ajustes de sondagem, enquanto a URL
+ * remota é lida pelo FFmpeg com requisições HTTP.
+ */
+function ehOrigemRemota(origem) {
+  return /^https?:\/\//i.test(String(origem ?? ''))
+}
+
+/**
+ * Diz se a origem é uma playlist HLS remota.
+ *
+ * Só nesse caso as opções abaixo podem ser passadas: `extension_picky` e
+ * `allowed_segment_extensions` são opções do demuxer HLS, e num MP4 o FFmpeg
+ * aborta a abertura com `Option not found` em vez de ignorá-las.
+ */
+function ehPlaylistHlsRemota(origem, extensao = '') {
+  if (!ehOrigemRemota(origem)) return false
+
+  return String(extensao ?? '').toLowerCase() === '.m3u8' || /\.m3u8([?#]|$)/i.test(String(origem))
+}
+
+/**
+ * Opções de entrada que destravam playlists de embed.
+ *
+ * As duas travas do FFmpeg existem para proteger contra playlist adulterada, e
+ * são exatamente o que a ofuscação dos agregadores atinge:
+ *
+ * - `allowed_segment_extensions` recusa o playlist inteiro ao encontrar um
+ *   segmento com extensão fora da lista (o `.js`/`.css`/`.woff` falso);
+ * - `extension_picky` recusa o segmento quando a extensão da URL não casa com
+ *   o formato que a sondagem detectou (MPEG-TS anunciado como `.js`).
+ *
+ * A origem aqui não é entrada do usuário: é a URL que o resolvedor do backend
+ * devolveu. Como a lista é conhecida e a leitura continua sendo em fluxo — o
+ * FFmpeg busca um segmento de cada vez, sem baixar o arquivo inteiro antes de
+ * começar —, afrouxar as duas travas para esta entrada não abre nada além do
+ * que o próprio provedor precisa para tocar.
+ *
+ * @param {string} origem URL de entrada da conversão
+ * @param {string} [extensao] extensão declarada da fonte (`.m3u8`, `.mp4`...)
+ * @returns {string[]} opções para o FFmpeg, vazias quando não se aplicam
+ */
+export function opcoesEntradaHlsRemota(origem, extensao = '') {
+  if (!ehPlaylistHlsRemota(origem, extensao)) return []
+
+  return ['-extension_picky', '0', '-allowed_segment_extensions', EXTENSOES_SEGMENTO_HLS.join(',')]
+}
+
+/**
  * Extrai os metadados do arquivo para decidir o modo de conversão.
  *
  * Além dos codecs, devolvemos a duração total. O Plyr não consegue deduzi-la de
@@ -111,23 +186,30 @@ const FORMATOS_CONTAINER = {
  * 10-bit e derrubou o MSE.
  *
  * @param {string} arquivo caminho do arquivo de vídeo dentro do torrent
+ * @param {string} [extensao] extensão declarada da fonte, quando já se conhece
+ *   (a fonte direta a traz da URL); serve para reconhecer a playlist HLS
  * @returns {Promise<{modo: string, videoCodec: string, pixFmt: string, audioCodec: string, duracao: number|null, inicioFonte: number|null, idiomaAudio: string|null, idiomaAudioRotulo: string|null, idiomasAudio: Array<object>}>}
  */
-export async function analisarArquivo(arquivo) {
+export async function analisarArquivo(arquivo, extensao = '') {
+  const remoto = ehOrigemRemota(arquivo)
+
   /*
    * O ffprobe devolve "No such file or directory" quando o arquivo ainda não
    * existe em disco — o que acontece nos primeiros porcentos do download. Esse
    * erro é indistinguível, na mensagem, de um arquivo corrompido, então o
    * rotulamos aqui para o chamador poder esperar em vez de desistir da fonte.
+   *
+   * A guarda vale só para arquivo local: numa fonte direta o "arquivo" é uma
+   * URL, que nunca existe em disco, e o ffprobe a lê por HTTP.
    */
-  if (!fs.existsSync(arquivo)) {
+  if (!remoto && !fs.existsSync(arquivo)) {
     const erro = new Error(`Arquivo ainda não existe em disco: ${arquivo}`)
     erro.code = 'ENOENT'
     throw erro
   }
 
   const metadados = await new Promise((resolve, reject) => {
-    ffmpeg.ffprobe(arquivo, (erro, dados) => {
+    ffmpeg(arquivo).ffprobe(null, opcoesEntradaHlsRemota(arquivo, extensao), (erro, dados) => {
       if (erro) return reject(erro)
 
       resolve(dados)
@@ -184,9 +266,16 @@ export async function analisarArquivo(arquivo) {
    * Só medimos os keyframes quando o vídeo é compatível — é o único cenário em
    * que a decisão entre `remux` e `video` depende disso. Nos demais o codec já
    * determina o modo e a varredura seria trabalho desperdiçado.
+   *
+   * Numa fonte direta a medição também fica de fora, por um motivo prático: a
+   * janela de leitura atravessa a rede, e num playlist HLS ela obrigaria a
+   * baixar minutos de vídeo **antes** de a conversão começar. O playlist já
+   * entrega a informação equivalente de graça — a duração dos próprios
+   * segmentos é o intervalo de keyframes que o provedor usou —, então a decisão
+   * segue pelo codec e a sessão começa sem essa espera.
    */
   const videoOk = VIDEO_COMPATIVEIS.includes(videoCodec)
-  const intervaloKeyframes = videoOk ? await medirIntervaloKeyframes(arquivo) : null
+  const intervaloKeyframes = videoOk && !remoto ? await medirIntervaloKeyframes(arquivo) : null
 
   return {
     modo: decidirModo(videoCodec, audioCodec, intervaloKeyframes, pixFmt),
@@ -566,6 +655,20 @@ export function iniciarConversao({
 
   if (formato) {
     comando.inputFormat(formato)
+  }
+
+  /*
+   * Numa playlist HLS remota afrouxamos as duas travas de extensão do demuxer.
+   * Sem isso o FFmpeg recusa o playlist inteiro ao topar com o primeiro
+   * segmento de extensão falsa — `.js`, `.css`, `.woff` —, que é como os
+   * agregadores de embed escondem o MPEG-TS. A leitura continua em fluxo: o
+   * FFmpeg busca um segmento de cada vez, publica o trecho correspondente e só
+   * então segue para o próximo.
+   */
+  const opcoesEntrada = opcoesEntradaHlsRemota(caminho, extensao)
+
+  if (opcoesEntrada.length) {
+    comando.inputOptions(opcoesEntrada)
   }
 
   /*
