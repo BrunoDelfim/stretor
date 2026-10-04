@@ -45,11 +45,17 @@ ui:
 # exigem chave. A escolha não é por preferência, é por sobrevivência: o Google
 # bloqueia o IP do container (devolve vazio) e o Brave suspende por excesso de
 # requisições, então nenhum dos dois segura a busca sozinho. O Bing responde,
-# mas puxa plataforma paga (Prime Video, JustWatch, Plex) para o topo. Quem
-# realmente acha os agregadores PT-BR é o DuckDuckGo — foi ele que trouxe o
-# `verpobreflix.net` quando os outros três não trouxeram nada de streaming. O
-# Mojeek e o Startpage entram como reforço, porque também devolveram agregador
-# no teste. Os quatro juntos cobrem a falha de qualquer um.
+# mas puxa plataforma paga (Prime Video, JustWatch, Plex) para o topo. O
+# Mojeek e o Startpage entram como reforço. A ideia é cobrir a falha de qualquer
+# um com os demais.
+#
+# A ressalva que o tempo trouxe: a aposta original era o DuckDuckGo, que era
+# quem achava os agregadores PT-BR. Hoje ele responde CAPTCHA ao IP do
+# container, junto do Google e do Brave — então, na prática, o que sobra é o
+# Bing, que devolve só plataforma legal (nada que a lista negra não descarte).
+# Enquanto nenhum motor aberto indexar os agregadores, o fallback depende de
+# uma busca que raramente entrega a página certa. A busca direta no próprio
+# agregador é o caminho que dispensa o motor; ver `docs/integracoes.md`.
 #
 # A regra do projeto de não depender do DuckDuckGo vale para o **backend**, que
 # fala só com o SearXNG. Aqui dentro o DuckDuckGo é um motor entre outros: se

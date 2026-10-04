@@ -3752,6 +3752,53 @@ antiga (padrão 2). O limiar é **inclusivo**: com 2, uma série de dois anos ai
 é recente e uma de três já é antiga. Zero ou negativo desliga o corte na prática,
 porque nenhuma série fica "fora" dele.
 
+#### Reverificação: o gargalo é o motor de busca e o player cifrado, não a lista
+
+A rede de segurança do conteúdo raro foi reexaminada de ponta a ponta — lista
+negra, lista branca, motor de busca e player de destino. A conclusão é que as
+listas de domínio estão corretas e o que trava mora fora delas.
+
+**A lista negra acertou.** O `assistaonline.tv` responde **HTTP 402** — o domínio
+segue morto, já sem nem a página "Deployment Paused" do Vercel. O
+`pobreflix.bike` responde `200`, mas a página de episódio entrega só um
+`player-resolve` no HTML estático (nenhum `<video>`, nenhum `.m3u8`); forçada a
+renderizar pelo FlareSolverr, ela devolve **um único iframe de anúncio**
+(`t.dtscout.com`) e nenhum vídeo. É o mesmo veredito de antes: não hospeda o
+episódio, hospeda a isca.
+
+**A lista branca está viva.** O `verpobreflix.net`, o `tokyvideo.com` e o
+`cinepoca.com.br` respondem `200`. O `verpobreflix.net` segue o agregador de
+referência: a página de episódio (`/series/<slug>/temporada-N/episodio-M`) já traz
+no **HTML estático** o iframe do player
+(`https://plenoflu.com/tvshow/<id>/<temporada>/<episodio>`), sem depender de
+JavaScript.
+
+**O gargalo é o motor de busca.** O SearXNG marca `brave`, `duckduckgo`, `google`
+e `google cse` como **suspensos** (`too many requests`, `CAPTCHA`, `access
+denied`) em toda consulta. Sobra o Bing, que puxa só plataforma legal: Prime
+Video, Netflix, Disney+, JustWatch, Plex, AdoroCinema, Filmow. Nenhuma delas é
+fonte, e a lista negra as descarta como sempre. O efeito prático é a busca voltar
+vazia **antes** de qualquer página ser visitada — o `stream_direto` termina em
+`sem_resultado` sem sequer acionar a renderização. O `settings.yml` apostou no
+DuckDuckGo para achar os agregadores PT-BR; hoje ele devolve CAPTCHA, e a
+aposta ficou sem lastro.
+
+**O player de destino continua cifrado.** A cadeia do `plenoflu.com` foi
+reconferida: `getOptions` devolve quatro players e `getPlayer` entrega, em
+base64, `vaiquecol.com` (hoje **404**, morto), `superflixapi.quest` e
+`streambetter.shop` (**Cloudflare Turnstile**) e `vidsrc.sh` (token que expira,
+iframe ofuscado e trava anti-devtools). Nem o FlareSolverr resolve: a página do
+`superflixapi.quest` renderizada tem 620 KB e **zero** `.m3u8`/`.mp4`. É um
+catálogo de embeds, não uma fonte de vídeo.
+
+**O que isso muda na prática.** Nenhum ajuste de lista resolve, porque o problema
+não está na lista: está no motor que não devolve os agregadores e no player que
+não entrega arquivo. Os caminhos reais são outros dois — uma **busca direta nos
+agregadores** (o `verpobreflix.net` tem busca própria em `/search?q=<título>` e
+slug previsível, o que dispensa o motor web) e um **navegador próprio** para os
+players cifrados. Nenhum dos dois cabe no fallback atual, que segue baseado em
+motor de busca e extração de HTML.
+
 ### Legendas — roadmap
 
 Ainda não implementado:
