@@ -464,6 +464,24 @@ return [
         'stream_direto_min_palavras_chave' => (int) env('TORRENTS_STREAM_DIRETO_MIN_PALAVRAS_CHAVE', 2),
 
         /*
+         * Busca direta nos agregadores, antes do motor de busca web.
+         *
+         * O motor aberto (SearXNG) é a peça frágil do stream direto: quando os
+         * motores grandes suspendem o IP do container, sobra o Bing, que devolve
+         * só plataforma legal — e a lista negra descarta tudo, deixando a busca
+         * vazia **antes** de abrir qualquer página. Esta chave liga o atalho que
+         * contorna o problema: em vez de perguntar ao motor onde o episódio mora,
+         * o provedor pergunta direto à busca interna dos agregadores de vídeo
+         * ([`BuscaAgregadores`]), cujo resultado já é a página do título.
+         *
+         * É complementar, não substituto: as páginas que voltam daqui passam
+         * pelo mesmo crivo (relevância, prova de mídia, extração) das que vêm do
+         * motor, e o motor continua rodando em seguida se a busca direta não der
+         * em nada. Desligar restaura o fluxo antigo, só pelo motor web.
+         */
+        'stream_direto_busca_direta' => (bool) env('TORRENTS_STREAM_DIRETO_BUSCA_DIRETA', true),
+
+        /*
          * Estratégia de roteamento por idade da série.
          *
          * Uma série recente tem release fresco nos indexadores de torrent e o

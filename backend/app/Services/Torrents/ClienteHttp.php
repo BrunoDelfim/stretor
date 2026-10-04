@@ -271,7 +271,21 @@ class ClienteHttp
         array $cabecalhos = [],
     ): ?Response {
         try {
-            return $this->requisicao($userAgent, $timeout, $cabecalhos)->get($url, $consulta);
+            $requisicao = $this->requisicao($userAgent, $timeout, $cabecalhos);
+
+            /*
+             * O `get()` do Laravel recebe a query num segundo argumento e o Guzzle
+             * a usa para **substituir** a query embutida na URL. Passar um array
+             * vazio, então, não é inócuo: ele apaga o `?q=...` do endereço e o site
+             * devolve a própria home — a busca volta vazia sem erro nenhum. Era o
+             * que acontecia com os trackers PT-BR e com a busca direta dos
+             * agregadores (`verpobreflix.net/search?q=...` chegava como `/search`).
+             * Quando não há parâmetros, a requisição sai com um argumento só e a
+             * query da URL fica intacta.
+             */
+            return $consulta === []
+                ? $requisicao->get($url)
+                : $requisicao->get($url, $consulta);
         } catch (\Throwable) {
             return null;
         }

@@ -179,6 +179,11 @@ services:
       - TORRENTS_STREAM_DIRETO_MAX_PAGINAS=${TORRENTS_STREAM_DIRETO_MAX_PAGINAS:-6}
       - TORRENTS_STREAM_DIRETO_TEMPO_LIMITE=${TORRENTS_STREAM_DIRETO_TEMPO_LIMITE:-10}
       - TORRENTS_STREAM_DIRETO_ORCAMENTO=${TORRENTS_STREAM_DIRETO_ORCAMENTO:-12}
+      # Busca direta nos agregadores, antes do motor web. O atalho contorna a
+      # suspensão dos buscadores comerciais que o SearXNG agrega: em vez de
+      # perguntar ao motor onde o episódio mora, o provedor pergunta à busca
+      # interna do próprio agregador (verpobreflix, tokyvideo).
+      - TORRENTS_STREAM_DIRETO_BUSCA_DIRETA=${TORRENTS_STREAM_DIRETO_BUSCA_DIRETA:-true}
     depends_on:
       init:
         condition: service_completed_successfully

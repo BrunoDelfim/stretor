@@ -74,6 +74,7 @@ class ProvedorStreamDireto implements ProvedorTorrents
         private readonly MotorBuscaWeb $motor,
         private readonly ExtratorVideo $extrator,
         private readonly ClienteHttp $cliente,
+        private readonly BuscaAgregadores $agregadores,
     ) {
     }
 
@@ -189,62 +190,77 @@ class ProvedorStreamDireto implements ProvedorTorrents
          */
         $tetoConsulta = (int) config('services.torrents.stream_direto_tempo_limite', 10);
 
-        foreach ($termos as $termo) {
-            if (! $this->temTempoParaConsulta($tetoConsulta)) {
-                Log::debug('Stream direto: orçamento insuficiente para o próximo termo.', [
-                    'termo' => $termo,
-                    'restante' => $this->orcamento->restante(),
-                ]);
+        $parar = false;
 
-                break;
-            }
+        /*
+         * A busca direta nos agregadores vem **antes** do motor web. O motor
+         * aberto é a peça frágil da corrente: para conteúdo raro ele devolve
+         * quase só plataforma legal (que a lista negra descarta) e, quando os
+         * motores grandes estão suspensos, nada. O agregador sabe onde o
+         * episódio mora; perguntar direto a ele é o caminho que não depende do
+         * motor. As páginas que voltam daqui entram no mesmo crivo das que vêm
+         * do motor — a origem do link muda, o tratamento não.
+         */
+        $diretas = $this->agregadores->buscar($titulos);
 
-            /*
-             * O laço para assim que junta fontes suficientes: o fallback é socorro,
-             * não catálogo. Uma vez que há links tocáveis, gastar o orçamento
-             * restante em mais termos só atrasaria a resposta.
-             */
-            if ($this->alvoAtingido($fontes, $alvoFontes)) {
-                break;
-            }
+        if ($diretas !== []) {
+            Log::debug('Stream direto: candidatas da busca direta nos agregadores.', [
+                'candidatas' => count($diretas),
+                'dominios' => $this->dominiosDe($diretas),
+            ]);
 
-            $candidatas = $this->motor->procurar($termo);
+            $parar = $this->visitar(
+                $diretas,
+                $titulo,
+                $temporada,
+                $episodio,
+                $paginasVisitadas,
+                $fontes,
+                $alvoFontes,
+                $tetoConsulta,
+            );
+        }
 
-            if ($candidatas === []) {
-                continue;
-            }
+        if (! $parar) {
+            foreach ($termos as $termo) {
+                if (! $this->temTempoParaConsulta($tetoConsulta)) {
+                    Log::debug('Stream direto: orçamento insuficiente para o próximo termo.', [
+                        'termo' => $termo,
+                        'restante' => $this->orcamento->restante(),
+                    ]);
 
-            $termosComResultado++;
-
-            foreach ($candidatas as $pagina) {
-                if (! $this->temTempoParaConsulta($tetoConsulta) || $this->alvoAtingido($fontes, $alvoFontes)) {
-                    break 2;
+                    break;
                 }
 
                 /*
-                 * A barreira de conteúdo impróprio roda antes de qualquer
-                 * requisição: um link adulto que escapou do motor de busca é
-                 * descartado aqui, sem gastar orçamento nem abrir a página. É a
-                 * segunda linha de defesa — o [`MotorBuscaWeb`] já filtra na
-                 * origem, mas o provedor não confia cegamente no que recebe.
+                 * O laço para assim que junta fontes suficientes: o fallback é socorro,
+                 * não catálogo. Uma vez que há links tocáveis, gastar o orçamento
+                 * restante em mais termos só atrasaria a resposta.
                  */
-                if ($this->filtroAdultoAtivo() && FiltroConteudoAdulto::urlBloqueada($pagina)) {
-                    Log::warning('Stream direto: página imprópria descartada.', [
-                        'pagina' => $pagina,
-                    ]);
+                if ($this->alvoAtingido($fontes, $alvoFontes)) {
+                    break;
+                }
 
+                $candidatas = $this->motor->procurar($termo);
+
+                if ($candidatas === []) {
                     continue;
                 }
 
-                // A mesma página pode aparecer em vários termos; não vale abri-la
-                // duas vezes.
-                if (isset($paginasVisitadas[$pagina])) {
-                    continue;
+                $termosComResultado++;
+
+                if ($this->visitar(
+                    $candidatas,
+                    $titulo,
+                    $temporada,
+                    $episodio,
+                    $paginasVisitadas,
+                    $fontes,
+                    $alvoFontes,
+                    $tetoConsulta,
+                )) {
+                    break;
                 }
-
-                $paginasVisitadas[$pagina] = true;
-
-                $fontes = array_merge($fontes, $this->rasparPagina($pagina, $titulo, $temporada, $episodio));
             }
         }
 
@@ -289,6 +305,68 @@ class ProvedorStreamDireto implements ProvedorTorrents
     private function alvoAtingido(array $fontes, int $alvo): bool
     {
         return $alvo > 0 && count($fontes) >= $alvo;
+    }
+
+    /**
+     * Percorre uma lista de páginas candidatas e acumula as fontes que rendem.
+     *
+     * As candidatas chegam de duas origens — a **busca direta nos agregadores**
+     * e o **motor de busca web** — e as duas passam pelo mesmo crivo: barreira
+     * de conteúdo impróprio, pulo de página já visitada e extração. Concentrar o
+     * laço aqui evita duas cópias da mesma regra e garante que um filtro novo
+     * valha para as duas origens de uma vez.
+     *
+     * A parada é dupla e mora no topo do laço: o orçamento (não começar uma
+     * consulta que já não cabe) e o alvo de fontes (o fallback é socorro, não
+     * catálogo). Quando um dos dois dispara, a função devolve `true` e quem
+     * chamou encerra o fluxo inteiro.
+     *
+     * @param  array<int, string>  $candidatas
+     * @param  array<string, bool>  $paginasVisitadas
+     * @param  array<int, array<string, mixed>>  $fontes
+     * @return bool `true` quando o fluxo deve parar (orçamento ou alvo atingido)
+     */
+    private function visitar(
+        array $candidatas,
+        string $titulo,
+        ?int $temporada,
+        ?int $episodio,
+        array &$paginasVisitadas,
+        array &$fontes,
+        int $alvoFontes,
+        int $tetoConsulta,
+    ): bool {
+        foreach ($candidatas as $pagina) {
+            if (! $this->temTempoParaConsulta($tetoConsulta) || $this->alvoAtingido($fontes, $alvoFontes)) {
+                return true;
+            }
+
+            /*
+             * A barreira de conteúdo impróprio roda antes de qualquer
+             * requisição: um link adulto que escapou do motor de busca (ou veio
+             * da busca do agregador) é descartado aqui, sem gastar orçamento nem
+             * abrir a página.
+             */
+            if ($this->filtroAdultoAtivo() && FiltroConteudoAdulto::urlBloqueada($pagina)) {
+                Log::warning('Stream direto: página imprópria descartada.', [
+                    'pagina' => $pagina,
+                ]);
+
+                continue;
+            }
+
+            // A mesma página pode aparecer em origens diferentes; não vale
+            // abri-la duas vezes.
+            if (isset($paginasVisitadas[$pagina])) {
+                continue;
+            }
+
+            $paginasVisitadas[$pagina] = true;
+
+            $fontes = array_merge($fontes, $this->rasparPagina($pagina, $titulo, $temporada, $episodio));
+        }
+
+        return false;
     }
 
     /**

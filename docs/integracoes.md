@@ -2607,7 +2607,11 @@ O fluxo tem quatro etapas, cada uma num arquivo próprio:
    a lista inteira de títulos (o principal e as variações) via
    `buscarComTitulos()`, e não só o primeiro.
 
-2. **O motor de busca** — [`MotorBuscaWeb`](../backend/app/Services/Torrents/MotorBuscaWeb.php:1)
+2. **A busca direta e o motor de busca** — antes de acionar o motor web, o
+   [`BuscaAgregadores`](../backend/app/Services/Torrents/BuscaAgregadores.php:1)
+   pergunta à busca interna dos agregadores de vídeo (ver a subseção *A busca
+   direta nos agregadores* logo abaixo). Depois, o
+   [`MotorBuscaWeb`](../backend/app/Services/Torrents/MotorBuscaWeb.php:1)
    resolve o termo em URLs de páginas. O motor é o **SearXNG interno** do compose
    (`http://searxng:8080/search`): um meta-buscador que sobe junto com o stack, tem
    cota própria e devolve JSON limpo (`format=json`). Ele não depende de instância
@@ -2637,6 +2641,86 @@ O fluxo tem quatro etapas, cada uma num arquivo próprio:
    [`docker/searxng/settings.yml`](../docker/searxng/settings.yml:1). Se um dia for
    preciso redundância, ela deve vir de **outra instância SearXNG** — nunca de um
    buscador comercial que bloqueia o IP dos containers.
+
+#### A busca direta nos agregadores — o atalho que dispensa o motor
+
+O motor de busca aberto é a peça mais frágil da corrente do stream direto. Quando
+os motores que o SearXNG consulta por baixo (Brave, DuckDuckGo, Google) suspendem
+o IP do container — o que é rotina —, sobra o Bing, que devolve só plataforma
+legal. A lista negra descarta tudo e a busca volta vazia **antes** de qualquer
+página ser visitada: o `stream_direto` termina em `sem_resultado` sem sequer
+acionar a renderização.
+
+O [`BuscaAgregadores`](../backend/app/Services/Torrents/BuscaAgregadores.php:1)
+fecha essa brecha rodando **antes** do motor: em vez de perguntar ao SearXNG onde
+o episódio mora, pergunta direto à **busca interna** dos agregadores de vídeo,
+cujo resultado já é a página do título. É o mesmo caminho do usuário — em vez de
+googlar "assistir X", digita X na busca do próprio site.
+
+A lista é curta e por conhecimento de causa — hoje, só o `verpobreflix.net`. Cada
+agregador declara duas coisas: onde a busca mora (`/search?q=`) e qual prefixo de
+caminho identifica o conteúdo na página de resultado (`/series/`). O domínio
+serve de âncora — só links do próprio site entram, o que descarta menu, rodapé e
+link patrocinado sem precisar de lista negra. O resultado do verpobreflix é a
+ficha da série, e o provedor desce dali para a página do episódio pelo caminho que
+já existia.
+
+A relevância pelo título é conferida **na hora da busca**, sobre o slug do link —
+e não só lá na frente, sobre a página aberta. A página de resultado costuma vir
+salpicada de "veja também", e cada link desses custaria uma requisição e uma vaga
+do teto de páginas antes de ser descartado. Filtrar cedo é barato e deixa o crivo
+final (título da página e URL do vídeo) exatamente onde estava.
+
+O contrato não muda: a saída é uma lista de URLs de página, do mesmo tipo que o
+`MotorBuscaWeb::procurar()` devolveria. O provedor processa as duas origens pelo
+mesmo caminho — relevância pelo título, prova de mídia e extração —, no laço
+`visitar()`. O motor continua rodando **em seguida**, como redundância: se a busca
+direta não der em nada, a varredura web acontece igual. Desligar o atalho é só
+`TORRENTS_STREAM_DIRETO_BUSCA_DIRETA=false`.
+
+##### O `tokyvideo.com` saiu da lista: busca montada por JavaScript
+
+O `tokyvideo.com` chegou a estar no mapa e foi removido. O `/search?q=` dele é
+montado no cliente: o HTML que se baixa sem navegador traz a grade de vídeos
+populares da barra lateral e **zero ocorrência do termo pedido** — buscando
+"American Horror Story", os endereços que voltaram eram
+`/video/the-hobbit-couch-gag`, `/video/cinnamon-rolls-by-skill-level` e afins. Com
+a página de resultado vazia de pistas, o agregador só injetava ruído na varredura.
+A regra da lista passa a ser essa: só entra agregador cujo resultado de busca
+esteja no HTML baixado. O `tokyvideo` continua útil pelo outro caminho — o motor
+web acha o episódio (`/br/video/american-horror-story-ep1`) e o provedor extrai o
+`.mp4` —, mas não pela busca direta.
+
+##### A query string era descartada antes de sair
+
+A busca direta só funciona porque uma correção veio antes dela. O `get()` do
+Laravel recebe os parâmetros num segundo argumento, e o Guzzle os usa para
+**substituir** a query embutida na URL. O
+[`ClienteHttp`](../backend/app/Services/Torrents/ClienteHttp.php:1) repassava esse
+argumento com um array vazio por padrão, então todo endereço com busca já embutida
+chegava ao servidor **sem ela**: `verpobreflix.net/search?q=American+Horror+Story`
+virava `/search`, e a resposta era a própria home do site — 200, sem erro, sem
+resultado. O sintoma era mudo: nenhuma exceção, só um vazio que parecia "o site
+não tem isso". Agora o parâmetro só é repassado quando existe; sem ele, a
+requisição sai com um argumento só e a query da URL fica intacta. A correção vale
+para qualquer chamada que embuta a busca no endereço — inclusive os trackers
+PT-BR nativos
+([`ProvedorTrackersBr`](../backend/app/Services/Torrents/ProvedorTrackersBr.php:122)),
+que montam a busca do mesmo jeito. Hoje eles estão desligados por configuração
+(`TORRENTS_TRACKERS_BR_URLS` vazio), mas o defeito voltaria a aparecer quando
+fossem ligados.
+
+##### O que a verificação ao vivo mostrou
+
+Com o atalho ligado, a busca direta resolveu "American Horror Story" sem o motor:
+voltou a ficha `verpobreflix.net/series/american-horror-story`, o provedor desceu
+para `/temporada-1/episodio-1` e registrou "sem arquivo de vídeo extraível". O
+episódio está certo — o HTML estático dele traz o iframe
+`https://plenoflu.com/tvshow/1413/1/1` —, mas é um **embed**, não um `.mp4`/`.m3u8`,
+e o [`ProvedorStreamDireto`](../backend/app/Services/Torrents/ProvedorStreamDireto.php:1)
+só aceita arquivo tocável. É exatamente o segundo caminho já registrado na
+reverificação logo abaixo: atravessar o player cifrado. A busca direta fez a sua
+parte — o que falta não é achar a página, é o player dela.
 
 #### O `plenoflu.com` tem API aberta, mas ela não entrega vídeo
 
@@ -3289,6 +3373,7 @@ TORRENTS_STREAM_DIRETO_TEMPO_LIMITE=8
 TORRENTS_STREAM_DIRETO_ORCAMENTO=45
 TORRENTS_STREAM_DIRETO_MIN_PALAVRAS_CHAVE=2
 TORRENTS_STREAM_DIRETO_FILTRO_ADULTO=true
+TORRENTS_STREAM_DIRETO_BUSCA_DIRETA=true
 TORRENTS_BUSCA_POR_IDADE_HABILITADA=true
 TORRENTS_BUSCA_IDADE_LIMITE_ANOS=2
 ```
@@ -3334,6 +3419,15 @@ contra o rate limit do motor de busca: menos termos e cadência humana.
 que carregue palavra-chave imprópria é descartado antes de a página ser aberta, e
 o título da página aberta também é conferido. Desligar só faz sentido para
 depurar um falso positivo — em produção, mantenha ligada.
+
+`TORRENTS_STREAM_DIRETO_BUSCA_DIRETA` liga a **busca direta nos agregadores**
+(padrão `true`) — o atalho que roda antes do motor web: em vez de perguntar ao
+SearXNG onde o episódio mora, o provedor pergunta à busca interna do próprio
+agregador (`verpobreflix.net`), cujo resultado já é a página do título. É a defesa
+contra a suspensão dos buscadores comerciais, que hoje deixa o fallback sem nenhum
+agregador na lista. As páginas que voltam passam pelo mesmo crivo das que vêm do
+motor, e o motor continua rodando em seguida como redundância. Desligar restaura o
+fluxo antigo, só pelo motor de busca.
 
 O `.env.example` sobe com a chave ligada; no código o padrão é `false`. Diferente
 da versão anterior, **não há mais API externa a configurar**: ligar a chave já
@@ -3793,11 +3887,13 @@ catálogo de embeds, não uma fonte de vídeo.
 
 **O que isso muda na prática.** Nenhum ajuste de lista resolve, porque o problema
 não está na lista: está no motor que não devolve os agregadores e no player que
-não entrega arquivo. Os caminhos reais são outros dois — uma **busca direta nos
-agregadores** (o `verpobreflix.net` tem busca própria em `/search?q=<título>` e
-slug previsível, o que dispensa o motor web) e um **navegador próprio** para os
-players cifrados. Nenhum dos dois cabe no fallback atual, que segue baseado em
-motor de busca e extração de HTML.
+não entrega arquivo. Dos dois caminhos possíveis, o primeiro **já foi
+implementado**: a **busca direta nos agregadores** (`BuscaAgregadores`) pergunta à
+busca interna do `verpobreflix.net` (`/search?q=<título>`) antes de acionar o motor
+web, e não depende de buscador comercial nenhum. O segundo — um **navegador
+próprio** para atravessar os players cifrados (Turnstile) — continua em aberto: o
+`ClienteHttp` já renderiza por JavaScript via FlareSolverr, mas o desafio Turnstile
+não é resolvido por ele.
 
 ### Legendas — roadmap
 
