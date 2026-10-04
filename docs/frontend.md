@@ -141,6 +141,17 @@ estados visíveis:
    acompanha o momento (conectando, convertendo o áudio, convertendo o vídeo).
 4. **Reproduzindo** — a playlist está pronta e o player é liberado.
 
+Quando nenhuma fonte sobra, o overlay entra em **erro** com a explicação do que
+houve. Desde a correção da resolução de nome na fonte direta, esse estado tem uma
+saída própria: o botão *Tentar novamente*, em
+[`tentarDeNovo()`](../frontend/src/components/PlayerOverlay.vue:2112), refaz a
+busca sem exigir fechar e reabrir o episódio. O caso que o motivou é a fonte única
+que caiu por um instante de rede — ali uma segunda tentativa costuma bastar, e
+reabrir o filme repetia a busca inteira para chegar ao mesmo lugar. O placar de
+motivos ganhou o rótulo `rede` (do `motivo=rede` que o media-service devolve),
+com mensagem própria porque a conclusão do usuário é outra: não é o lançamento que
+não tem fonte, é o caminho até ela que falhou naquele momento.
+
 O player é o **Plyr**, que recebe apenas uma fonte HLS válida
 (`application/x-mpegURL`). Onde o navegador não toca HLS nativamente
 (Chrome/Firefox), o `hls.js` faz a ponte; no Safari o suporte é nativo.
@@ -327,7 +338,7 @@ servidor recebia um id que não era o da sessão a encerrar.
 [`limparSessaoAtual()`](../frontend/src/components/PlayerOverlay.vue:1071) faz o
 mesmo para o caso de uma fonte descartada no meio da fila.
 
-Do lado do servidor, [`encerrarSessao`](../media-service/src/services/sessoes.js:1002)
+Do lado do servidor, [`encerrarSessao`](../media-service/src/services/sessoes.js:2620)
 marca a sessão como cancelada antes de qualquer espera, mata o FFmpeg e remove o
 torrent do cliente compartilhado — ver
 [Integrações](integracoes.md#ajustes-obrigatórios-no-media-service).
@@ -382,7 +393,7 @@ reescrito para longe (o clamp do browser, por exemplo). Sem essa guarda, uma
 reescrita logo depois da busca ficava sem quem a corrigisse.
 
 O servidor também deixou de publicar segmentos pela metade: os `-hls_flags` de
-[`iniciarConversao()`](../media-service/src/services/hls.js:610) ganharam
+[`iniciarConversao()`](../media-service/src/services/hls.js:771) ganharam
 `temp_file`, que escreve `segmento-N.ts.tmp` e só renomeia ao fechar o arquivo.
 Antes, o nome entrava na playlist antes de o arquivo terminar de ser escrito e um
 pedido logo em seguida lia um trecho incompleto — o que abortava a carga e, na

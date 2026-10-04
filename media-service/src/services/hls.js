@@ -173,6 +173,155 @@ export function opcoesEntradaHlsRemota(origem, extensao = '') {
 }
 
 /**
+ * Ajustes de conexão para uma entrada HTTP remota.
+ *
+ * O FFmpeg abre o playlist e cada segmento numa conexão própria, e sem estes
+ * ajustes um único soluço de rede no meio do filme encerra a conversão — a
+ * sessão morre com a fonte saudável. `reconnect` religa a conexão caída,
+ * `reconnect_streamed` permite religar um fluxo já aberto, `reconnect_delay_max`
+ * limita a espera entre as tentativas e `reconnect_on_http_error` cobre as
+ * respostas que o CDN devolve quando está congestionado (`429`) ou com a borda
+ * reiniciando (`5xx`).
+ *
+ * São opções do protocolo HTTP, e por isso valem para qualquer URL remota — ao
+ * contrário das do demuxer HLS, que só existem em playlist.
+ *
+ * @param {string} origem URL de entrada da conversão
+ * @returns {string[]} opções para o FFmpeg, vazias quando a origem é local
+ */
+export function opcoesRedeRemota(origem) {
+  if (!ehOrigemRemota(origem)) return []
+
+  return [
+    '-reconnect 1',
+    '-reconnect_streamed 1',
+    '-reconnect_delay_max 5',
+    '-reconnect_on_http_error 5xx,429',
+  ]
+}
+
+/**
+ * Sinais de que a falha veio do caminho até a fonte, e não da fonte.
+ *
+ * A distinção existe porque os dois casos pedem reações opostas e a mensagem do
+ * erro não os separa: o `ffprobe` reporta "exited with code 1" tanto para um
+ * servidor que recusou quanto para um nome que não resolveu. Um servidor que não
+ * respondeu agora merece nova tentativa — foi o que aconteceu com o DNS do
+ * container no primeiro episódio: o `lookup` a frio voltou `EAI_AGAIN` (o
+ * `Failed to resolve hostname ... Try again` do FFmpeg) e a mesma URL abriu
+ * normalmente um minuto depois. Já um `Invalid data found` diz que aquele
+ * endereço não é o que promete, e insistir só gasta orçamento.
+ */
+const SINAIS_DE_REDE = [
+  'EAI_AGAIN',
+  'ETIMEDOUT',
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'EPIPE',
+  'I/O error',
+  'Failed to resolve',
+  'Temporary failure in name resolution',
+  'Try again',
+  'Server returned 5',
+  'Server returned 429',
+  'timed out',
+]
+
+/**
+ * Sinais de que o problema foi resolver o **nome** da fonte.
+ *
+ * É o caso mais grave da família de rede: se nem o FFmpeg consegue traduzir o
+ * host em endereço, transcodificar não muda nada. O chamador usa esta marca
+ * para falhar rápido, em vez de entregar a sessão a um modo que já nasce morto.
+ */
+const SINAIS_DE_RESOLUCAO = [
+  'EAI_AGAIN',
+  'Failed to resolve',
+  'Temporary failure in name resolution',
+  'Name or service not known',
+  'nodename nor servname',
+]
+
+/** Diz se algum dos sinais aparece no código ou na mensagem do erro. */
+function contemAlgum(texto, sinais) {
+  const alvo = String(texto ?? '').toLowerCase()
+
+  return sinais.some((sinal) => alvo.includes(sinal.toLowerCase()))
+}
+
+/**
+ * Diz se o erro é do caminho até a fonte e vale uma nova tentativa.
+ *
+ * @param {Error} erro erro vindo do ffprobe, do FFmpeg ou do resolvedor de nomes
+ */
+export function ehFalhaTransitoria(erro) {
+  return contemAlgum(`${erro?.code ?? ''} ${erro?.message ?? ''}`, SINAIS_DE_REDE)
+}
+
+/**
+ * Diz se o erro foi de resolução de nome.
+ *
+ * @param {Error} erro erro vindo do ffprobe, do FFmpeg ou do resolvedor de nomes
+ */
+export function ehFalhaDeResolucao(erro) {
+  return contemAlgum(`${erro?.code ?? ''} ${erro?.message ?? ''}`, SINAIS_DE_RESOLUCAO)
+}
+
+/**
+ * Reduz o erro a uma linha, para o log e para a mensagem do usuário.
+ *
+ * O erro do `fluent-ffmpeg` carrega o comando inteiro e o banner do FFmpeg
+ * dentro da mensagem; num log de sessão isso enterra a causa sob a configuração
+ * de compilação. A primeira linha é a que diz o que aconteceu.
+ *
+ * @param {Error} erro
+ * @returns {string} resumo curto, com o código quando existir
+ */
+export function resumirErro(erro) {
+  const linhas = String(erro?.message ?? erro ?? '').trim().split('\n')
+  const primeira = (linhas.find((linha) => linha.trim() !== '') ?? '').trim()
+  const cortada = primeira.length > 160 ? `${primeira.slice(0, 160)}…` : primeira
+
+  return erro?.code ? `${erro.code}: ${cortada}` : cortada
+}
+
+/**
+ * Repete uma operação enquanto a falha for transitória.
+ *
+ * A espera cresce a cada volta (`esperaMs * tentativa`): um segundo de intervalo
+ * já basta para o DNS do container responder, e esperar mais no começo só
+ * adiaria o resultado quando a primeira tentativa falha por um motivo definitivo.
+ *
+ * @template T
+ * @param {() => Promise<T>} operacao
+ * @param {{tentativas?: number, esperaMs?: number}} [opcoes]
+ * @returns {Promise<T>}
+ */
+export async function comRetentativa(operacao, { tentativas = 3, esperaMs = 1000 } = {}) {
+  let ultimoErro = null
+
+  for (let tentativa = 1; tentativa <= tentativas; tentativa += 1) {
+    try {
+      return await operacao()
+    } catch (erro) {
+      ultimoErro = erro
+
+      if (tentativa === tentativas || !ehFalhaTransitoria(erro)) break
+
+      logger.warn(
+        `[rede] tentativa ${tentativa} de ${tentativas} falhou (${resumirErro(erro)}); repetindo em ${esperaMs * tentativa}ms`
+      )
+
+      await new Promise((resolve) => setTimeout(resolve, esperaMs * tentativa))
+    }
+  }
+
+  throw ultimoErro
+}
+
+/**
  * Extrai os metadados do arquivo para decidir o modo de conversão.
  *
  * Além dos codecs, devolvemos a duração total. O Plyr não consegue deduzi-la de
@@ -208,13 +357,25 @@ export async function analisarArquivo(arquivo, extensao = '') {
     throw erro
   }
 
-  const metadados = await new Promise((resolve, reject) => {
-    ffmpeg(arquivo).ffprobe(null, opcoesEntradaHlsRemota(arquivo, extensao), (erro, dados) => {
-      if (erro) return reject(erro)
+  /*
+   * A sondagem de uma origem remota pode falhar por um soluço do caminho — o
+   * DNS recém-resolvido, a conexão derrubada na primeira tentativa — e passar na
+   * seguinte. Repetir aqui é o que evita que esse instante vire uma decisão
+   * errada: sem isso o erro subia, a sessão caía no modo conservador e a
+   * conversão morria na abertura, sempre na primeira tentativa de cada episódio.
+   * Num arquivo local a repetição seria inútil (o erro é "não existe" ou "não é
+   * vídeo") e só custaria tempo.
+   */
+  const sondar = () =>
+    new Promise((resolve, reject) => {
+      ffmpeg(arquivo).ffprobe(null, opcoesEntradaHlsRemota(arquivo, extensao), (erro, dados) => {
+        if (erro) return reject(erro)
 
-      resolve(dados)
+        resolve(dados)
+      })
     })
-  })
+
+  const metadados = remoto ? await comRetentativa(sondar, { tentativas: 3, esperaMs: 1000 }) : await sondar()
 
   const streams = metadados?.streams ?? []
   const video = streams.find((s) => s.codec_type === 'video')
@@ -634,7 +795,7 @@ export function iniciarConversao({
   const carimbo = Date.now()
   const padraoSegmento = path.join(diretorio, `segmento-${carimbo}-%d.ts`)
 
-  const controle = { parado: false, comando: null }
+  const controle = { parado: false, comando: null, erro: null }
 
   const comando = ffmpeg(fluxo ?? caminho)
 
@@ -664,8 +825,12 @@ export function iniciarConversao({
    * agregadores de embed escondem o MPEG-TS. A leitura continua em fluxo: o
    * FFmpeg busca um segmento de cada vez, publica o trecho correspondente e só
    * então segue para o próximo.
+   *
+   * Junto vão os ajustes de reconexão do HTTP: uma entrada remota é lida em
+   * conexões curtas (o playlist e cada segmento), e sem eles um soluço de rede
+   * no meio do filme encerra a conversão inteira.
    */
-  const opcoesEntrada = opcoesEntradaHlsRemota(caminho, extensao)
+  const opcoesEntrada = [...opcoesRedeRemota(caminho), ...opcoesEntradaHlsRemota(caminho, extensao)]
 
   if (opcoesEntrada.length) {
     comando.inputOptions(opcoesEntrada)
@@ -785,6 +950,14 @@ export function iniciarConversao({
     .on('error', (erro) => {
       if (controle.parado) return
 
+      /*
+       * A causa é guardada além de registrada. Quem acompanha a conversão
+       * precisa saber que o processo morreu para não esperar o prazo inteiro por
+       * algo que já não existe, e para separar um soluço de rede — que vale
+       * reabrir a conversão — de um arquivo que o FFmpeg recusou de vez.
+       */
+      controle.erro = erro
+
       // Um erro aqui é real (arquivo corrompido, codec sem suporte). Registramos
       // e a sessão falha, deixando o cliente tentar a próxima fonte.
       logger.error('[hls] conversão interrompida:', erro.message)
@@ -836,6 +1009,12 @@ export function iniciarConversao({
   }
 
   return {
+    /*
+     * O erro que derrubou o processo, quando houve. O `parar` não entra aqui:
+     * um encerramento pedido pelo chamador não é falha, e a sessão que pediu
+     * para morrer não quer a conversão reaberta.
+     */
+    erro: () => controle.erro,
     parar: () => {
       controle.parado = true
 
@@ -1039,8 +1218,15 @@ function aplicarModo(comando, modo) {
  * @param {number} minimoSegmentos quantidade mínima de segmentos prontos
  * @param {number} timeoutMs tempo máximo de espera sem sinal de vida
  * @param {() => boolean} [aoProgredir] devolve `true` se a conversão avançou
+ * @param {() => boolean} [estaVivo] devolve `false` se a conversão já morreu
  */
-export function aguardarBufferInicial(diretorio, minimoSegmentos = 8, timeoutMs = 180000, aoProgredir = null) {
+export function aguardarBufferInicial(
+  diretorio,
+  minimoSegmentos = 8,
+  timeoutMs = 180000,
+  aoProgredir = null,
+  estaVivo = null
+) {
   const playlist = path.join(diretorio, 'playlist.m3u8')
   let inicio = Date.now()
 
@@ -1053,6 +1239,17 @@ export function aguardarBufferInicial(diretorio, minimoSegmentos = 8, timeoutMs 
         if (segmentos >= minimoSegmentos) {
           return resolve(true)
         }
+      }
+
+      /*
+       * O processo morreu: esperar até o fim do prazo só serviria para esconder a
+       * causa por três minutos. Era o que acontecia na fonte direta quando o
+       * FFmpeg encerrava na abertura por um erro de DNS — a tela ficava em
+       * "convertendo o vídeo" com o processo já encerrado. Quem conhece a razão é
+       * o chamador, que guarda o erro do comando.
+       */
+      if (estaVivo && !estaVivo()) {
+        return reject(new Error('A conversão terminou antes de publicar o buffer inicial.'))
       }
 
       /*

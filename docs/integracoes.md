@@ -313,9 +313,9 @@ A correção tem duas camadas, porque uma só não fecha o buraco:
    `original` e saem no corte de `TORRENTS_APENAS_PT_BR`.
 2. **Porteiro de idioma em tempo real.** Mesmo com a ordenação corrigida, um
    release ambíguo pode chegar ao player. A sondagem do arquivo
-   ([`temFaixaPortuguesa()`](../media-service/src/services/hls.js:402)) vira o
+   ([`temFaixaPortuguesa()`](../media-service/src/services/hls.js:563)) vira o
    fato `tem_audio_pt` no status da sessão
-   ([`obterSessao()`](../media-service/src/services/sessoes.js:1343)). O frontend
+   ([`obterSessao()`](../media-service/src/services/sessoes.js:2255)). O frontend
    ([`aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:1449))
    compara a promessa da fonte (`idioma` = `pt-BR`/`dual`) com esse fato: se a
    fonte prometia português e o arquivo só tem áudio original, a sessão é
@@ -1256,12 +1256,12 @@ lista de anunciadores vier vazia, o problema é de montagem do magnet, não de
 rede; se vier cheia e os peers forem zero, é a malha que não fecha.
 
 O prazo dos metadados caiu de 45 s para 20 s
-([`TIMEOUT_METADADOS_MS`](../media-service/src/services/sessoes.js:67)): os 45 s
+([`TIMEOUT_METADADOS_MS`](../media-service/src/services/sessoes.js:100)): os 45 s
 anteriores consumiam metade da paciência do overlay (90 s) sem gerar um byte. O
 ramo de reuso — `cliente.get` de um magnet já adicionado — **não tinha prazo
 nenhum**, então bastava a primeira tentativa falhar para a segunda pendurar o
 overlay para sempre; agora os dois caminhos passam por
-[`esperarMetadados()`](../media-service/src/services/sessoes.js:1148).
+[`esperarMetadados()`](../media-service/src/services/sessoes.js:1762).
 
 O `POST /verificar` continua disponível para testar a fonte antes de abrir a
 sessão, mas deixou de ser o caminho principal: quem mede os peers de verdade
@@ -1275,7 +1275,7 @@ trecho do vídeo` aparecia justamente aí — não porque a fonte morreu, mas po
 o prazo era um relógio fixo que corria contra a velocidade da malha, e não
 contra a saúde dela.
 
-A espera por peças em [`aguardarPecas()`](../media-service/src/services/sessoes.js:1166)
+A espera por peças em [`aguardarPecas()`](../media-service/src/services/sessoes.js:1532)
 deixou de ser um `setTimeout` de prazo único. Agora ela acompanha o
 `torrent.downloaded` a cada verificação:
 
@@ -1290,8 +1290,8 @@ deixou de ser um `setTimeout` de prazo único. Agora ela acompanha o
   fonte patológica que pinga um byte a cada minuto prenda a sessão para sempre.
   O teto é a rede de segurança; a estagnação é o critério normal.
 
-O mesmo critério vale para [`aguardarDownloadCompleto()`](../media-service/src/services/sessoes.js:1264),
-que antes também tinha prazo fixo. E [`aguardarInicio()`](../media-service/src/services/sessoes.js:1233)
+O mesmo critério vale para [`aguardarDownloadCompleto()`](../media-service/src/services/sessoes.js:1630),
+que antes também tinha prazo fixo. E [`aguardarInicio()`](../media-service/src/services/sessoes.js:1613)
 perdeu os 180 s cravados: agora herda a paciência por progresso, porque o começo
 do arquivo é exatamente onde o primeiro seed lento demora mais.
 
@@ -1307,7 +1307,7 @@ peças disponíveis na malha. Pedir uma janela estreita demais concentra a
 requisição em poucos pedaços que talvez só um peer tenha — e se esse peer estiver
 lento, a leitura trava nele.
 
-[`tamanhoDaJanela()`](../media-service/src/services/sessoes.js:374) agora observa
+[`tamanhoDaJanela()`](../media-service/src/services/sessoes.js:731) agora observa
 `torrent.numPeers`: quando a malha tem `MEDIA_PEERS_ESCASSOS` (padrão 3) ou menos
 peers, a janela é multiplicada por `MEDIA_FATOR_JANELA_ESCASSOS` (padrão 2),
 respeitando o teto de `ANTECEDENCIA_MAXIMA_BYTES`. Com mais peças elegíveis, o
@@ -1384,11 +1384,11 @@ passou a procurar o pacote quando os termos de episódio não acham fonte dublad
   subiu para `10`, invalidando as respostas antigas.
 - O pack é **um torrent com todos os episódios**. O media-service passou a aceitar
   `temporada`/`episodio` em
-  [`criarSessao()`](../media-service/src/services/sessoes.js:178) e escolhe o
+  [`criarSessao()`](../media-service/src/services/sessoes.js:273) e escolhe o
   arquivo do episódio dentro do pacote em
-  [`escolherArquivoDeVideo()`](../media-service/src/services/sessoes.js:1242),
+  [`escolherArquivoDeVideo()`](../media-service/src/services/sessoes.js:1842),
   casando `S01E02`/`T01E02`/`1x02`/`Temporada 1 ... Episódio 2` em
-  [`caminhoCorrespondeAoEpisodio()`](../media-service/src/services/sessoes.js:1283).
+  [`caminhoCorrespondeAoEpisodio()`](../media-service/src/services/sessoes.js:1958).
   Sem correspondência, mantém o comportamento antigo (maior arquivo de vídeo).
   Chamadas que mandam só `magnet` seguem válidas — o par é opcional.
 - **Escolher o arquivo não basta: é preciso isolá-lo.** O WebTorrent seleciona
@@ -1396,15 +1396,15 @@ passou a procurar o pacote quando os termos de episódio não acham fonte dublad
   espalha o download pelos episódios inteiros e o episódio pedido fica sem os
   pedaços iniciais — o FFmpeg não lê o cabeçalho e a sessão trava em
   "aguardando" com ~11% baixado. A correção está em
-  [`isolarArquivoDoEpisodio()`](../media-service/src/services/sessoes.js:1535):
+  [`isolarArquivoDoEpisodio()`](../media-service/src/services/sessoes.js:1892):
   ela percorre `torrent.files`, chama `deselect()` (com queda para `select(0)`)
   em **todos** os arquivos menos o alvo e devolve prioridade 1 só ao episódio
   escolhido. A janela deslizante de leitura
-  ([`iniciarJanela()`](../media-service/src/services/sessoes.js:456)) continua
+  ([`iniciarJanela()`](../media-service/src/services/sessoes.js:813)) continua
   subindo as prioridades do trecho em reprodução por cima dessa base.
 - O isolamento roda **duas vezes**: no preparo da sessão, antes de a janela
   começar a mexer nas prioridades, e de novo no
-  [`reposicionarEmSegundoPlano()`](../media-service/src/services/sessoes.js:2122)
+  [`reposicionarEmSegundoPlano()`](../media-service/src/services/sessoes.js:2479)
   antes de reabrir a janela — um seek não pode devolver prioridade aos outros
   episódios. Sessões de filme (`episodio === null`) não passam pelo isolamento.
 - O frontend propaga o par pelo
@@ -1530,7 +1530,7 @@ porque custa uma sessão no media-service:
 2. [`InspecaoPack::apurar()`](../backend/app/Services/Torrents/InspecaoPack.php:47)
    chama `POST /api/media/metadados` com o magnet e o infohash.
 3. O media-service
-   ([`inspecionarTorrent()`](../media-service/src/services/sessoes.js:1969)) abre o
+   ([`inspecionarTorrent()`](../media-service/src/services/sessoes.js:2729)) abre o
    torrent, lê a lista de arquivos e aplica
    [`contemIndicioPtBr()`](../media-service/src/utils/idiomas.js:184) sobre cada
    caminho. Se **qualquer** arquivo (ou a pasta do pack) provar PT-BR, a resposta
@@ -1890,10 +1890,10 @@ a paciência sem mexer no código.
 **No media-service:**
 
 - `MEDIA_TIMEOUT_DADOS_MS` (padrão `30000`) — espera pelo primeiro byte em
-  [`aguardarDados`](../media-service/src/services/sessoes.js:1376).
+  [`aguardarDados`](../media-service/src/services/sessoes.js:2069).
 - `MEDIA_TIMEOUT_METADADOS_MS` (padrão `20000`) — espera pelos metadados do
-  magnet em [`adicionarTorrent`](../media-service/src/services/sessoes.js:1158) e
-  [`esperarMetadados`](../media-service/src/services/sessoes.js:1189).
+  magnet em [`adicionarTorrent`](../media-service/src/services/sessoes.js:1731) e
+  [`esperarMetadados`](../media-service/src/services/sessoes.js:1762).
 
 **No frontend:**
 
@@ -1964,8 +1964,8 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   dados. Com `-avoid_negative_ts make_zero` a timeline é reancorada em zero, e o
   resultado era exatamente o sintoma relatado — relógio em `00:00` com imagem de
   um pedaço do meio. Agora
-  [`prepararSessao`](../media-service/src/services/sessoes.js:162) chama
-  [`analisarComEspera`](../media-service/src/services/sessoes.js:846)
+  [`prepararSessao`](../media-service/src/services/sessoes.js:948) chama
+  [`analisarComEspera`](../media-service/src/services/sessoes.js:2134)
   **primeiro** e só então decide o caminho.
 - **Reprodução progressiva**: o caminho da conversão é escolhido pela posição do
   índice do contêiner. MKV/WebM e MP4 *faststart* trazem o índice no começo e
@@ -1976,17 +1976,17 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   Reordenar o fluxo também não serve, porque as tabelas de amostras do `moov`
   (`stco`/`co64`) guardam offsets absolutos do arquivo original — mover o índice
   para a frente invalida esses offsets e o segmento sai com 0 byte. A detecção
-  fica em [`localizarMoov`](../media-service/src/services/hls.js:1092) (sobre
-  [`mapearCaixas`](../media-service/src/services/hls.js:1115), que lê apenas os
+  fica em [`localizarMoov`](../media-service/src/services/hls.js:1289) (sobre
+  [`mapearCaixas`](../media-service/src/services/hls.js:1312), que lê apenas os
   cabeçalhos das caixas) e a decisão em
-  [`indiceEstaNoFim`](../media-service/src/services/sessoes.js:452).
+  [`indiceEstaNoFim`](../media-service/src/services/sessoes.js:1397).
 - **Cauda antecipada**: quando o índice ainda não está visível, é quase certo que
   esteja no fim do arquivo, então
-  [`anteciparCauda`](../media-service/src/services/sessoes.js:357) pede desde já
+  [`anteciparCauda`](../media-service/src/services/sessoes.js:1254) pede desde já
   a faixa onde o `moov` deve estar. Assim o cabeçalho fica legível sem esperar o
   download chegar ao fim naturalmente.
 - **`moov` no fim sem esperar o download inteiro**: em vez de aguardar o arquivo
-  completo, [`priorizarIndice`](../media-service/src/services/sessoes.js:497)
+  completo, [`priorizarIndice`](../media-service/src/services/sessoes.js:1442)
   localiza o `moov` e pede ao WebTorrent **apenas aquele intervalo**
   (`arquivo.select(10, inicio, fim)`). Assim que o trecho chega, a conversão é
   liberada do disco — o filme abre sem esperar os vários GB do `mdat`. Só se o
@@ -1995,18 +1995,18 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   pode ter buracos, e ler um trecho furado do disco devolve **zeros** em vez de
   bloquear — ao contrário do stream do WebTorrent, que espera. Por isso a espera
   olha o *bitfield* do torrent:
-  [`pecaPresente`](../media-service/src/services/sessoes.js:530) e
-  [`faixaPresente`](../media-service/src/services/sessoes.js:549) provam que cada
+  [`pecaPresente`](../media-service/src/services/sessoes.js:1475) e
+  [`faixaPresente`](../media-service/src/services/sessoes.js:1494) provam que cada
   peça da faixa chegou, e
-  [`aguardarPecas`](../media-service/src/services/sessoes.js:580) é quem espera.
+  [`aguardarPecas`](../media-service/src/services/sessoes.js:1532) é quem espera.
   Antes de converter do disco,
-  [`aguardarInicio`](../media-service/src/services/sessoes.js:625) exige os
+  [`aguardarInicio`](../media-service/src/services/sessoes.js:1613) exige os
   primeiros megabytes contíguos. O antigo `aguardarTrecho` (baseado em
   `progress`) foi removido — era ele que deixava passar o arquivo furado e
   produzia o começo no meio do filme.
 - **Timeout de dados da fonte**: o evento `ready` do WebTorrent só garante os
   metadados, não que existam peers enviando bytes. Sem essa checagem, uma fonte
-  morta prendia a sessão por 120 s. [`aguardarDados`](../media-service/src/services/sessoes.js:790)
+  morta prendia a sessão por 120 s. [`aguardarDados`](../media-service/src/services/sessoes.js:2069)
   falha em 30 s (`TIMEOUT_DADOS_MS`) se nenhum byte chegar, liberando o frontend
   para tentar a próxima fonte.
 - **Telemetria de download**: o status da sessão expõe `peers`, `velocidade` e
@@ -2023,7 +2023,7 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
 - **Playlist `EVENT` → `VOD` ao concluir**: enquanto a conversão corre a playlist
   é `#EXT-X-PLAYLIST-TYPE:EVENT`, que o `hls.js` trata como transmissão ao vivo —
   a duração total fica `Infinity` e a barra de progresso não anda. Ao terminar,
-  [`finalizarPlaylist`](../media-service/src/services/hls.js:864) troca o tipo
+  [`finalizarPlaylist`](../media-service/src/services/hls.js:1043) troca o tipo
   para `VOD` e anexa `#EXT-X-ENDLIST`; a partir daí o Plyr lê a duração real
   **sem nenhuma manipulação do player**. A duração também é exposta no status da
   sessão para o overlay exibir o tempo restante.
@@ -2049,13 +2049,13 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   sessão morria com `write EPIPE` (o fluxo do torrent tentava escrever num pipe
   já fechado). Além disso, no `remux` e no `audio` o vídeo é copiado (`-c copy`):
   não há encoder para forçar keyframes. Por isso ela vive em
-  [`aplicarModo`](../media-service/src/services/hls.js:963), apenas no ramo
+  [`aplicarModo`](../media-service/src/services/hls.js:1142), apenas no ramo
   `video`, onde `libx264` reencoda e `expr:gte(t,n_forced*4)` produz segmentos
   uniformes de 4 s.
 - **Modo decidido também pelos keyframes**: como `-c copy` não permite forçar
   keyframes, um encode com keyframes esparsos continuaria gerando segmentos
-  irregulares mesmo em `remux`. Por isso [`analisarArquivo`](../media-service/src/services/hls.js:193)
-  mede o intervalo médio entre keyframes com [`medirIntervaloKeyframes`](../media-service/src/services/hls.js:419)
+  irregulares mesmo em `remux`. Por isso [`analisarArquivo`](../media-service/src/services/hls.js:342)
+  mede o intervalo médio entre keyframes com [`medirIntervaloKeyframes`](../media-service/src/services/hls.js:580)
   (amostra dos primeiros 12, via `ffprobe -show_entries packet=pts_time,flags`).
   A varredura é limitada por `-read_intervals %+300`: sem essa janela o ffprobe
   percorre o arquivo inteiro até juntar a amostra e, no caminho de fluxo — com o
@@ -2064,7 +2064,7 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   esparsos, e era daí que saíam os segmentos irregulares de ~10,4 s. A janela
   também permite resolver assim que a amostra fecha, sem esperar o processo
   encerrar sozinho. Se o intervalo passa de `INTERVALO_KEYFRAME_MAXIMO` (6 s),
-  [`decidirModo`](../media-service/src/services/hls.js:566) promove o modo para
+  [`decidirModo`](../media-service/src/services/hls.js:727) promove o modo para
   `video` — aceita o custo de CPU em troca de uma timeline regular. A medição só
   roda quando o vídeo é compatível, único caso em que a decisão depende dela, e
   só quando a origem é um arquivo em disco: na fonte direta (URL) a varredura
@@ -2089,11 +2089,11 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   vídeo" — exatamente o sintoma relatado nas fontes dubladas. A conversão agora
   mapeia só o vídeo e a faixa escolhida (`-map 0:v:0 -map 0:a:N?`; o `?` deixa o
   mapeamento opcional, para não abortar quando a faixa some). A escolha fica em
-  [`escolherFaixaAudio()`](../media-service/src/services/hls.js:347), que prefere
+  [`escolherFaixaAudio()`](../media-service/src/services/hls.js:508), que prefere
   o áudio em português (`por`/`pt`/`pt-*` via
   [`normalizarIdioma`](../media-service/src/utils/idiomas.js:87)) e, na falta
   dele, cai na faixa marcada como padrão ou na primeira. O índice escolhido sai
-  de [`analisarArquivo()`](../media-service/src/services/hls.js:193) em
+  de [`analisarArquivo()`](../media-service/src/services/hls.js:342) em
   `indiceAudio`, é guardado em `sessao.indiceAudio` e reaproveitado no
   reposicionamento — sem isso um *seek* remontaria a conversão com o mapeamento
   errado. O modo (`remux`/`audio`) também passou a olhar o codec **da faixa
@@ -2104,15 +2104,15 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   Dublado" do *Lanterns* tocou em inglês. O rótulo do provedor é uma **promessa
   do indexador**, não um fato do arquivo — [`idiomaDoRotulo`](../backend/app/Services/Torrents/ProvedorTorrentio.php:279)
   só o usa para ordenar e filtrar as fontes. Quem decide o áudio é a faixa lida
-  pelo ffprobe, e aí estava o furo: [`escolherFaixaAudio`](../media-service/src/services/hls.js:347)
+  pelo ffprobe, e aí estava o furo: [`escolherFaixaAudio`](../media-service/src/services/hls.js:508)
   procurava português **apenas** na tag `language` (`faixa.codigo`). Muitos
   lançamentos *dual áudio* deixam a dublagem sem código de idioma e a identificam
   só no `title` ("Português (BR)", "DUBLADO", "PT-BR") — e
-  [`descreverFaixaAudio`](../media-service/src/services/hls.js:312) já guardava
+  [`descreverFaixaAudio`](../media-service/src/services/hls.js:473) já guardava
   esse título em `faixa.rotulo`, mas ninguém o consultava. A faixa PT-BR era
   descartada e o código caía no fallback (`padrao` ou a primeira), que num dual
   costuma ser o original. A escolha agora passa por
-  [`descrevePortugues`](../media-service/src/services/hls.js:373), que aceita
+  [`descrevePortugues`](../media-service/src/services/hls.js:534), que aceita
   tanto o código (`por`/`pt`/`pt-*`) quanto o título normalizado (contendo
   "portug", "dublado", "dublagem", "pt-br" ou "ptbr"). O log da sessão ganhou uma
   linha com **todas** as faixas (`#0[eng|English] #1[por|Português (BR)]`) para
@@ -2122,17 +2122,17 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   *Lanterns* — que baixava, convertia e morria com "não foi possível carregar o
   vídeo" — era o **H.264 10-bit**. O `codec_name` de um encode 10-bit
   (`yuv420p10le`) é `h264`, idêntico ao de um 8-bit, então
-  [`decidirModo`](../media-service/src/services/hls.js:566) o classificava como
+  [`decidirModo`](../media-service/src/services/hls.js:727) o classificava como
   compatível e o vídeo era **copiado** (`remux`/`audio`). O `SourceBuffer` do
   navegador aceita o `mimeCodec` (`avc1...`) mas **rejeita o `appendBuffer`** de
   um stream 10-bit: o hls.js emite `bufferAppendingError` seguido de
   `mediaSourceRequiresReset` em ciclo, e a reprodução nunca arranca. As séries
   antigas são 8-bit e por isso funcionavam. A correção lê o `pix_fmt` no
-  [`analisarArquivo`](../media-service/src/services/hls.js:193) e o repassa a
+  [`analisarArquivo`](../media-service/src/services/hls.js:342) e o repassa a
   `decidirModo`: só os formatos de `PIX_FMT_COMPATIVEIS` (`yuv420p`/`yuvj420p`)
   são copiáveis; **qualquer outro — inclusive a ausência do dado — força o modo
   `video`**. No modo `video`,
-  [`aplicarModo`](../media-service/src/services/hls.js:963) agora declara
+  [`aplicarModo`](../media-service/src/services/hls.js:1142) agora declara
   `-pix_fmt yuv420p` — sem isso a transcodificação manteria a profundidade de
   origem e o `SourceBuffer` voltaria a recusar o trecho. O `pix_fmt` aparece no
   log da sessão (`pixFmt=yuv420p10le`) para diagnóstico.
@@ -2141,11 +2141,11 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   `codec_name` sai do cabeçalho do contêiner e chega **antes** dos dados,
   enquanto o `pix_fmt` depende do SPS do H.264, que vive nos primeiros quadros do
   stream. Um cabeçalho lido pela metade devolvia `codec_name='h264'` com
-  `pix_fmt` vazio: [`analisarComEspera`](../media-service/src/services/sessoes.js:1223)
+  `pix_fmt` vazio: [`analisarComEspera`](../media-service/src/services/sessoes.js:2134)
   aceitava a análise só com os codecs e `decidirModo` tratava a ausência como
   "não é 10-bit", copiando o vídeo. Duas defesas fecham isso: (1) a análise só é
   aceita quando o `pix_fmt` também veio, usando
-  [`profundidadeRelevante`](../media-service/src/services/hls.js:538) para exigir
+  [`profundidadeRelevante`](../media-service/src/services/hls.js:699) para exigir
   o dado apenas quando o codec seria copiado — com o torrent completo a análise é
   aceita mesmo sem ele, para não travar para sempre; (2) `decidirModo` inverteu a
   regra: `pixelOk` exige **prova** de 8-bit, então a ausência do dado força
@@ -2173,13 +2173,13 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   baixar o arquivo inteiro e espalhar os pedidos por todo o filme — como o
   WebTorrent escolhe pela raridade das peças, a região logo à frente de quem está
   lendo ficava cheia de buracos e a conversão morria de fome depois do começo.
-  Agora [`iniciarJanela`](../media-service/src/services/sessoes.js:297) mantém uma
+  Agora [`iniciarJanela`](../media-service/src/services/sessoes.js:813) mantém uma
   faixa estreita acompanhando a leitura: uma banda com prioridade 6 e um trecho
   imediato com prioridade 8, recalculados a cada 700 ms por
-  [`deslizar`](../media-service/src/services/sessoes.js:317). A prioridade fica
+  [`deslizar`](../media-service/src/services/sessoes.js:833). A prioridade fica
   **abaixo** dos 10 usados para abrir o `moov` e a cauda, então o cabeçalho
   continua ganhando a corrida. O tamanho da faixa sai do
-  [`bytesPorSegundo()`](../media-service/src/services/sessoes.js:203) (vazão
+  [`bytesPorSegundo()`](../media-service/src/services/sessoes.js:707) (vazão
   medida do torrent, ou tamanho do arquivo dividido pela duração como
   estimativa); sem vazão estimável, a janela é desligada e o código volta ao
   `select(1)`.
@@ -2188,20 +2188,20 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   [`Transform`](https://nodejs.org/api/stream.html#class-streamtransform) conta os
   bytes que passam a caminho do FFmpeg. No caminho de disco, a posição é o que a
   playlist **já publicou** — a soma dos `#EXTINF` por
-  [`somarDuracaoDaPlaylist()`](../media-service/src/services/hls.js:919), lida por
-  [`tempoPublicado()`](../media-service/src/services/sessoes.js:241). Usar o
+  [`somarDuracaoDaPlaylist()`](../media-service/src/services/hls.js:1098), lida por
+  [`tempoPublicado()`](../media-service/src/services/sessoes.js:757). Usar o
   `progress` do FFmpeg direto não serve: ele é reportado com atraso e deixa a
   leitura disparar à frente dos dados.
 - **Freio da leitura no disco**: ler um arquivo esparso não dá erro, dá zero — o
   FFmpeg atravessa o trecho inválido e o filme "acaba" no meio. Para evitar isso,
-  [`medirFronteira()`](../media-service/src/services/sessoes.js:259) descobre até
+  [`medirFronteira()`](../media-service/src/services/sessoes.js:775) descobre até
   onde o arquivo está realmente contíguo e
-  [`conferirLeitura()`](../media-service/src/services/sessoes.js:349) compara essa
+  [`conferirLeitura()`](../media-service/src/services/sessoes.js:865) compara essa
   fronteira com a posição de leitura. Quando a folga cai abaixo da margem, o
   FFmpeg é **congelado** com `SIGSTOP` e descongelado com `SIGCONT` ao recuperar,
   via [`pausar`/`retomar`](../media-service/src/services/hls.js:849). Congelar
   preserva o estado do processo; reiniciá-lo recomeçaria a conversão do zero.
-- **VOD só com o filme inteiro**: [`finalizarPlaylist()`](../media-service/src/services/hls.js:864)
+- **VOD só com o filme inteiro**: [`finalizarPlaylist()`](../media-service/src/services/hls.js:1043)
   troca `EVENT`→`VOD` e acrescenta `#EXT-X-ENDLIST` **apenas** se a duração
   publicada chegar perto da duração real (tolerância de `max(60s, 10%)`). Uma
   conversão interrompida por falta de dados continua `EVENT`, então o player
@@ -2232,7 +2232,7 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   áudio saía como `aac, sample_rate=0, channels=0, channel_layout=unknown`, com
   **todos** os quadros recusados pelo decodificador. Como o vídeo vinha de
   `-c:v copy`, a entrada estava sã: o defeito nascia no reencode do áudio, o
-  caminho que [`decidirModo`](../media-service/src/services/hls.js:566) escolhe
+  caminho que [`decidirModo`](../media-service/src/services/hls.js:727) escolhe
   (`audio`) sempre que a faixa não é copiável para o MSE — o caso do E-AC-3 5.1
   dos lançamentos dublados. O encoder AAC do FFmpeg não tem configuração
   equivalente para `5.1(side)`: sem equivalente ele grava
@@ -2243,7 +2243,7 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   stream parsing failed`, encerra o MediaSource já no primeiro append inválido e
   o resto vira cascata: `bufferAppendingError` → `mediaSourceRequiresReset`,
   esgotando as `recoverMediaError()` até o erro fatal. A correção está em
-  [`fixarAacCanonico`](../media-service/src/services/hls.js:953), usada pelos
+  [`fixarAacCanonico`](../media-service/src/services/hls.js:1132), usada pelos
   modos `audio` e `video`: `-ac 2` e `-ar 48000` produzem um AAC-LC estéreo com
   `channel_configuration = 2` e taxa explícita no ADTS, o formato que qualquer
   decodificador reconhece. O `remux` continua copiando o áudio da fonte sem
@@ -2251,21 +2251,21 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   sessão a linha `[hls] ffmpeg: Stream #0:1: Audio: aac (LC), 48000 Hz, stereo,
   fltp, 192 kb/s` confirma o cabeçalho canônico.
 - **Diagnóstico do FFmpeg no log**: o `stderr` do processo é filtrado por
-  [`iniciarConversao()`](../media-service/src/services/hls.js:610) — só as linhas
+  [`iniciarConversao()`](../media-service/src/services/hls.js:771) — só as linhas
   de `Input`/`Output`/`Duration`/`start`/`Stream` e os avisos de
   `error`/`invalid`/`corrupt`/`missing` viram log. É isso que permite comparar o
   `start` do input com o `inicioFonte` e ver de onde a conversão realmente
-  começou. [`registrarDiagnostico`](../media-service/src/services/sessoes.js:725)
+  começou. [`registrarDiagnostico`](../media-service/src/services/sessoes.js:1346)
   ainda imprime o começo da playlist (`#EXT-X-MEDIA-SEQUENCE`, primeiro
   `#EXTINF` e a contagem de segmentos) logo após o buffer inicial.
 - **Encerramento completo da sessão**: fechar o player ou desistir de uma fonte
-  chama [`encerrarSessao`](../media-service/src/services/sessoes.js:1331), que
+  chama [`encerrarSessao`](../media-service/src/services/sessoes.js:2620), que
   marca `sessao.cancelada` **antes** de qualquer espera — todas as rotinas de
   timeout em [`sessoes.js`](../media-service/src/services/sessoes.js:1) checam
   esse sinal e abortam com `SessaoCancelada`. Em seguida
-  [`pararConversao`](../media-service/src/services/sessoes.js:1271) encerra a
+  [`pararConversao`](../media-service/src/services/sessoes.js:2351) encerra a
   janela de leitura, mata o FFmpeg com `SIGKILL` e destrói o contador de bytes,
-  [`removerTorrent`](../media-service/src/services/sessoes.js:1313) tira o
+  [`removerTorrent`](../media-service/src/services/sessoes.js:2602) tira o
   torrent do cliente compartilhado (com `destroyStore: true`, apagando os bytes
   baixados) e o diretório da sessão é removido. Sem isso, o torrent do filme
   anterior continuava baixando e o próximo "Assistir" podia reencontrá-lo pela
@@ -2347,7 +2347,7 @@ episódio continuava errado — e o log provou por quê:
 O pack dublado **"American Horror Story 1ª Temporada [2011 DUAL ÁUDIO] 720p PT
 BR"** nomeia os arquivos como `12 - Afterbirth.mp4` — número do episódio, um
 separador e o título. Não há `S01E04` em lugar nenhum. O
-[`caminhoCorrespondeAoEpisodio()`](../media-service/src/services/sessoes.js:1294)
+[`caminhoCorrespondeAoEpisodio()`](../media-service/src/services/sessoes.js:1958)
 não reconhecia esse formato, caía no fallback "maior vídeo do pacote" e devolvia
 **sempre o mesmo arquivo** — o maior, que por acaso era o `12 - Afterbirth.mp4`.
 Daí a impressão de que "sempre executa o ep 1": na verdade era sempre o mesmo
@@ -2422,7 +2422,7 @@ pack antes de a faixa ser lida.
 
 O erro dominante nos logs era `ffprobe exited with code 1`, reportado como "Não
 foi possível ler o cabeçalho do vídeo". A causa é que
-[`analisarComEspera()`](../media-service/src/services/sessoes.js:1470) desiste
+[`analisarComEspera()`](../media-service/src/services/sessoes.js:2134) desiste
 quando `arquivo.progress >= 1` e lança a mesma mensagem para dois desfechos
 distintos: o arquivo que **nunca terminou de baixar** (fonte lenta) e o arquivo
 **completo que o ffprobe recusou** (corrompido, falso vídeo ou o episódio errado
@@ -2446,7 +2446,7 @@ já é relativo a essa pasta. Juntar apenas `torrent.path` com `arquivo.path`
 produzia um caminho sem o nível intermediário, e o ffprobe procurava o arquivo
 um diretório acima de onde ele estava.
 
-O helper [`caminhoDoArquivo()`](../media-service/src/services/sessoes.js:1207)
+O helper [`caminhoDoArquivo()`](../media-service/src/services/sessoes.js:1718)
 centraliza essa montagem e cobre também o caso em que o `arquivo.path` já vem
 prefixado com o nome do torrent (versões antigas do WebTorrent): nesse cenário
 o segmento não é duplicado.
@@ -2458,14 +2458,14 @@ porcentos do download o WebTorrent ainda não criou o arquivo (ou o criou com
 tamanho zero), e o ffprobe devolvia `No such file or directory` — indistinguível,
 na mensagem, de um arquivo corrompido. Três guardas resolvem o caso:
 
-1. [`prepararSessao()`](../media-service/src/services/sessoes.js:583) agora
+1. [`prepararSessao()`](../media-service/src/services/sessoes.js:948) agora
    aguarda o começo do filme estar contíguo em disco (`aguardarInicio()`) antes
    de sondar o cabeçalho. Isso também evita que o ffprobe leia um arquivo
    esparso e interprete os zeros do trecho não baixado como dados inválidos.
-2. [`analisarComEspera()`](../media-service/src/services/sessoes.js:1470) confere
+2. [`analisarComEspera()`](../media-service/src/services/sessoes.js:2134) confere
    o tamanho físico do arquivo a cada volta e só chama o ffprobe quando ele
    passa de `TAMANHO_MINIMO_SONDAGEM` (1 MB).
-3. [`analisarArquivo()`](../media-service/src/services/hls.js:193) valida a
+3. [`analisarArquivo()`](../media-service/src/services/hls.js:342) valida a
    existência do arquivo e lança um erro rotulado com `code = 'ENOENT'`, para o
    laço distinguir "ainda não existe" de "existe mas o ffprobe recusou". A
    guarda vale só para caminho local: numa fonte direta o "arquivo" é uma URL,
@@ -2772,7 +2772,7 @@ sua própria blindagem:
 Ou seja: a API do `plenoflu.com` é um **catálogo de embeds**, não uma fonte de
 vídeo. Ela economiza a etapa de raspar a página do agregador, mas entrega
 exatamente o que o contrato da fonte direta recusa — uma URL de player, não um
-`.mp4`/`.m3u8`. O [`prepararSessaoDireta()`](../media-service/src/services/sessoes.js:441)
+`.mp4`/`.m3u8`. O [`prepararSessaoDireta()`](../media-service/src/services/sessoes.js:506)
 do media-service exige uma extensão em `EXTENSOES_DIRETAS` e rejeita o resto com
 `formato_desconhecido`; oferecer um embed como fonte só produziria uma sessão
 que morre na primeira checagem.
@@ -3401,7 +3401,7 @@ torrent.
 
 A sondagem (`ffprobe`) também aceita URL — e, desde o ajuste do HLS remoto
 descrito abaixo, recebe as mesmas opções de entrada do FFmpeg. A guarda de
-existência em disco ([`analisarArquivo()`](../media-service/src/services/hls.js:193))
+existência em disco ([`analisarArquivo()`](../media-service/src/services/hls.js:342))
 vale só para arquivo local: aplicada a uma URL, ela derrubava a sondagem antes
 de a primeira requisição sair. Com o cabeçalho lido, a sessão decide o modo pelo
 **codec** (`h264` + áudio copiável → `remux`) em vez de cair sempre no transcode
@@ -3442,14 +3442,14 @@ num MP4 o FFmpeg aborta com `Option not found` em vez de ignorá-las:
 - [`ehPlaylistHlsRemota()`](../media-service/src/services/hls.js:142) reconhece
   o caso: origem `http(s)` **e** `.m3u8` (a extensão que veio com a fonte ou a do
   próprio endereço);
-- [`analisarArquivo()`](../media-service/src/services/hls.js:193) passa as
+- [`analisarArquivo()`](../media-service/src/services/hls.js:342) passa as
   opções ao `ffprobe`;
-- [`iniciarConversao()`](../media-service/src/services/hls.js:610) passa as
+- [`iniciarConversao()`](../media-service/src/services/hls.js:771) passa as
   mesmas opções como opções de entrada do comando.
 
 Com a sondagem funcionando, o modo deixa de ser o transcode conservador: a
 fonte é `h264`/`aac`, então
-[`decidirModo`](../media-service/src/services/hls.js:566) escolhe `remux` e o
+[`decidirModo`](../media-service/src/services/hls.js:727) escolhe `remux` e o
 FFmpeg só remuxa. A medição de keyframes continua de fora no caminho remoto (a
 janela de leitura atravessaria a rede e adiaria o começo), e o playlist já
 entrega a informação equivalente: a duração dos próprios segmentos é o intervalo
@@ -3465,12 +3465,13 @@ play.
 A cobertura está em
 [`fonte-hls.test.js`](../media-service/test/fonte-hls.test.js:1), que roda com
 `npm test` (runner nativo do Node, ao lado de
-[`caminho-arquivo.test.js`](../media-service/test/caminho-arquivo.test.js:1)).
-Os testes fixam as quatro regras que a ofuscação exige: a lista traz as
-extensões falsas **e** as legítimas do padrão do FFmpeg; o reconhecimento
-funciona pela extensão declarada mesmo quando a URL não tem sufixo; e nenhuma
-opção é passada a MP4 remoto, a arquivo local de torrent ou a caminho relativo
-— os três casos em que elas fariam o FFmpeg abortar com `Option not found`.
+[`caminho-arquivo.test.js`](../media-service/test/caminho-arquivo.test.js:1) e de
+[`falhas-rede.test.js`](../media-service/test/falhas-rede.test.js:1)). Os testes
+fixam as quatro regras que a ofuscação exige: a lista traz as extensões falsas
+**e** as legítimas do padrão do FFmpeg; o reconhecimento funciona pela extensão
+declarada mesmo quando a URL não tem sufixo; e nenhuma opção é passada a MP4
+remoto, a arquivo local de torrent ou a caminho relativo — os três casos em que
+elas fariam o FFmpeg abortar com `Option not found`.
 
 Duas particularidades da suíte vêm do ambiente, não dos testes: o
 `caminho-arquivo.test.js` importa `sessoes.js`, que instancia o cliente
@@ -3485,8 +3486,84 @@ docker compose exec -T media-service sh -lc \
 - a porta precisa estar livre: o serviço em execução já ocupa a 51413, e o
   segundo cliente morre com `EADDRINUSE` antes de o primeiro teste rodar — é
   por isso que a 51499 entra;
-- o processo não termina sozinho depois dos 14 testes: o cliente mantém o event
+- o processo não termina sozinho depois dos testes: o cliente mantém o event
   loop vivo, então é o `--test-force-exit` que fecha o runner.
+
+##### A primeira tentativa morria na resolução do nome
+
+Com a playlist finalmente aceita, apareceu o defeito seguinte — e ele só existia
+na **primeira** vez que um episódio era aberto. O padrão era invariável: a
+primeira tentativa exibia "Convertendo o vídeo..." por três minutos e falhava; a
+segunda, logo depois, ia direto para "Ajustando o contêiner do vídeo..." e
+tocava. O log da sessão mostrava a sequência inteira:
+
+```
+[tcp @ 0x…] Failed to resolve hostname vaiquecol.com: Try again
+ffprobe não leu a fonte direta (ffprobe exited with code 1 …); seguindo com transcodificação
+fonte direta modo=video video=? audio=? duracao=?
+[hls] ffmpeg: Error opening input file https://vaiquecol.com/cdn/hls/…/master.m3u8: I/O error
+falha ao preparar fonte direta: Tempo esgotado aguardando o buffer inicial da conversão.
+```
+
+**A cadeia do defeito.** O `Try again` é o `EAI_AGAIN` do resolvedor: o nome não
+resolveu *naquele instante*. A sondagem caiu, e a sessão — que trata falha de
+`ffprobe` como "não sei, então vou pelo caminho seguro" — escolheu `video`
+(transcodificar). Só que transcodificar não conserta resolução de nome: o FFmpeg
+encerrou na abertura, em cerca de um segundo, com o **mesmo** erro. E aí um
+terceiro defeito transformou um segundo de falha em três minutos de espera: o
+`aguardarBufferInicial()` aguardava o prazo inteiro (180 s) por um processo que
+já não existia. A tela mostrava "convertendo" com o FFmpeg morto.
+
+**A medição.** O que separou "rede ruim" de "fonte ruim" foi amostrar o DNS de
+dentro do container, comparando dois caminhos. Numa rajada (três de cada quatro
+consultas falhando por cerca de um minuto), o caminho padrão — `getaddrinfo`,
+que passa pelo forwarder embutido do Docker em `127.0.0.11` — devolvia
+`EAI_AGAIN` sempre com o mesmo tempo, **1002 ms**, exatamente o `timeout:1` do
+`resolv.conf`. No mesmo instante, a consulta direta aos servidores externos
+respondia. O backend, na mesma rede e no mesmo instante, resolvia o mesmo nome em
+7–40 ms: ele é glibc, e o glibc repete a consulta várias vezes por chamada,
+enquanto o musl (a imagem do media-service é Alpine) desiste depois de uma. O hop
+quebrado era o forwarder, e o preço dele só aparecia no container de musl.
+
+**O que ficou no lugar.** Três defesas, cada uma cobrindo uma altura da queda:
+
+- **A resolução sai do caminho frágil.** O entrypoint do serviço reescreve o
+  `/etc/resolv.conf` com os servidores externos **primeiro** e o forwarder do
+  Docker por último, como reserva para os nomes internos do compose. Não há custo
+  nessa ordem: um resolvedor público responde `ENOTFOUND` para `redis` em
+  milissegundos, então a queda para o `127.0.0.11` é imediata. O musl percorre a
+  lista, então cada `getaddrinfo` — inclusive o que o FFmpeg faz por conta
+  própria, para o playlist e para cada segmento — ganhou mais de uma chance
+  dentro da mesma chamada.
+- **A espera é em segundos, não em minutos.**
+  [`aguardarBufferInicial()`](../media-service/src/services/hls.js:1223) passou a
+  aceitar um `estaVivo`: quando o processo já encerrou, a espera termina na hora
+  com a causa real em vez de exibir "convertendo" até o prazo. Foi a diferença
+  entre três minutos e quatro segundos.
+- **A fonte é tentada de novo antes de ser condenada.**
+  [`conferirNomeDaFonte()`](../media-service/src/services/sessoes.js:471) resolve
+  o nome antes de chamar o FFmpeg, com algumas voltas — uma falha de resolução
+  medida custa cerca de um segundo, então a paciência é contada em tempo.
+  [`analisarArquivo()`](../media-service/src/services/hls.js:342) repete a
+  sondagem quando a falha é transitória, a conversão é reaberta até três vezes
+  (cada abertura é uma conexão nova, com resolução nova) e, no meio do filme, o
+  `-reconnect` do protocolo HTTP cobre a queda de um segmento isolado.
+  [`ehFalhaTransitoria()`](../media-service/src/services/hls.js:259) é quem
+  decide o que merece nova tentativa: `EAI_AGAIN`, `ETIMEDOUT`, `ECONNRESET`, o
+  `I/O error` do HTTP e as recusas do CDN (`429`, `5xx`).
+
+Falha de caminho passou a subir rotulada: `motivo=rede`. O overlay ganhou uma
+mensagem própria para ela e um botão **Tentar novamente** — antes, a única saída
+era fechar e reabrir o episódio. A fonte única deixou de ser beco sem saída: a
+tentativa seguinte é um clique, e o caso comum é justamente a fonte única que
+caiu por um instante de rede.
+
+**A verificação ao vivo.** Com as três defesas no lugar, a primeiríssima abertura
+do episódio ficou `pronto` em **10,6 s** com 8 segmentos publicados (32 s de
+mídia) e modo `remux` — sem nenhuma tentativa anterior. A cobertura de
+[`falhas-rede.test.js`](../media-service/test/falhas-rede.test.js:1) fixa as três
+peças: o reconhecimento da falha transitória, a repetição e a desistência
+imediata quando o processo já morreu.
 
 ##### O idioma da fonte direta mora no endereço
 
@@ -3537,11 +3614,11 @@ O fluxo direto ganhou tratamento próprio em
 - A mensagem do overlay mostra o percentual (`Convertendo o vídeo... 42%`) em vez
   de "sem peers".
 
-Do lado do media-service, [`aguardarBufferInicial()`](../media-service/src/services/hls.js:1043)
+Do lado do media-service, [`aguardarBufferInicial()`](../media-service/src/services/hls.js:1223)
 deixou de ser um veredito de morte por relógio: ele aceita um callback
 `aoProgredir` e, quando a conversão avançou desde a última checagem, **reinicia o
 prazo**. Assim o `timeoutMs` mede estagnação real, e não a duração total da
-conversão. [`prepararSessaoDireta()`](../media-service/src/services/sessoes.js:441)
+conversão. [`prepararSessaoDireta()`](../media-service/src/services/sessoes.js:506)
 passa esse callback comparando o último percentual visto.
 
 #### Configuração

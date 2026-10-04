@@ -289,6 +289,11 @@ services:
     ports:
       - "${MEDIA_SERVICE_PORT:-3000}:3000"
       # Porta de escuta do WebTorrent (TCP) e a equivalente uTP (UDP). Sem
+    #
+    # O valor daqui também alimenta o `/etc/resolv.conf` que o entrypoint escreve
+    # (ver docker/media-service/entrypoint.sh): o forwarder embutido do Docker é o
+    # último da lista, e não o único servidor. Foi ele que falhou nas rajadas de
+    # resolução que derrubavam a abertura da fonte direta.
       # publicá-las, o container só faz conexões de saída e não aceita nenhuma
       # de entrada — a malha fica pela metade e a chance de achar peer cai muito.
       # O valor precisa bater com `torrentPort` em `sessoes.js`.
@@ -309,6 +314,11 @@ services:
       # Paciência do media-service com fontes de poucos peers. O timeout de
       # dados mede a espera pelo primeiro byte, não a velocidade: uma fonte
       # lenta mas viva demora a conectar e depois baixa normalmente, e era
+      # Servidores que o entrypoint grava no `/etc/resolv.conf` do container. O
+      # forwarder do Docker entra como último da lista (reserva para os nomes
+      # internos do compose), e não como único servidor.
+      - DNS_PRIMARIO=${DNS_PRIMARIO:-1.1.1.1}
+      - DNS_SECUNDARIO=${DNS_SECUNDARIO:-8.8.8.8}
       # justamente ela que o corte de 30 s matava. Estes valores ficam abaixo
       # do TIMEOUT_FONTE_MS do frontend (90 s) para o backend desistir primeiro.
       - MEDIA_TIMEOUT_DADOS_MS=${MEDIA_TIMEOUT_DADOS_MS:-30000}

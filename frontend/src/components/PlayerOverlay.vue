@@ -1504,6 +1504,9 @@ async function tentarFontes(fontes, minhaGeracao, minhaAbertura, filme) {
     sem_video: 0,
     lento: 0,
     inexistente: 0,
+    // A fonte não pôde ser alcançada (nome que não resolve, conversão que cai na
+    // abertura). Não é defeito do release: a resposta certa é tentar de novo.
+    rede: 0,
     erro: 0,
   }
 
@@ -1619,6 +1622,16 @@ function mensagemDeFalha(desistencias, total, recusadasPorIdioma) {
 
   if (desistencias.inexistente > 0) {
     return 'A sessão de reprodução expirou. Tente novamente.'
+  }
+
+  /*
+   * Falha de rede fica à frente de "lentas demais" porque a conclusão é outra: a
+   * fonte não entregou nada por um motivo do caminho (o nome não resolveu, a
+   * conexão caiu na abertura), e um minuto depois ela costuma funcionar. É o
+   * único caso em que o botão de tentar novamente quase sempre resolve.
+   */
+  if (desistencias.rede > 0) {
+    return 'A fonte não respondeu por um problema de rede. Tente novamente.'
   }
 
   if (desistencias.lento > 0) {
@@ -2087,6 +2100,21 @@ function fechar() {
   emit('fechar')
 }
 
+/**
+ * Refaz a busca a partir do estado de erro.
+ *
+ * O erro não tinha saída: a única forma de tentar de novo era fechar e reabrir o
+ * episódio, repetindo a busca inteira sem nenhuma vantagem para quem só perdeu a
+ * vez por um soluço de rede. E esse é justamente o caso comum da fonte direta,
+ * que muitas vezes é a única que existe para o episódio — ali a falha é do
+ * caminho até o CDN, não do lançamento.
+ */
+async function tentarDeNovo() {
+  if (estado.value !== 'erro') return
+
+  await iniciar()
+}
+
 function aoTeclar(evento) {
   if (evento.key === 'Escape') fechar()
 }
@@ -2194,6 +2222,20 @@ onUnmounted(() => {
             -->
             <p v-if="rotuloFonte" class="text-xs text-slate-400">{{ rotuloFonte }}</p>
           </div>
+
+          <!--
+            Saída para o estado de erro. Sem ele, tentar outra vez exigia fechar e
+            reabrir o episódio — caro demais quando a fonte única do episódio caiu
+            por um problema de rede que já passou.
+          -->
+          <button
+            v-if="estado === 'erro'"
+            type="button"
+            class="rounded-full bg-brand-600 px-6 py-2 text-sm font-semibold text-white transition hover:bg-brand-700"
+            @click="tentarDeNovo"
+          >
+            Tentar novamente
+          </button>
         </div>
 
         <!--

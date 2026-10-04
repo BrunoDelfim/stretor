@@ -2,6 +2,7 @@ import WebTorrent from 'webtorrent'
 import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
+import dns from 'node:dns'
 import { Transform } from 'node:stream'
 import { v4 as uuid } from 'uuid'
 
@@ -9,9 +10,13 @@ import {
   analisarArquivo,
   iniciarConversao,
   aguardarBufferInicial,
+  comRetentativa,
+  ehFalhaDeResolucao,
+  ehFalhaTransitoria,
   localizarMoov,
   mapearCaixas,
   profundidadeRelevante,
+  resumirErro,
   somarDuracaoDaPlaylist,
   temFaixaPortuguesa,
 } from './hls.js'
@@ -235,7 +240,10 @@ function conferirSessao(sessao) {
  * o motivo junto do erro evita que o frontend volte a interpretar mensagens por
  * comparação de string.
  *
- * Motivos usados aqui: `sem_metadados`, `sem_peers`, `sem_dados`, `sem_video`.
+ * Motivos usados aqui: `sem_metadados`, `sem_peers`, `sem_dados`, `sem_video` e
+ * `rede` — este último para quando a fonte não pôde ser alcançada (nome que não
+ * resolve, conversão que cai na abertura), porque a resposta certa do usuário é
+ * tentar de novo, não trocar de filme.
  */
 function erroDaFonte(motivo, mensagem) {
   const erro = new Error(mensagem)
@@ -346,6 +354,20 @@ export function criarSessao({ magnet, filmeId, temporada = null, episodio = null
 const EXTENSOES_DIRETAS = ['.mp4', '.m4v', '.webm', '.mkv', '.mov', '.m3u8', '.mpd']
 
 /**
+ * Quantas vezes a conversão de uma fonte direta é aberta antes de condená-la.
+ *
+ * Cada abertura é uma conexão nova, com uma resolução de nome nova. Uma única
+ * tentativa transformava um soluço de DNS em fonte morta — foi o que fazia a
+ * primeira abertura de cada episódio falhar enquanto a segunda passava. Três é
+ * o suficiente para atravessar o instante ruim sem acumular espera: uma fonte
+ * realmente fora do ar encerra a abertura por volta de um segundo.
+ */
+const TENTATIVAS_CONVERSAO_DIRETA = 3
+
+/** Espera entre duas aberturas da conversão, em ms. */
+const ESPERA_REABERTURA_MS = 1000
+
+/**
  * Cria uma sessão de reprodução a partir de um link direto (MP4/HLS).
  *
  * É o caminho de socorro para conteúdo raro: quando a cascata de torrents não
@@ -424,6 +446,49 @@ export function criarSessaoDireta({ url, filmeId, temporada = null, episodio = n
 }
 
 /**
+ * Confere se o nome da fonte resolve antes de entregar a URL ao FFmpeg.
+ *
+ * O primeiro `lookup` de um host depois de um período frio é o ponto frágil do
+ * caminho direto. No container, o DNS embutido do Docker devolveu `EAI_AGAIN`
+ * (o `Try again` que o FFmpeg reporta) e a sondagem falhou — embora a mesma URL
+ * abrisse um minuto depois, com a resolução já esquentada. Resolver aqui, com
+ * algumas tentativas, faz duas coisas: aquece o caminho que o FFmpeg vai usar e
+ * separa dois desfechos que a mensagem do `ffprobe` confunde — "o host não
+ * resolve", em que nenhuma conversão teria chance, de "o host resolve, mas o
+ * servidor recusou a sondagem", em que ainda vale tentar.
+ *
+ * A paciência é medida em tempo, e não em tentativas, porque o custo de uma
+ * falha aqui é alto: medido no container, cada `getaddrinfo` que não responde
+ * consome exatamente o `timeout:1` do `resolv.conf` antes de desistir. Uma
+ * rajada de resolução (vista em amostragem: três de cada quatro consultas
+ * falhando por cerca de um minuto) duraria mais que qualquer espera curta, então
+ * as voltas cobrem alguns segundos antes de condenar a fonte — e o overlay ainda
+ * oferece a nova tentativa, que é gratuita.
+ *
+ * A recusa sobe rotulada como `rede` para o overlay poder oferecer a nova
+ * tentativa em vez de culpar o filme.
+ */
+async function conferirNomeDaFonte(sessao) {
+  let host = ''
+
+  try {
+    host = new URL(sessao.url).hostname
+  } catch {
+    // URL malformada: a checagem de extensão já cuidou do formato, e o FFmpeg
+    // dirá o que houve com o endereço.
+    return
+  }
+
+  if (!host) return
+
+  try {
+    await comRetentativa(() => dns.promises.lookup(host), { tentativas: 6, esperaMs: 700 })
+  } catch (erro) {
+    throw erroDaFonte('rede', `O endereço da fonte não resolveu (${host}).`)
+  }
+}
+
+/**
  * Prepara uma sessão de fonte direta: sonda a URL e converte para HLS.
  *
  * O FFmpeg aceita a URL como entrada e cuida do resto — num MP4 progressivo ele
@@ -451,18 +516,32 @@ async function prepararSessaoDireta(sessao) {
   sessao.status = 'aguardando'
   sessao.mensagem = 'Lendo o cabeçalho da fonte...'
 
+  // O nome é resolvido antes de o FFmpeg ser chamado — ver `conferirNomeDaFonte`.
+  await conferirNomeDaFonte(sessao)
+
   /*
    * A análise é o único ponto que pode falhar sem condenar a sessão. Um
    * servidor que não responde ao ffprobe ainda pode ser lido pelo FFmpeg, então
    * tratamos a falha como "não sei" e caímos no modo mais seguro.
+   *
+   * A exceção é a falha de resolução, e ela é deliberada: `analisarArquivo` já
+   * repetiu a sondagem quando o erro era transitório, então seguir adiante
+   * entregaria a sessão a uma conversão que morre na abertura com o mesmo erro.
+   * Era esse o caminho da "primeira tentativa que fica convertendo e não vai":
+   * o modo conservador transcodificava, o FFmpeg encerrava por DNS em um
+   * segundo, e a tela esperava 180 s por um processo que já tinha morrido.
    */
   let analise = null
 
   try {
     analise = await analisarArquivo(sessao.url, extensao)
   } catch (erro) {
+    if (ehFalhaDeResolucao(erro)) {
+      throw erroDaFonte('rede', `O endereço da fonte não resolveu (${resumirErro(erro)}).`)
+    }
+
     logger.warn(
-      `[sessao ${sessao.id}] ffprobe não leu a fonte direta (${erro.message}); seguindo com transcodificação`
+      `[sessao ${sessao.id}] ffprobe não leu a fonte direta (${resumirErro(erro)}); seguindo com transcodificação`
     )
   }
 
@@ -492,10 +571,17 @@ async function prepararSessaoDireta(sessao) {
    * O FFmpeg lê a URL diretamente. Passamos `caminho` (e não `fluxo`) porque a
    * entrada remota é buscável: o FFmpeg consegue voltar para o `moov` no fim de
    * um MP4 sem faststart, o que um pipe não permitiria.
+   *
+   * A conversão é aberta, acompanhada e — quando morre na abertura por um motivo
+   * de rede — reaberta. Cada abertura é uma conexão nova, com uma resolução de
+   * nome nova, e é isso que faz a primeira tentativa do usuário passar sozinha
+   * quando o DNS do container respondeu "tente de novo" na anterior.
    */
-  registrarConversao(
-    sessao,
-    iniciarConversao({
+  let ultimoPercentual = null
+  let comando = null
+
+  for (let tentativa = 1; tentativa <= TENTATIVAS_CONVERSAO_DIRETA; tentativa += 1) {
+    comando = iniciarConversao({
       caminho: sessao.url,
       extensao,
       diretorio: sessao.diretorio,
@@ -506,27 +592,79 @@ async function prepararSessaoDireta(sessao) {
         sessao.progresso = progresso
       },
     })
-  )
 
-  /*
-   * A fonte direta não tem peers: o que prova que ela está viva é o avanço da
-   * conversão. Guardamos o último percentual visto e comparamos a cada checagem
-   * do buffer — se mudou, o FFmpeg trabalhou e o prazo do buffer reinicia. Sem
-   * isso, uma conversão longa (fonte HTTP lenta, arquivo grande) estourava os
-   * 180 s e a sessão morria como erro mesmo estando a avançar.
-   */
-  let ultimoPercentual = null
+    registrarConversao(sessao, comando)
 
-  await aguardarBufferInicial(sessao.diretorio, 8, 180000, () => {
-    const percentual = sessao.progresso?.percentual ?? null
+    try {
+      /*
+       * A fonte direta não tem peers: o que prova que ela está viva é o avanço da
+       * conversão. Guardamos o último percentual visto e comparamos a cada checagem
+       * do buffer — se mudou, o FFmpeg trabalhou e o prazo do buffer reinicia. Sem
+       * isso, uma conversão longa (fonte HTTP lenta, arquivo grande) estourava os
+       * 180 s e a sessão morria como erro mesmo estando a avançar.
+       *
+       * O `estaVivo` fecha o outro lado: um FFmpeg que já encerrou não vai publicar
+       * segmento nenhum, então esperar o prazo inteiro só esconderia a causa.
+       */
+      await aguardarBufferInicial(
+        sessao.diretorio,
+        8,
+        180000,
+        () => {
+          const percentual = sessao.progresso?.percentual ?? null
 
-    if (percentual === null || percentual === ultimoPercentual) {
-      return false
+          if (percentual === null || percentual === ultimoPercentual) {
+            return false
+          }
+
+          ultimoPercentual = percentual
+          return true
+        },
+        () => comando.erro() === null
+      )
+
+      break
+    } catch (erro) {
+      const causa = comando.erro()
+
+      /*
+       * Sem erro do comando, o processo está vivo: o prazo estourou com a
+       * conversão parada, e reabrir não mudaria o resultado.
+       */
+      if (causa === null) throw erro
+
+      const transitoria = ehFalhaTransitoria(causa)
+      const ultimaTentativa = tentativa === TENTATIVAS_CONVERSAO_DIRETA
+
+      /*
+       * O motivo acompanha a causa, e não o prazo: "tempo esgotado" esconde se a
+       * fonte caiu (rede) ou se ela entregou algo que o FFmpeg não leu.
+       */
+      if (ultimaTentativa) {
+        throw transitoria
+          ? erroDaFonte('rede', `A fonte caiu antes do primeiro segmento (${resumirErro(causa)}).`)
+          : erroDaFonte('sem_dados', `A conversão não publicou nenhum segmento (${resumirErro(causa)}).`)
+      }
+
+      if (!transitoria) {
+        throw erroDaFonte('sem_dados', `A conversão não publicou nenhum segmento (${resumirErro(causa)}).`)
+      }
+
+      logger.warn(
+        `[sessao ${sessao.id}] conversão caiu na abertura (${resumirErro(causa)}); reabrindo (tentativa ${tentativa + 1} de ${TENTATIVAS_CONVERSAO_DIRETA})`
+      )
+
+      sessao.mensagem = 'Reconectando à fonte...'
+      ultimoPercentual = null
+
+      // O processo já morreu, mas pode ter deixado um filho pendurado sobre a
+      // pasta da sessão; encerramos antes de abrir a próxima conversão.
+      pararConversao(sessao)
+      conferirSessao(sessao)
+
+      await new Promise((resolve) => setTimeout(resolve, ESPERA_REABERTURA_MS))
     }
-
-    ultimoPercentual = percentual
-    return true
-  })
+  }
 
   conferirSessao(sessao)
 
