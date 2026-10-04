@@ -12,6 +12,8 @@ bower_components/
 .env
 .env.*
 !.env.example
+.clinerules
+roo-code-settings.json
 
 # --- Logs ---
 *.log
