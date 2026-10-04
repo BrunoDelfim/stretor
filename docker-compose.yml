@@ -252,6 +252,12 @@ services:
     environment:
       - VITE_API_URL=${VITE_API_URL:-http://localhost/api}
       - VITE_MEDIA_SERVICE_URL=${VITE_MEDIA_SERVICE_URL:-http://localhost/media}
+      # Porta pública do proxy onde o websocket de recarga (HMR) do Vite conecta.
+      # No PC é a 80 (HTTP); no Codespaces o .env traz 443 (HTTPS), porque o Space
+      # publica a porta numa URL HTTPS própria. Precisa ser repassada ao container:
+      # o vite.config.js a lê via process.env, e o Vite não carrega o .env da raiz
+      # do repositório por conta própria (o envDir dele é o próprio frontend).
+      - VITE_HMR_CLIENT_PORT=${VITE_HMR_CLIENT_PORT:-80}
       # Paciência do player com uma fonte. Numa conexão lenta o buffer inicial do
       # HLS demora mais que os 90 s padrão e uma fonte boa era abandonada no meio
       # do preparo. Estes valores precisam ser maiores que os do media-service
@@ -283,17 +289,17 @@ services:
     # devolver NXDOMAIN para domínios de tracker. Sem resolver os anunciadores
     # nem alcançar os roteadores do DHT, o WebTorrent não forma malha e a fonte
     # aparece como "sem peers" mesmo estando viva.
+    #
+    # O valor daqui também alimenta o `/etc/resolv.conf` que o entrypoint escreve
+    # (ver docker/media-service/entrypoint.sh): o forwarder embutido do Docker é o
+    # último da lista, e não o único servidor. Foi ele que falhou nas rajadas de
+    # resolução que derrubavam a abertura da fonte direta.
     dns:
       - ${DNS_PRIMARIO:-1.1.1.1}
       - ${DNS_SECUNDARIO:-8.8.8.8}
     ports:
       - "${MEDIA_SERVICE_PORT:-3000}:3000"
       # Porta de escuta do WebTorrent (TCP) e a equivalente uTP (UDP). Sem
-    #
-    # O valor daqui também alimenta o `/etc/resolv.conf` que o entrypoint escreve
-    # (ver docker/media-service/entrypoint.sh): o forwarder embutido do Docker é o
-    # último da lista, e não o único servidor. Foi ele que falhou nas rajadas de
-    # resolução que derrubavam a abertura da fonte direta.
       # publicá-las, o container só faz conexões de saída e não aceita nenhuma
       # de entrada — a malha fica pela metade e a chance de achar peer cai muito.
       # O valor precisa bater com `torrentPort` em `sessoes.js`.
@@ -308,17 +314,17 @@ services:
       - PORT=3000
       - REDIS_URL=redis://redis:6379
       - STORAGE_PATH=/app/storage
+      # Servidores que o entrypoint grava no `/etc/resolv.conf` do container. O
+      # forwarder do Docker entra como último da lista (reserva para os nomes
+      # internos do compose), e não como único servidor.
+      - DNS_PRIMARIO=${DNS_PRIMARIO:-1.1.1.1}
+      - DNS_SECUNDARIO=${DNS_SECUNDARIO:-8.8.8.8}
       # Porta de escuta do WebTorrent. Fixa para casar com o mapeamento acima:
       # uma porta aleatória a cada subida nunca seria alcançável de fora.
       - MEDIA_TORRENT_PORT=${MEDIA_TORRENT_PORT:-51413}
       # Paciência do media-service com fontes de poucos peers. O timeout de
       # dados mede a espera pelo primeiro byte, não a velocidade: uma fonte
       # lenta mas viva demora a conectar e depois baixa normalmente, e era
-      # Servidores que o entrypoint grava no `/etc/resolv.conf` do container. O
-      # forwarder do Docker entra como último da lista (reserva para os nomes
-      # internos do compose), e não como único servidor.
-      - DNS_PRIMARIO=${DNS_PRIMARIO:-1.1.1.1}
-      - DNS_SECUNDARIO=${DNS_SECUNDARIO:-8.8.8.8}
       # justamente ela que o corte de 30 s matava. Estes valores ficam abaixo
       # do TIMEOUT_FONTE_MS do frontend (90 s) para o backend desistir primeiro.
       - MEDIA_TIMEOUT_DADOS_MS=${MEDIA_TIMEOUT_DADOS_MS:-30000}

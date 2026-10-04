@@ -1,4 +1,4 @@
-.PHONY: up up-fast down restart logs ps build fresh reset-init cache-clear prowlarr aplicar
+.PHONY: up up-fast down restart logs ps build fresh reset-init cache-clear prowlarr aplicar aplicar-frontend
 
 up:
 	docker compose up -d --build
@@ -32,6 +32,12 @@ aplicar:
 	docker compose up -d --force-recreate backend
 	docker compose exec -T backend php artisan config:clear
 	docker compose exec -T backend php artisan cache:clear
+
+# O Vite lê as variáveis VITE_* no start, mas elas só entram no container na
+# criação dele. Depois de mexer em qualquer VITE_* no .env (o HMR inclusive),
+# este alvo recria o frontend para que o novo valor valha sem derrubar o resto.
+aplicar-frontend:
+	docker compose up -d --force-recreate frontend
 
 # As listas de fontes ficam em cache por 30 min. Depois de mexer na busca do
 # Torznab, limpe o cache para não testar com a resposta antiga guardada.

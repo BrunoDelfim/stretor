@@ -251,9 +251,16 @@ direta, todas marcadas como privadas.
 
 > **HMR do Vite:** no Codespaces o proxy é HTTPS, então o websocket de recarga
 > precisa apontar para a porta 443 em `wss`. O `post-create.sh` grava
-> `VITE_HMR_CLIENT_PORT=443` no `.env` e o
-> [`vite.config.js`](../frontend/vite.config.js:1) lê essa variável. No PC local
-> o valor continua 80, sem mudança de comportamento.
+> `VITE_HMR_CLIENT_PORT=443` no `.env` e o serviço `frontend` do
+> [`docker-compose.yml`](../docker-compose.yml:240) repassa a variável ao
+> container, de onde o [`vite.config.js`](../frontend/vite.config.js:1) a lê.
+> No PC local o valor continua 80, sem mudança de comportamento.
+>
+> A variável **precisa** ser declarada no `environment` do serviço `frontend`:
+> o Vite não carrega o `.env` da raiz do repositório por conta própria (o
+> `envDir` dele é a própria pasta do frontend). Sem o repasse, a recarga cai no
+> padrão 80 e o navegador bloqueia o websocket por conteúdo misto
+> (`ws://` numa página `https://`).
 
 ### Preencher o TMDB_API_KEY no Space
 
