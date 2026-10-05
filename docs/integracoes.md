@@ -4367,9 +4367,69 @@ não entrega arquivo. Dos dois caminhos possíveis, o primeiro **já foi
 implementado**: a **busca direta nos agregadores** (`BuscaAgregadores`) pergunta à
 busca interna do `verpobreflix.net` (`/search?q=<título>`) antes de acionar o motor
 web, e não depende de buscador comercial nenhum. O segundo — um **navegador
-próprio** para atravessar os players cifrados (Turnstile) — continua em aberto: o
-`ClienteHttp` já renderiza por JavaScript via FlareSolverr, mas o desafio Turnstile
-não é resolvido por ele.
+próprio** para atravessar os players cifrados (Turnstile) — deixou de estar em
+aberto: foi montado, medido, e o resultado está na seção seguinte.
+
+### O muro do `warezcdn.sbs`/`superflixapi.quest` — atravessado, medido, não entregue
+
+O "navegador próprio" saiu do campo das ideias: foi montado e medido, e o
+resultado tem duas metades — uma boa e uma decisiva.
+
+**A travessia funciona.** Um Chromium *head-full* (janela real sobre Xvfb, dentro
+do container do FlareSolverr, reaproveitando o Selenium e o driver que ele já
+carrega) percorre a cadeia inteira e chega ao arquivo:
+
+| passo | o que acontece |
+| --- | --- |
+| 1 | `GET /csrf-token` no `.lat` → token |
+| 2 | `GET /serie/<slug>/<t>/<e>` → `data-playbackhandle` |
+| 3 | `POST /__siteplay/start` → `sources[]` (frames do `.sbs` e do `.quest`) |
+| 4 | **iframe** com o frame, na página do `.lat` → Turnstile → recarrega com `?cfv=<jwt>` |
+| 5 | a página do player (`Player \| …`) carrega e expõe a API interna |
+| 6 | `POST /player/source` (`X-Page-Token`, `X-Requested-With`) → `data.video_url` |
+| 7 | `/player/redirect?t=…&pt=…` → `https://<host>.best/video/<hash>` (SuperFlixApi + JW Player) |
+| 8 | `jwplayer().getConfig().file` → `…/<epoch>/master.txt` (**HTTP 200, `#EXTM3U`**) |
+
+O passo 8 é o que faltava: **200 com `#EXTM3U`**, playlist master de verdade, com
+a faixa de áudio declarada. A extensão é falsa (`master.txt`) — exatamente o caso
+que o `media-service` já sabe ler.
+
+**Três detalhes decidem a travessia**, e cada um custou uma medição:
+
+1. **O token do frame está amarrado ao User-Agent.** Pedir `pg_…` com outro
+   agente devolve **404** — com o Referer certo e os cookies da cadeia. O `curl`
+   "passava" só porque usava o mesmo agente da cadeia; o navegador tomava 404
+   porque tem o dele. A cadeia precisa ser feita com o User-Agent do navegador.
+2. **Headless mata o Turnstile.** Com `--headless=new` o `turnstile.render()`
+   estoura e cai no `error-callback`: a página fica em "Não foi possível carregar
+   a verificação" e nenhum iframe de widget nasce. Head-full sobre Xvfb resolve na
+   primeira tentativa — e o padrão do FlareSolverr é headless.
+3. **O player só aparece embutido.** Navegação de topo, mesmo com Referer do
+   `.lat`, recebe a tela "Acesso Restrito / Visualização Externa" com o código de
+   embed; dentro de um `<iframe referrerpolicy="unsafe-url">` da página do `.lat`
+   — como o player real faz — vem a página `Player | …`, com `PAGE_TOKEN` e a API
+   (`/player/options`, `/player/source`, `/player/bootstrap`).
+
+**O que trava, e é decisivo.** O manifesto e os segmentos só abrem **de dentro
+daquele navegador**. O `curl` com o mesmo `cf_clearance`, o mesmo User-Agent e o
+Referer da página devolve **403 imediato** (nginx), e um cliente que imita o TLS
+do Chrome (`curl_cffi` 0.16.3, perfis `chrome`, `chrome124`, `chrome120`) leva o
+mesmo 403. Não é expiração: a URL foi testada no segundo em que nasceu.
+
+**A consequência.** O `media-service` busca manifesto e segmentos por conta
+própria (FFmpeg/HLS); para consumir essa fonte ele precisaria que o navegador
+virasse **ponte de streaming** — baixar o episódio inteiro pelo navegador e
+repassar. Isso desmonta o desenho: exigiria Chromium + Xvfb por sessão no
+`docker compose` (adeus subir sem configuração manual), pesaria numa máquina de
+8 GB e não sobreviveria a uso compartilhado. Sem credencial de parceiro, o teto é
+esse.
+
+**Onde ficou.** O caminho do `.sbs`/`.quest` fica **medido e documentado, não
+entregue**. As fontes dos agregadores abertos (`plenoflu.com` → `vaiquecol.com`,
+`verpobreflix.net`) seguem sendo o que o
+[`ResolvedorEmbed`](../backend/app/Services/Torrents/ResolvedorEmbed.php:1)
+percorre; diante de Turnstile, o que o sistema tem hoje é recusar com veredito
+claro.
 
 ### Legendas — roadmap
 
