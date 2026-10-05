@@ -82,6 +82,7 @@ class ProvedorStreamDireto implements ProvedorTorrents
         private readonly ClienteHttp $cliente,
         private readonly BuscaAgregadores $agregadores,
         private readonly ResolvedorEmbed $resolvedor,
+        private readonly ResolvedorVod $vod,
     ) {
     }
 
@@ -137,8 +138,9 @@ class ProvedorStreamDireto implements ProvedorTorrents
         ?string $imdbId = null,
         ?int $temporada = null,
         ?int $episodio = null,
+        ?string $tmdbId = null,
     ): array {
-        return $this->buscarComTitulos([$titulo], $ano, $imdbId, $temporada, $episodio);
+        return $this->buscarComTitulos([$titulo], $ano, $imdbId, $temporada, $episodio, $tmdbId);
     }
 
     /**
@@ -147,6 +149,11 @@ class ProvedorStreamDireto implements ProvedorTorrents
      * O primeiro título é o principal (PT-BR); os demais entram como rede de
      * segurança na camada genérica de termos — é o que cobre o caso em que o
      * acervo PT-BR não tem página nenhuma.
+     *
+     * O `$tmdbId` alimenta o **passo zero**: a fonte endereçável pelo id do
+     * provedor de VOD, que dispensa a busca por título. Sem ele (ou quando o
+     * provedor não tem o título), a varredura por motor e agregadores segue
+     * normalmente.
      *
      * @param  array<int, string>  $titulos
      * @return array<int, array<string, mixed>>
@@ -157,6 +164,7 @@ class ProvedorStreamDireto implements ProvedorTorrents
         ?string $imdbId = null,
         ?int $temporada = null,
         ?int $episodio = null,
+        ?string $tmdbId = null,
     ): array {
         if (! $this->disponivel()) {
             return [];
@@ -212,6 +220,27 @@ class ProvedorStreamDireto implements ProvedorTorrents
          * consulta.
          */
         $tetoConsulta = (int) config('services.torrents.stream_direto_tempo_limite', 10);
+
+        /*
+         * Passo zero: a fonte endereçável pelo id do TMDB.
+         *
+         * É a única consulta que não depende de descobrir página nenhuma — o
+         * provedor recebe o id e devolve o arquivo. Por isso ela vem antes de
+         * tudo: quando resolve, o motor de busca e os agregadores não têm o que
+         * acrescentar que valha o orçamento, e a cascata nem começa. Quando não
+         * há fonte para o id (ou o id não veio), o retorno é `null` e a varredura
+         * segue exatamente como era.
+         */
+        $peloId = $this->vod->resolver($tmdbId, $temporada, $episodio, $tetoConsulta);
+
+        if ($peloId !== null) {
+            Log::debug('Stream direto: fonte resolvida pelo id do TMDB.', [
+                'tmdb_id' => $tmdbId,
+                'url' => $peloId['url'],
+            ]);
+
+            return $this->fonteResolvida($peloId, $titulo, (string) ($tmdbId ?? ''));
+        }
 
         /*
          * O censo dos agregadores é zerado aqui, no começo da varredura, e não

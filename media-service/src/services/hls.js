@@ -122,6 +122,23 @@ const EXTENSOES_SEGMENTO_HLS = [
 ]
 
 /**
+ * Agente que as entradas HTTP remotas apresentam ao CDN.
+ *
+ * Os provedores de VOD (a fonte endereçável pelo id do TMDB) entregam a URL
+ * assinada, mas o CDN de destino recusa quem não se anuncia como navegador: o
+ * FFmpeg e o `curl` mandam um agente próprio ("Lavf/...") e recebem `403`
+ * antes mesmo de a leitura começar. Sem este agente, a fonte que o backend
+ * acabou de resolver morre na primeira sondagem — o `ffprobe` devolve "Server
+ * returned 403 Forbidden" e a sessão cai para o modo conservador em cima de uma
+ * fonte saudável. É o mesmo agente que o `ClienteHttp` do backend usa, o que
+ * mantém o par resolução/leitura coerente para o host. O `MEDIA_USER_AGENT`
+ * permite trocá-lo sem mexer no código.
+ */
+const AGENTE_DE_NAVEGADOR =
+  process.env.MEDIA_USER_AGENT ||
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
+
+/**
  * Diz se a origem é um endereço remoto (e não um arquivo em disco).
  *
  * É a distinção que separa o torrent do stream direto dentro da conversão: um
@@ -184,7 +201,18 @@ export function opcoesEntradaHlsRemota(origem, extensao = '') {
  * reiniciando (`5xx`).
  *
  * São opções do protocolo HTTP, e por isso valem para qualquer URL remota — ao
- * contrário das do demuxer HLS, que só existem em playlist.
+ * contrário das do demuxer HLS, que só existem em playlist. O `-user_agent`
+ * entra aqui pelo mesmo motivo: é o cabeçalho que decide se o CDN do provedor
+ * atende ou devolve `403`, e vale tanto para a playlist quanto para o arquivo
+ * progressivo.
+ *
+ * Cada opção vai em **pares separados** (`'-reconnect', '1'`), e não como uma
+ * string só (`'-reconnect 1'`). O motivo é o `fluent-ffmpeg`: ele só divide uma
+ * opção pelos espaços quando ela tem **exatamente um**, então `-reconnect 1`
+ * funcionaria, mas `-user_agent Mozilla/5.0 (X11; ...)` seria passado inteiro e
+ * viraria `Unrecognized option`. Pior: o `ffprobe` do próprio pacote **não
+ * divide nada** — concatena cada item do array ao comando. Pares separados
+ * servem aos dois caminhos sem depender do split.
  *
  * @param {string} origem URL de entrada da conversão
  * @returns {string[]} opções para o FFmpeg, vazias quando a origem é local
@@ -193,10 +221,11 @@ export function opcoesRedeRemota(origem) {
   if (!ehOrigemRemota(origem)) return []
 
   return [
-    '-reconnect 1',
-    '-reconnect_streamed 1',
-    '-reconnect_delay_max 5',
-    '-reconnect_on_http_error 5xx,429',
+    '-user_agent', AGENTE_DE_NAVEGADOR,
+    '-reconnect', '1',
+    '-reconnect_streamed', '1',
+    '-reconnect_delay_max', '5',
+    '-reconnect_on_http_error', '5xx,429',
   ]
 }
 
@@ -368,11 +397,15 @@ export async function analisarArquivo(arquivo, extensao = '') {
    */
   const sondar = () =>
     new Promise((resolve, reject) => {
-      ffmpeg(arquivo).ffprobe(null, opcoesEntradaHlsRemota(arquivo, extensao), (erro, dados) => {
-        if (erro) return reject(erro)
+      ffmpeg(arquivo).ffprobe(
+        null,
+        [...opcoesRedeRemota(arquivo), ...opcoesEntradaHlsRemota(arquivo, extensao)],
+        (erro, dados) => {
+          if (erro) return reject(erro)
 
-        resolve(dados)
-      })
+          resolve(dados)
+        },
+      )
     })
 
   const metadados = remoto ? await comRetentativa(sondar, { tentativas: 3, esperaMs: 1000 }) : await sondar()

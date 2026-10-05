@@ -97,6 +97,10 @@ class TorrentController extends Controller
             tituloOriginal: $tituloOriginal,
             temporada: $temporada,
             episodio: $episodio,
+            // O id da rota é o do TMDB: além de puxar a ficha, ele alimenta a
+            // fonte endereçável por id (o passo zero do stream direto), que
+            // dispensa a busca por título.
+            tmdbId: (string) $id,
         );
 
         return response()->json([

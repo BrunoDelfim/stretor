@@ -495,6 +495,7 @@ class CatalogoProvedores
         ?string $imdbId,
         ?int $temporada,
         ?int $episodio,
+        ?string $tmdbId = null,
     ): array {
         $id = $this->streamDireto->identificador();
 
@@ -510,6 +511,7 @@ class CatalogoProvedores
             'titulos' => $titulos,
             'ano' => $ano,
             'imdb_id' => $imdbId,
+            'tmdb_id' => $tmdbId,
             'temporada' => $temporada,
             'episodio' => $episodio,
         ]);
@@ -574,7 +576,7 @@ class CatalogoProvedores
              * usa as variações (tipicamente o título original) como rede de
              * segurança quando o acervo PT-BR não tem página nenhuma.
              */
-            $fontes = $this->streamDireto->buscarComTitulos($titulos, $ano, $imdbId, $temporada, $episodio);
+            $fontes = $this->streamDireto->buscarComTitulos($titulos, $ano, $imdbId, $temporada, $episodio, $tmdbId);
         } catch (\Throwable $excecao) {
             $this->censo[$id]['erros']++;
             $this->censo[$id]['consultas']++;

@@ -540,6 +540,29 @@ return [
         'stream_direto_resolver_embeds' => (bool) env('TORRENTS_STREAM_DIRETO_RESOLVER_EMBEDS', true),
 
         /*
+         * Fonte endereçável pelo id do TMDB (passo zero do stream direto).
+         *
+         * O fallback procura a página do título por busca; há provedor, porém,
+         * que aceita o **id do TMDB** direto e devolve o arquivo de vídeo, sem
+         * página intermediária e sem embed. Como o id já está em mãos — é a
+         * chave da rota `/fontes/{id}` —, essa é a fonte mais barata de todas: o
+         * provedor resolvido por meio dela encerra a busca antes de o motor
+         * sequer ser consultado. Desligar restaura o fluxo antigo, que só
+         * descobre página por busca.
+         */
+        'stream_direto_resolver_vod' => (bool) env('TORRENTS_STREAM_DIRETO_RESOLVER_VOD', true),
+
+        /*
+         * Espelhos do provedor endereçável por id, em ordem de tentativa.
+         *
+         * Os domínios giram com frequência e nem sempre carregam o mesmo
+         * acervo, então a lista é o que evita depender de qual espelho está
+         * saudável na hora da busca: o primeiro que resolver encerra. Vazia, cai
+         * no padrão embutido no código (`vizer.autos`).
+         */
+        'stream_direto_vod_hosts' => $lista(env('TORRENTS_STREAM_DIRETO_VOD_HOSTS'), []),
+
+        /*
          * Estratégia de roteamento por idade da série.
          *
          * Uma série recente tem release fresco nos indexadores de torrent e o

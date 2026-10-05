@@ -3089,6 +3089,66 @@ inútil não é a API, é o **resolvedor** que executa o player até o fim. Enqu
 esse resolvedor não existir (e ele esbarra no bloqueio por IP de datacenter),
 nenhuma dessas APIs tem lugar no caminho da fonte direta.
 
+##### O provedor endereçável por id: a fonte que dispensa a busca
+
+O levantamento acima fechou a porta das APIs de embed, mas deixou de fora uma
+categoria que **não é de embed** e que valeu a pena abrir: o provedor que
+**aceita o id do TMDB** e devolve o arquivo de vídeo pronto. Ele não entrega um
+iframe para resolver — entrega o `.mp4` (ou o `.m3u8`) direto, sem página
+intermediária.
+
+O `vizer.autos` é o exemplo implementado. O endpoint é
+`POST /wp-json/api/v1/player`, com o corpo em JSON:
+
+| Campo | Valor |
+| --- | --- |
+| `type` | `episode` ou `movie` |
+| `tmdb` | o id do TMDB (ex.: `693`) |
+| `season` / `episode` | só em série (ex.: `4` e `17`) |
+
+A resposta traz `mode`, `url` e os metadados do título. Com o acervo disponível,
+`mode` vem como `native` e a `url` aponta para um `.mp4` assinado num CDN (o
+`nixplay.lat`, que redireciona para a borda PT-BR). Sem o episódio, `mode` vem
+como `embed` e a `url` é o fallback de um agregador de terceiro — esse caminho é
+do [`ResolvedorEmbed`], não deste, e por isso o resolvedor o **recusa**:
+oferecer o embed cru entregaria uma página, não um vídeo.
+
+A razão de essa fonte valer mais do que as outras é o **custo**. Enquanto o
+motor e os agregadores precisam *descobrir* a página do título — e a descoberta é
+justamente a parte que falha no conteúdo raro —, o id do TMDB já está em mãos: é
+a chave da rota `/fontes/{id}`. Por isso o [`ResolvedorVod`] entra como **passo
+zero** do [`ProvedorStreamDireto`]: é a primeira consulta, antes do motor e dos
+agregadores. Quando ele resolve, a cascata nem começa; quando devolve "sem
+fonte", a varredura segue exatamente como era.
+
+A lista de espelhos é configurável (`stream_direto_vod_hosts`) porque esses
+domínios giram com frequência e nem sempre carregam o mesmo acervo — o primeiro
+que resolver encerra a tentativa. Vazia, cai no padrão embutido (`vizer.autos`).
+A chave `stream_direto_resolver_vod` desliga o passo sem desligar o fallback.
+
+**O muro do CDN: o `403` sem `User-Agent`.** Resolvida a URL, faltava a segunda
+metade — o media-service conseguir *lê-la*. O CDN do provedor recusa quem não se
+anuncia como navegador: o `ffprobe`/`ffmpeg` mandam o agente `Lavf/...` e recebem
+`403 Forbidden` antes de a leitura começar, e a sessão caía para o modo
+conservador em cima de uma fonte saudável. A correção mora no
+[`media-service`](../media-service/src/services/hls.js:124): as entradas HTTP
+remotas passam a enviar um `User-Agent` de navegador (`-user_agent`), tanto na
+sondagem (`ffprobe`) quanto na conversão (`ffmpeg`).
+
+A implementação guarda uma armadilha que vale o registro. O `fluent-ffmpeg` só
+divide uma opção pelos espaços quando ela tem **exatamente um** — `-reconnect 1`
+vira dois argumentos, mas `-user_agent Mozilla/5.0 (X11; ...)`, com muitos
+espaços, seria passado como um argumento só (`Unrecognized option 'user_agent
+Mozilla/5.0 ...'`). Por isso o par vai **separado**: `'-user_agent'` e o agente
+como itens distintos do array. O `ffprobe`, por sua vez, **não divide nada** —
+ele passa cada item literalmente —, então a lista precisa nascer já em itens
+separados para servir aos dois caminhos.
+
+Com a fonte resolvida no backend e legível no media-service, a cadeia fecha: o
+T4E17 de "Donas de Casa Desesperadas" (tmdb `693`), que antes morria no
+`vaiquecol.com` sem o episódio, agora sai como fonte `direto` — a sessão sobe
+`pronto`, com áudio `por` e playlist HLS servida.
+
    ##### Os tipos de motor que restaram
 
    O serviço aceita **dois tipos de motor**, e o tipo decide como montar a

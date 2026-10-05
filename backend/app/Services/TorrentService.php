@@ -50,6 +50,7 @@ class TorrentService
         ?string $tituloOriginal = null,
         ?int $temporada = null,
         ?int $episodio = null,
+        ?string $tmdbId = null,
     ): array {
         // Quando temporada e episódio vêm preenchidos, a busca é de um episódio
         // de série: o termo passa a ser "Titulo S01E02" em vez do título solto.
@@ -97,14 +98,14 @@ class TorrentService
         $titulos = [];
 
         if ($canal === RoteadorBusca::CANAL_STREAM_DIRETO) {
-            $fontes = $this->buscarPeloStreamDireto($titulo, $ano, $imdbId, $tituloOriginal, $temporada, $episodio, $titulos);
+            $fontes = $this->buscarPeloStreamDireto($titulo, $ano, $imdbId, $tituloOriginal, $temporada, $episodio, $tmdbId, $titulos);
         } else {
             $fontes = $this->buscarPelosTorrents($titulo, $ano, $imdbId, $tituloOriginal, $temporada, $episodio, $episodioDeSerie, $titulos);
 
             if ($fontes === []) {
                 Log::debug('Busca de torrents: torrents (canal preferido) vazio, acionando o fallback cruzado de stream direto.');
 
-                $fontes = $this->buscarPeloStreamDireto($titulo, $ano, $imdbId, $tituloOriginal, $temporada, $episodio, $titulos);
+                $fontes = $this->buscarPeloStreamDireto($titulo, $ano, $imdbId, $tituloOriginal, $temporada, $episodio, $tmdbId, $titulos);
             }
         }
 
@@ -220,6 +221,7 @@ class TorrentService
         ?string $tituloOriginal,
         ?int $temporada,
         ?int $episodio,
+        ?string $tmdbId,
         array &$titulos,
     ): array {
         $titulosDoFallback = $titulos;
@@ -240,7 +242,7 @@ class TorrentService
             'episodio' => $episodio,
         ]);
 
-        $fontes = $this->catalogo->buscarFallbackDireto($titulosDoFallback, $ano, $imdbId, $temporada, $episodio);
+        $fontes = $this->catalogo->buscarFallbackDireto($titulosDoFallback, $ano, $imdbId, $temporada, $episodio, $tmdbId);
 
         Log::debug('Busca de torrents: stream direto devolveu.', [
             'fontes' => count($fontes),
