@@ -866,15 +866,26 @@ por nome, o `/fontes` ultrapassava os 60 s de `TIMEOUT_REQUISICAO_MS` e a
 requisição era cancelada antes de a lista chegar à tela.
 
 O [`OrcamentoBusca`](../backend/app/Services/Torrents/OrcamentoBusca.php:1) é o
-relógio único que a busca inteira enxerga. Ele é registrado como **singleton** no
+relógio que a busca inteira enxerga. Ele é registrado como **singleton** no
 [`AppServiceProvider`](../backend/app/Providers/AppServiceProvider.php:14) de
 propósito: o catálogo e o cliente HTTP precisam ver o **mesmo** prazo, senão o
 socorro pelo FlareSolverr começaria uma espera de 70 s a poucos segundos do fim.
 
+Ele guarda **um prazo por canal** — `torrents` e `stream_direto` —, e cada canal
+tem o seu orçamento porque os custos são de ordens diferentes: um provedor de
+torrent responde em milissegundos, enquanto o stream direto paga uma renderização
+do FlareSolverr por página. Quem aponta o canal ativo é o `CatalogoProvedores`,
+antes de acionar cada método. Sobre os dois prazos existe um **teto global**
+(`tempo_total_busca`, 55 s), definido pelo [`TorrentService`](../backend/app/Services/TorrentService.php:91)
+no início da busca: `abrir()` nunca estica um prazo além dele. É o que permite os
+dois métodos rodarem sempre — o segundo só enxerga o que sobrou — sem que a soma
+passe do tempo que o frontend espera.
+
 O ciclo é curto:
 
 1. [`CatalogoProvedores::buscar()`](../backend/app/Services/Torrents/CatalogoProvedores.php:196)
-   abre o orçamento com `TORRENTS_ORCAMENTO_BUSCA` (padrão `45`).
+   fixa o canal em `torrents` e abre o orçamento com `TORRENTS_ORCAMENTO_BUSCA`
+   (padrão `45`), cortado pelo teto global que o `TorrentService` já definiu.
 2. Antes de cada termo, antes de cada degrau **e antes de cada provedor dentro de
    uma rodada**, a cascata consulta
    [`orcamentoEsgotado()`](../backend/app/Services/Torrents/CatalogoProvedores.php:365);
@@ -891,9 +902,13 @@ O ciclo é curto:
 4. O [`TorznabService`](../backend/app/Services/TorznabService.php:116) também
    enxerga o relógio: o prazo do degrau passa a ser o menor entre o próprio
    (`TORRENTS_TORZNAB_ORCAMENTO`) e o que resta da busca inteira.
-5. [`encerrar()`](../backend/app/Services/Torrents/CatalogoProvedores.php:549)
-   fecha o orçamento. É o único ponto por onde todos os desfechos passam; deixá-lo
-   de pé faria a próxima busca herdar um relógio já vencido.
+5. [`encerrar()`](../backend/app/Services/Torrents/CatalogoProvedores.php:940)
+   **não** fecha mais o orçamento: ele é compartilhado entre os dois métodos e
+   precisa continuar de pé quando a cascata é só a segunda metade da busca. Quem
+   fecha os dois canais — e descarta o teto global — é o
+   [`TorrentService`](../backend/app/Services/TorrentService.php:129), uma única
+   vez, no fim da busca inteira, via `fecharOrcamento()`. Deixá-lo de pé faria a
+   próxima busca herdar um relógio já vencido.
 
 ##### O orçamento precisa alcançar também os provedores de pool
 
@@ -963,11 +978,13 @@ Ao estourar, sai uma linha de aviso com o degrau onde a busca parou:
 Orçamento da busca de torrents esgotado; devolvendo o que foi recolhido. {"degrau":"nativos","orcamento":45}
 ```
 
-O valor é o teto que manda: os orçamentos por degrau (`TORRENTS_TORZNAB_ORCAMENTO`,
-por exemplo) só apertam **dentro** dele. Ajuste `TORRENTS_ORCAMENTO_BUSCA` para
-baixo se o frontend reclamar de lentidão, ou para cima se a lista vier curta demais
-por corte de tempo — mas mantenha-o abaixo de `TIMEOUT_REQUISICAO_MS` (`60000` no
-frontend), senão o corte acontece do lado de lá e a lista se perde.
+Os valores são freios por camada: os orçamentos por degrau
+(`TORRENTS_TORZNAB_ORCAMENTO`, por exemplo) só apertam **dentro** do orçamento do
+canal, que por sua vez nunca passa do teto global (`TORRENTS_TEMPO_TOTAL_BUSCA`).
+Como os dois métodos rodam sempre e o teto é de uma busca só, ajustar o canal para
+baixo encurta o espaço de que o outro método dispõe. Mantenha o teto abaixo de
+`TIMEOUT_REQUISICAO_MS` (`60000` no frontend), senão o corte acontece do lado de lá
+e a lista se perde.
 
 ##### O socorro do FlareSolverr não pode ser termo a termo
 
@@ -1134,8 +1151,14 @@ identificam a origem:
 
 | Campo | Valores | Significado |
 | --- | --- | --- |
-| `provedor` | `trackers_br` \| `apibay` \| `bt4g` \| `torrentio` \| `torznab` \| `yts` | identificador estável, para lógica |
-| `provedor_rotulo` | `Tracker PT-BR` \| `APIBay` \| `BT4G` \| `Torrentio` \| `Indexador (Torznab)` \| `YTS` | rótulo para exibição |
+| `provedor` | `trackers_br` \| `apibay` \| `bt4g` \| `torrentio` \| `torznab` \| `yts` \| domínio do site (fonte direta) | identificador estável, para lógica |
+| `provedor_rotulo` | `Tracker PT-BR` \| `APIBay` \| `BT4G` \| `Torrentio` \| `Indexador (Torznab)` \| `YTS` \| nome do site (fonte direta) | rótulo para exibição |
+
+A fonte de **stream direto** foge da tabela dos torrents de um jeito só: em vez do
+nome do método, `provedor` traz o **domínio do site de origem** — o agregador onde o
+vídeo foi achado —, porque para o usuário é isso que identifica a procedência do
+link. A cobertura continua com uma linha só (`stream_direto`), e a ligação entre as
+duas é feita pelo `tipo` da fonte.
 
 Os três primeiros formam o degrau 1 (busca por nome), o `torrentio` entra pelo
 `imdb_id` e o `torznab` é o degrau 2; o `yts` é a reserva em inglês.
@@ -2513,51 +2536,89 @@ o erro se repetia uma vez por fonte — daí a rajada de requisições com o mes
 A cascata de torrents resolve bem o conteúdo com seeders, mas falha justamente
 onde o acervo PT-BR é mais frágil: lançamentos antigos, novelas, filmes de
 catálogo. Nesses casos o torrent morreu e nenhuma quantidade de termos de busca
-o ressuscita. O **stream direto** é a rede de segurança para esse cenário — o
-equivalente ao comportamento de apps como Lumigo/Stremio, que buscam um link de
-vídeo pronto (MP4 ou HLS) em vez de uma malha P2P.
+o ressuscita. O **stream direto** cobre esse cenário — o equivalente ao
+comportamento de apps como Lumigo/Stremio, que buscam um link de vídeo pronto
+(MP4 ou HLS) em vez de uma malha P2P.
 
-#### O provedor é um fallback, não um degrau
+Hoje ele é um **método de indexação**, não um socorro de última hora: roda sempre,
+e roda **primeiro** na busca. A cascata de torrents entra em seguida, na mesma
+requisição, e a lista final é a soma das duas.
+
+#### O provedor direto é um método, não um degrau da cascata
 
 [`ProvedorStreamDireto`](../backend/app/Services/Torrents/ProvedorStreamDireto.php:1)
 implementa o mesmo contrato `ProvedorTorrents` dos demais, mas **não** entra na
-cascata normal. O gatilho mora em
-[`TorrentService::fontes()`](../backend/app/Services/TorrentService.php:96), e não
-dentro do catálogo: ele dispara **depois** de `ordenar()`. O caminho comum
-(torrent PT-BR vivo) não paga nenhum custo extra — a consulta direta nem chega a
-acontecer.
+cascata normal: quem o aciona é o
+[`TorrentService::fontes()`](../backend/app/Services/TorrentService.php:58), e não o
+catálogo. Ele roda **sempre**, e roda **primeiro** — antes da cascata de torrents,
+na mesma busca.
 
-O momento importa. A cascata pode receber dezenas de fontes do Torrentio e o
-filtro de idioma (`ePtBr`) descartar todas: para o usuário, isso é lista vazia, e
-é aí que o socorro vale. Checar a lista **bruta**, antes do filtro, acionaria o
-fallback mesmo quando metade do que veio ainda ia ser aproveitada — e o provedor
-direto gastaria orçamento à toa. Por isso a checagem é pela lista que
-[`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:372)
-devolveu, não pela que o catálogo recolheu.
+A ordem é a prioridade do player. O frontend tenta as fontes na ordem da lista, e a
+fonte direta é a única que não depende de malha: quando o acervo web tem o título,
+ele toca sem esperar tracker. A cascata vem depois e soma o que os indexadores têm,
+com o tempo que sobrar do teto global.
 
-O critério é **"a lista final ficou vazia"**, e o `ordenar()` garante que isso
-signifique "não sobrou áudio PT-BR". O corte duro de idioma
-(`somente_pt_br_ou_legendado`) não abre exceção para a reserva: quando só veio
-release em inglês, o `ordenar()` devolve **lista vazia**, e não o original como
-consolação. Antes ele revertia o corte e devolvia a reserva "para o player não
-ficar sem nada" — e era exatamente isso que impedia o fallback de disparar, porque
-a lista nunca ficava vazia. A reserva em inglês não é resposta para quem pediu
-português: o que resolve o conteúdo raro é o stream direto. A reserva só volta
-quando o corte está desligado (`somente_pt_br_ou_legendado = false`), aí sim o
+Rodar por último, como antes, custava lista: o antigo gatilho só disparava com a
+lista final **vazia**, então um episódio que tinha uma fonte fraca de torrent e uma
+fonte direta boa ficava só com a primeira — e o usuário nunca sabia que existia uma
+opção melhor. O gatilho por lista vazia também era cego para o filtro de idioma: a
+cascata podia devolver dezenas de fontes, o filtro descartar todas e, mesmo assim,
+a consulta direta não acontecer.
+
+O corte duro de idioma (`somente_pt_br_ou_legendado`) continua sem abrir exceção
+para a reserva: quando só veio release em inglês, o `ordenar()` devolve **lista
+vazia**, e não o original como consolação. A reserva em inglês não é resposta para
+quem pediu português — quem resolve o conteúdo raro é o stream direto. A reserva só
+volta quando o corte está desligado (`somente_pt_br_ou_legendado = false`), aí sim o
 usuário aceita qualquer idioma. Se o provedor direto não achar nada, a lista
-permanece vazia — o cliente mostra "sem fontes" em vez de oferecer um release que
-o usuário não pediu.
+permanece vazia — o cliente mostra "sem fontes" em vez de oferecer um release que o
+usuário não pediu.
 
 O acionamento passa por
-[`CatalogoProvedores::buscarFallbackDireto()`](../backend/app/Services/Torrents/CatalogoProvedores.php:473),
+[`CatalogoProvedores::buscarFallbackDireto()`](../backend/app/Services/Torrents/CatalogoProvedores.php:493),
 que é público justamente para ser chamado de fora da cascata. As fontes diretas
-entram já montadas e **não** voltam por `ordenar()`: são o último recurso, e
-reordená-las junto com os torrents só as misturaria a uma lista que, por
-definição, está vazia.
+entram já montadas e **não** voltam por `ordenar()`: elas são concatenadas à frente
+da lista de torrents, e passá-las pela ordenação que espera magnet só as descartaria.
 
-O fallback abre um **orçamento próprio** (`TORRENTS_STREAM_DIRETO_ORCAMENTO`,
-padrão 45 s) porque o orçamento global já foi consumido pelos três degraus. Sem
-isso, a consulta direta nasceria sem tempo para responder.
+O stream direto abre o **próprio orçamento** (`TORRENTS_STREAM_DIRETO_ORCAMENTO`,
+padrão 45 s) porque o custo dele é de outra ordem: uma renderização de navegador por
+página, de 10 a 15 s, e são necessárias duas no mínimo. Como os dois métodos sempre
+rodam, esses orçamentos somam no tempo da resposta — quem impede a soma de estourar
+o que o frontend espera é o teto global (`TORRENTS_TEMPO_TOTAL_BUSCA`), que corta
+cada canal em `abrir()`.
+
+##### A fonte direta é marcada pelo site de origem
+
+O `provedor` de uma fonte direta deixou de ser o nome do método: ele carrega o
+**domínio do site onde o vídeo foi achado** (`verpobreflix.net`, `superflixapi.quest`),
+e o `provedor_rotulo` traz esse domínio como nome apresentável. As **chaves** do
+JSON não mudaram — o que mudou é o valor, que passou a dizer de onde o link veio. O
+efeito no overlay é direto: a linha de origem, que antes trazia só "Link direto"
+para toda fonte direta (`PlayerOverlay.vue`), passa a começar pelo nome do agregador
+— `Verpobreflix.net · Link direto · Dublado`. O marcador de que aquilo não é um
+torrent continua; o que entrou foi a procedência.
+
+A origem é lida em
+[`ProvedorStreamDireto::origemDa()`](../backend/app/Services/Torrents/ProvedorStreamDireto.php:762),
+que usa o host da página e descarta o `www.` — sem isso, `www.site.com` e
+`site.com` contariam como dois sites. Quando a página não tem host reconhecível, a
+fonte volta a ser rotulada pelo método (`stream_direto` / "Stream direto"), para o
+agrupamento do teto por origem não receber uma chave vazia.
+
+Esse rótulo é o que sustenta o **teto por site**
+(`TORRENTS_STREAM_DIRETO_MAX_FONTES_POR_SITE`, padrão `3`): o alvo de fontes conta
+fontes de qualquer origem, e sem o teto um agregador que devolve cinco espelhos do
+mesmo episódio ocupava as cinco posições do alvo — e os sites seguintes nem eram
+consultados, porque a varredura encerrava ali. O corte é aplicado a **cada página**
+em [`limitarPorOrigem()`](../backend/app/Services/Torrents/ProvedorStreamDireto.php:415),
+e não só no fim, justamente por causa da conta do alvo.
+
+Quem casa a fonte direta com a **linha do censo** é
+[`CatalogoProvedores::linhaDoCenso()`](../backend/app/Services/Torrents/CatalogoProvedores.php:835),
+pelo `tipo`. Sem esse desvio, o `provedor` que agora traz o agregador não casaria
+com a linha `stream_direto` e as duas contas do relatório — as `aproveitadas` do
+gate e o `na_lista` da montagem — ficariam zeradas, dizendo `barrado_no_filtro` de
+uma busca que achou o episódio.
 
 ##### A cascata não aborta com a lista de títulos vazia
 
@@ -2570,11 +2631,10 @@ sem que o Torrentio ou os indexadores tivessem sido ouvidos.
 
 Isso estava errado por dois motivos. Primeiro, os provedores por identificador
 (Torrentio, addons Stremio) respondem pelo `imdb_id`, não pelo termo — uma lista
-de termos vazia não é motivo para não perguntar. Segundo, mesmo que a cascata
-voltasse vazia, o fallback de stream direto ainda teria o título original para
-trabalhar; abortar cedo matava essa última chance. A lista vazia é um caso
-legítimo, não um erro que justifique desistir da busca inteira. O
-[`CatalogoProvedores::buscar()`](../backend/app/Services/Torrents/CatalogoProvedores.php:210)
+de termos vazia não é motivo para não perguntar. Segundo, o método direto ainda tem
+o título original para trabalhar; abortar cedo matava essa última chance. A lista
+vazia é um caso legítimo, não um erro que justifique desistir da busca inteira. O
+[`CatalogoProvedores::buscar()`](../backend/app/Services/Torrents/CatalogoProvedores.php:222)
 já trata o caso com segurança: a rodada de abertura só roda se houver um primeiro
 título, os laços sobre lista vazia não iteram e o YTS recebe string vazia e se
 abstém.
@@ -3556,29 +3616,31 @@ Para ver esse rastro, suba o nível do canal para `debug` (`LOG_LEVEL=debug` no
 `.env`). Em produção o padrão é `error`, então só os `warning`/`info` de falha
 aparecem.
 
-##### O rastro do gatilho: por que o fallback não rodou
+##### O rastro do acionamento: por que o stream direto não rodou
 
 O rastro acima começa **dentro** do scraper. Se ele nunca aparece, o problema é
-antes: o fallback não chegou a ser acionado. Para esse caso há um segundo rastro,
-no gatilho e na entrada do provedor:
+antes: a consulta direta não chegou a ser acionada. Para esse caso há um segundo
+rastro, no acionamento e na entrada do provedor:
 
-- `debug` **"lista pós-filtro vazia, acionando o fallback de stream direto"** —
-  em [`TorrentService::fontes()`](../backend/app/Services/TorrentService.php:131),
-  com os títulos que serão passados. É a prova de que o gatilho disparou.
-- `debug` **"fallback de stream direto devolveu"** — quantas fontes voltaram.
-- `debug` **"fallback acionado"** — em
-  [`CatalogoProvedores::buscarFallbackDireto()`](../backend/app/Services/Torrents/CatalogoProvedores.php:473),
+- `debug` **"Busca de torrents: acionando o stream direto."** — em
+  [`TorrentService::buscarPeloStreamDireto()`](../backend/app/Services/TorrentService.php:238),
+  com os títulos que serão passados. É a prova de que o método entrou em cena.
+- `debug` **"Busca de torrents: stream direto devolveu."** — quantas fontes
+  voltaram.
+- `debug` **"Stream direto: fallback acionado."** — em
+  [`CatalogoProvedores::buscarFallbackDireto()`](../backend/app/Services/Torrents/CatalogoProvedores.php:510),
   com títulos, ano, `imdb_id` e temporada/episódio.
-- `info` **"fallback desligado, provedor não consultado"** — a chave
+- `info` **"Stream direto: fallback desligado, provedor não consultado."** — a chave
   `TORRENTS_STREAM_DIRETO_HABILITADO` está `false`. **Este é o log que explica o
-  silêncio**: sem ele, um fallback desligado era indistinguível de um fallback que
-  rodou e não achou nada — os dois terminam com a lista vazia e o mesmo aviso
-  "Nenhuma fonte de torrent encontrada" no frontend.
-- `info` **"fallback sem título para buscar, provedor não consultado"** — a lista
-  de títulos chegou vazia.
-- `debug` **"fallback concluído"** — fontes devolvidas e tempo gasto.
+  silêncio**: sem ele, um método desligado era indistinguível de um método que rodou
+  e não achou nada — os dois terminam com a lista vazia e o mesmo aviso "Nenhuma
+  fonte de torrent encontrada" no frontend.
+- `info` **"Stream direto: fallback sem título para buscar, provedor não
+  consultado."** — a lista de títulos chegou vazia.
+- `debug` **"Stream direto: fallback concluído."** — fontes devolvidas e tempo
+  gasto.
 
-A ordem de leitura é: se o `debug` "acionando o fallback" aparece mas o
+A ordem de leitura é: se o `debug` "acionando o stream direto" aparece mas o
 `debug` "fallback acionado" não, o problema está entre o `TorrentService` e o
 catálogo. Se o `info` "fallback desligado" aparece, é configuração — ligue
 `TORRENTS_STREAM_DIRETO_HABILITADO=true` e rode `php artisan config:clear`, porque
@@ -3593,6 +3655,11 @@ Uma fonte direta carrega dois campos que a distinguem de um torrent:
 | `tipo` | `torrent` | `direto` |
 | `magnet` | link magnet | vazio |
 | `stream` | vazio | URL MP4/HLS |
+
+O `provedor` de uma fonte direta não é o nome do método: é o **site de origem** — o
+domínio do agregador onde o vídeo foi achado. A linha do censo continua sendo uma só
+(`stream_direto`), e quem faz o casamento entre as duas é
+`CatalogoProvedores::linhaDoCenso()`, pelo `tipo`.
 
 A montagem fica em
 [`NormalizaFonte::montarFonteDireta()`](../backend/app/Services/Torrents/NormalizaFonte.php:96).
@@ -3852,9 +3919,14 @@ TORRENTS_STREAM_DIRETO_MIN_PALAVRAS_CHAVE=2
 TORRENTS_STREAM_DIRETO_FILTRO_ADULTO=true
 TORRENTS_STREAM_DIRETO_BUSCA_DIRETA=true
 TORRENTS_STREAM_DIRETO_RESOLVER_EMBEDS=true
-TORRENTS_BUSCA_POR_IDADE_HABILITADA=true
-TORRENTS_BUSCA_IDADE_LIMITE_ANOS=2
+TORRENTS_TEMPO_TOTAL_BUSCA=55
 ```
+
+`TORRENTS_TEMPO_TOTAL_BUSCA` é o **teto global** de uma busca. Como os dois métodos
+rodam sempre — o stream direto primeiro, a cascata de torrents depois —, os
+orçamentos de canal somam no tempo da resposta; o teto é quem impede essa soma de
+passar do que o frontend espera. Cada canal abre com o menor prazo entre o seu
+orçamento e o que sobrou do teto.
 
 `TORRENTS_STREAM_DIRETO_MOTORES` é a lista de motores de busca (separada por
 vírgula). O padrão é o **SearXNG interno** do compose
@@ -3924,62 +3996,63 @@ scraper depende de páginas de terceiros, então a taxa de acerto varia com o
 acervo — conteúdo muito raro pode não ter página nenhuma, e a lista continua
 vazia.
 
-### O canal de partida depende da idade da série
+### Os dois métodos rodam sempre, na mesma busca
 
 O stream direto nasceu como fallback: só entrava depois de a cascata de torrents
-terminar vazia. Isso funciona para o conteúdo raro, mas tem um custo escondido —
-a cascata roda **primeiro**, e numa série antiga ela gasta o orçamento inteiro
-procurando um release que os indexadores já não têm. Quando o scraper finalmente
-começa, o relógio global já fechou. Era o timeout: o canal certo chegava por
+terminar vazia. O desenho tinha um custo escondido — quando ele era o canal certo
+(conteúdo que os indexadores já não têm), a cascata rodava **primeiro** e gastava o
+orçamento inteiro procurando um release inexistente. Quando o scraper finalmente
+começava, o relógio já tinha fechado. Era o timeout: o canal certo chegava por
 último, sem tempo.
 
-A correção inverte a ordem para quem precisa. O [`RoteadorBusca`] lê o ano de
-lançamento da série e decide o canal de partida:
+A etapa anterior tentou resolver isso roteando por idade — série antiga começava
+pelo scraper, série recente pelos torrents. O roteador funcionou, mas pagou um
+preço alto: **o usuário de cada metade perdia a outra**. Numa série antiga não
+havia cruzamento para os torrents, e numa recente o scraper só entrava se a lista
+já filtrada viesse vazia. Pior: uma série de 2004 podia ter o release fresco na
+temporada nova, e o ano da **série** mandava a busca pelo canal errado.
 
-- **Série recente** (dentro do limiar, padrão 2 anos): torrents primeiro. É onde
-  o release fresco está, e o Torrentio responde em segundos.
-- **Série antiga** (fora do limiar): stream direto primeiro. O scraper é quem
-  acha o conteúdo que os indexadores perderam, e ele começa com o orçamento
-  inteiro à disposição.
+A correção tirou o roteamento. Hoje os dois métodos rodam sempre, na mesma busca e
+nesta ordem:
 
-O critério é o ano de lançamento da **série**, não o da temporada. Uma série de
-2004 continua sendo "de 2004" na décima temporada — e é isso que se quer: o
-catálogo de torrents envelhece junto com a série, não com a temporada.
+1. **Stream direto** — a fonte direta toca sem malha e resolve pelo id do TMDB
+   quando o agregador indexou o título. É o primeiro passo porque a resposta dele
+   é a única que não depende de descobrir página nem de baixar nada.
+2. **Cascata de torrents** — logo em seguida, com o volume que os indexadores dão
+   e a qualidade que só um release tem.
 
-#### O fallback cruzado: só a série recente tem segunda chance
+O resultado é uma lista única com as duas origens, e a montagem final ordena: a
+fonte direta vem primeiro (não depende de peers), os torrents depois. Quem não
+achar nada num método tem o outro garantido — sem depender de idade, de limiar ou
+de acerto de catálogo.
 
-Inverter a ordem não podia significar perder o outro canal — mas também não podia
-significar gastar o orçamento num canal que não tem o que se procura. A distinção
-é a idade:
+#### O teto global: como a soma dos dois caberia no que o frontend espera
 
-- **Série recente**: se os torrents não devolvem nada, o stream direto ainda pode
-  ter a resposta num agregador de vídeo. O cruzamento é o último recurso, nunca o
-  primeiro — e só dispara com a lista **já ordenada e filtrada** vazia.
-- **Série antiga**: o stream direto é o **único** canal. Não há cruzamento para os
-  torrents. A premissa é que, passado o limiar, os indexadores já não têm o
-  release — insistir neles é queimar o relógio que o scraper precisa para achar a
-  fonte. Quem resolve série antiga é o scraper, e ele recebe o orçamento inteiro
-  para isso.
+Rodar os dois sempre tem uma consequência aritmética: os prazos deixariam de ser
+um limite e virariam soma. Dois orçamentos de 45 s dariam 90 s de pior caso — acima
+dos ~60 s que o frontend espera, e a requisição seria cancelada antes de a lista
+chegar.
 
-A montagem final, o corte de idioma e o censo são idênticos nos dois caminhos: a
-única coisa que muda é a ordem (e, na série antiga, a ausência do cruzamento).
-Por isso os dois canais são métodos privados que devolvem a lista pronta, e não
-blocos duplicados dentro de `fontes()`.
+O [`OrcamentoBusca`] ganhou então um **teto global** (`tempo_total_busca`, padrão
+55 s), definido pelo [`TorrentService`] no início da busca. `abrir()` corta cada
+prazo nele: o primeiro método gasta o seu orçamento à vontade, mas o segundo só
+enxerga o que **sobrou** do teto. Se o stream direto consumiu 40 s, a cascata abre
+com os 15 s restantes; se consumiu tudo, ela abre esgotada e o catálogo encerra sem
+perguntar. Assim os dois métodos sempre rodam, mas a resposta nunca passa do teto.
 
-##### O censo do stream direto não pode ser apagado pelo fallback cruzado
+##### O censo do stream direto não pode ser apagado pela cascata
 
 O stream direto é o único provedor que não passa pela cascata: ele é acionado à
-parte, antes ou depois dela, e o seu censo é preenchido à mão em
-`buscarFallbackDireto()`. Isso criava uma mentira no relatório quando o roteador
-mandava a série antiga para o stream direto primeiro: ele rodava, voltava vazio,
-e o fallback cruzado chamava `buscar()` — que **zera o censo** no início. O
-registro da consulta ao stream direto era apagado junto, e a cobertura final
-dizia `nao_consultado` de um provedor que tinha acabado de ser consultado.
+parte e o seu censo é preenchido à mão em `buscarFallbackDireto()`. Como os dois
+métodos rodam sempre, a cascata — que chama `buscar()` logo depois — **zera o
+censo** no início, e o registro da consulta ao stream direto era apagado junto: a
+cobertura final dizia `nao_consultado` de um provedor que tinha acabado de ser
+consultado.
 
 O sintoma era confuso: o log mostrava o stream direto sendo acionado, mas o
 relatório jurava que ele nunca foi perguntado. A correção preserva o registro do
-stream direto em `reiniciarCenso()`: a cascata zera os demais, mas mantém o que o
-fallback direto já contou. Assim `nao_consultado` volta a significar "não foi
+stream direto em `reiniciarCenso()`: a cascata zera os demais, mas mantém o que a
+consulta direta já contou. Assim `nao_consultado` volta a significar "não foi
 perguntado" — e não "foi perguntado, mas a cascata passou por cima do registro".
 
 ##### O censo por agregador: quem o stream direto perguntou
@@ -4055,12 +4128,12 @@ espalhado: o [`ClienteHttp`] e o trait [`ConsultaComOrcamento`] leem o relógio 
 saber de qual canal se trata, e quem troca o canal é o [`CatalogoProvedores`], no
 ponto exato em que aciona cada metade da busca.
 
-Os dois orçamentos **não somam** para o usuário: o stream direto só roda quando a
-cascata de torrents falhou, então o tempo dele é o tempo da resposta, não uma
-adição ao da cascata. O `abrirSeFechado()` continua idempotente **dentro** de cada
-canal: se o stream direto já estiver de pé (por exemplo, quando ele é o canal
-preferido de uma série antiga e a cascata entra depois como fallback cruzado), o
-relógio não é reiniciado.
+Os dois orçamentos **somam** no tempo da resposta: os dois métodos sempre rodam, e
+o canal que roda depois herda o que sobrou. Quem impede a soma de estourar o que o
+frontend espera é o teto global (`tempo_total_busca`), que `abrir()` aplica sobre
+qualquer prazo de canal. O `abrirSeFechado()` continua idempotente **dentro** de
+cada canal: se o canal `stream_direto` já estiver de pé (por uma chamada anterior da
+mesma busca), o relógio não é reiniciado.
 
 O valor do orçamento do stream direto precisa cobrir a descida inteira. Com os
 12 s herdados do desenho antigo, a primeira página consumia o orçamento todo e a
@@ -4070,12 +4143,12 @@ deixar a resposta passar de um minuto.
 
 O fechamento mudou de dono. Antes cada canal fechava o próprio orçamento no
 `finally`; agora quem fecha **os dois** é o [`TorrentService`], no fim da busca
-inteira, via `fecharOrcamento()` — que chama `fecharTudo()` e devolve o canal ativo
-ao padrão. É o único ponto por onde todos os desfechos passam, então é ali que os
-relógios encerram — e a próxima busca começa limpa, sem herdar um prazo vencido. O
-`finally` do `buscarFallbackDireto()` **não** fecha o relógio do stream direto: só
-devolve o canal ativo ao padrão, para a cascata que entrar depois como fallback
-cruzado ler o prazo certo.
+inteira, via `fecharOrcamento()` — que chama `fecharTudo()`, descarta o teto global
+e devolve o canal ativo ao padrão. É o único ponto por onde todos os desfechos
+passam, então é ali que os relógios encerram — e a próxima busca começa limpa, sem
+herdar um prazo vencido. O `finally` do `buscarFallbackDireto()` **não** fecha o
+relógio do stream direto: só devolve o canal ativo ao padrão, para a cascata que
+roda logo depois ler o prazo certo.
 
 #### O alvo de fontes: parar quando já há o suficiente
 
@@ -4362,25 +4435,20 @@ inteiro caiba num tempo aceitável. Os testes vivem em `MotorBuscaWebTest`
 (`test_dominio_de_adware_*`, `test_dominio_morto_*`), `RelevanciaTituloTest`
 (`test_video_*`) e `ProvedorStreamDiretoTest` (`test_pagina_de_site_morto_*`).
 
-#### Sem ano conhecido, a aposta é o fluxo normal
+#### O fim do roteamento por idade
 
-Quando o catálogo não informa o ano, não há como medir idade. Tratar a ausência
-como "antiga" mandaria para o scraper uma série recente que os torrents
-resolveriam em um segundo — e o scraper é mais lento e menos preciso. A aposta
-segura é o fluxo normal: os provedores por identificador (Torrentio, addons
-Stremio) respondem pelo `imdb_id` e não dependem do ano.
+O ano de lançamento não decide mais nada na busca. Ele foi útil enquanto o canal de
+partida era escolhido por idade, mas a decisão escondia dois erros: uma série
+antiga com temporada nova tinha o release fresco ignorado, e o usuário de cada
+metade perdia o outro método (ver
+["Os dois métodos rodam sempre"](#os-dois-métodos-rodam-sempre-na-mesma-busca)).
 
-#### As chaves da estratégia
+Hoje não há chave nem limiar a configurar: os dois métodos sempre rodam, e o que
+limita o tempo é o teto global da busca.
 
-`TORRENTS_BUSCA_POR_IDADE_HABILITADA` liga a estratégia (padrão `true`).
-Desligada, o roteador devolve sempre o canal de torrents e o fluxo volta a ser
-exatamente o de antes — a chave existe para poder desligar sem mexer no código,
-caso a estratégia se mostre ruim para algum catálogo.
-
-`TORRENTS_BUSCA_IDADE_LIMITE_ANOS` é o limiar, em anos, que separa recente de
-antiga (padrão 2). O limiar é **inclusivo**: com 2, uma série de dois anos ainda
-é recente e uma de três já é antiga. Zero ou negativo desliga o corte na prática,
-porque nenhuma série fica "fora" dele.
+`TORRENTS_BUSCA_IDADE_LIMITE_ANOS` e `TORRENTS_BUSCA_POR_IDADE_HABILITADA` foram
+removidas do `config/services.php` e dos `.env.example`. Se elas continuarem no seu
+`.env`, não fazem mais nada — podem ser apagadas.
 
 #### Reverificação: o gargalo é o motor de busca e o player cifrado, não a lista
 
