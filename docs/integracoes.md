@@ -275,7 +275,7 @@ em `Idioma original`. Com `TORRENTS_APENAS_PT_BR=true`, o corte descartava as 23
 fontes e a série aparecia vazia mesmo com o Torrentio respondendo.
 
 A correção passou a extrair o nome da **primeira linha do rótulo**
-([`nomeDoRotulo()`](../backend/app/Services/Torrents/ProvedorTorrentio.php:210)),
+([`nomeDoRotulo()`](../backend/app/Services/Torrents/LeituraStreamStremio.php:110)),
 preferindo o `filename` quando ele vem. Assim a numeração (`S01E01`) e as tags
 (`PORTUGUÊS BR`, `DUAL`) voltam a chegar ao catálogo.
 
@@ -290,7 +290,7 @@ seguir.
 A busca vai configurada com `language=portuguese` (veja a seção anterior), e isso
 tem um efeito colateral que custou uma reprodução inteira: o Torrentio **anota a
 resposta toda** com a bandeira de português. A
-[`normalizarStream()`](../backend/app/Services/Torrents/ProvedorTorrentio.php:160)
+[`normalizarStream()`](../backend/app/Services/Torrents/LeituraStreamStremio.php:28)
 repassava o rótulo completo (`$nome.' '.$rotulo`) para a classificação, e a
 bandeira fazia **todas** as fontes saírem como `Dublado` — inclusive um release
 americano do EZTV (`lanterns.2026.s01e01.1080p.web.h264-cakes[EZTVx.to].mkv`) e
@@ -305,7 +305,7 @@ release com mais seeds (o EZTV) subia ao topo e tocava em inglês sob o rótulo
 A correção tem duas camadas, porque uma só não fecha o buraco:
 
 1. **Classificar pelo nome do release.** A
-   [`idiomaDoNome()`](../backend/app/Services/Torrents/ProvedorTorrentio.php:300)
+   [`idiomaDoNome()`](../backend/app/Services/Torrents/LeituraStreamStremio.php:209)
    lê apenas o nome do arquivo (o `behaviorHints.filename` ou a primeira linha do
    rótulo), não o rótulo inteiro. O que o nome não provar, o
    `IdiomaFonte::deduzirDoTitulo()` resolve pelas tags do próprio nome (`DUAL`,
@@ -1147,16 +1147,19 @@ responde, de relance, se a lista veio do indexador onde as tags PT-BR foram
 configuradas ou da reserva em inglês.
 
 Pelo lado do servidor, os logs do
-[`consultarProvedores()`](../backend/app/Services/TorrentService.php:85) registram
-a transição:
+[`registrar()`](../backend/app/Services/TorrentService.php:733) registram a
+transição:
 
-- `Torznab configurado, mas sem fontes para o título.` — o indexador respondeu,
-  mas nada passou pelos filtros (título/ano/peers). Vale para as duas consultas.
-- `Nenhuma fonte dublada em PT-BR para o título.` — há fontes, mas nenhuma
+- `Nenhuma fonte de torrent encontrada para o título.` — a montagem terminou sem
+  nada: nem o degrau por nome, nem o `imdb_id`, nem a reserva em inglês passaram
+  pelos filtros (título/ano/peers).
+- `Há fontes, mas nenhuma dublada em PT-BR para o título.` — há fontes, mas nenhuma
   marcada como dublada, nem pela tag do título nem pelo atributo do indexador.
   É o log que separa "não existe fonte em PT-BR" de "a ordenação falhou".
-- `Torznab não configurado; a busca usará apenas o YTS (inglês).` — falta a
-  `TORRENTS_TORZNAB_KEY` no `.env`.
+- `Provedor de torrents pulado por falta de configuração.`
+  ([`consultarProvedor()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1737))
+  — falta a chave do provedor no `.env` (o Torznab depende da
+  `TORRENTS_TORZNAB_KEY`).
 
 #### O censo não pode mentir: `descartado_na_montagem`
 
@@ -1195,7 +1198,7 @@ Anatomy" trazia exatamente `👤 0 💾 456.78 MB ⚙️ BluDV`.
 
 Como o catálogo descarta toda fonte com 0 seeds, tratar esse 0 como definitivo
 apagava dubladas legítimas antes de elas chegarem à interface. Por isso
-[`ProvedorTorrentio::seedsDoRotulo()`](../backend/app/Services/Torrents/ProvedorTorrentio.php:186)
+[`LeituraStreamStremio::seedsDoRotulo()`](../backend/app/Services/Torrents/LeituraStreamStremio.php:166)
 aplica um piso de 1: o valor medido nunca é devolvido como 0. Quem confirma se a
 fonte vive é o media-service, que mede os peers na prática antes de abrir a
 reprodução — o mesmo raciocínio que já valia para o rótulo sem contagem alguma.
@@ -1525,7 +1528,7 @@ busca **abre o pack** e olha os nomes dos arquivos lá dentro.
 A inspeção só entra quando o nome **não** provou PT-BR, e é a última cartada,
 porque custa uma sessão no media-service:
 
-1. [`CatalogoProvedores::confirmarIdiomaDoPack()`](../backend/app/Services/Torrents/CatalogoProvedores.php:517)
+1. [`CatalogoProvedores::marcarPacks()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1347)
    intercepta a fonte já marcada como pack que ainda não é PT-BR.
 2. [`InspecaoPack::apurar()`](../backend/app/Services/Torrents/InspecaoPack.php:47)
    chama `POST /api/media/metadados` com o magnet e o infohash.
@@ -2102,7 +2105,7 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   que copia um áudio que o MSE não decodifica.
 - **A dublagem pode estar só no `title` da faixa**: a fonte rotulada "Torrentio ·
   Dublado" do *Lanterns* tocou em inglês. O rótulo do provedor é uma **promessa
-  do indexador**, não um fato do arquivo — [`idiomaDoRotulo`](../backend/app/Services/Torrents/ProvedorTorrentio.php:279)
+  do indexador**, não um fato do arquivo — [`idiomaDoNome()`](../backend/app/Services/Torrents/LeituraStreamStremio.php:209)
   só o usa para ordenar e filtrar as fontes. Quem decide o áudio é a faixa lida
   pelo ffprobe, e aí estava o furo: [`escolherFaixaAudio`](../media-service/src/services/hls.js:508)
   procurava português **apenas** na tag `language` (`faixa.codigo`). Muitos
