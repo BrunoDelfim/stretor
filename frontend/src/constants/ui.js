@@ -93,6 +93,26 @@ export const TIMEOUT_DIRETO_MS = Number(import.meta.env.VITE_TIMEOUT_DIRETO_MS) 
 export const ESTAGNACAO_DIRETA_MS = Number(import.meta.env.VITE_ESTAGNACAO_DIRETA_MS) || 60 * 1000
 
 /**
+ * Quantas vezes a **mesma** fonte é tentada de novo quando a falha foi do caminho.
+ *
+ * A falha de rede na fonte direta é curta e passa sozinha: o nome não resolveu
+ * naquele instante, a conversão caiu na abertura, o CDN recusou por um momento.
+ * Insistir na mesma fonte custa poucos segundos — o media-service desiste rápido
+ * quando o erro é dele — e evita o que o usuário tinha de fazer antes: fechar e
+ * reabrir o player, que era justamente o que fazia o episódio tocar na segunda
+ * vez. Cada tentativa é uma sessão nova, com conexão e resolução de nome novas.
+ */
+export const TENTATIVAS_FONTE_REDE = 3
+
+/**
+ * Espera entre duas tentativas da mesma fonte, em ms.
+ *
+ * Curta de propósito: o blip de rede que motiva a repetição dura segundos, e uma
+ * espera longa só adiaria a reprodução quando a fonte já está saudável de novo.
+ */
+export const ESPERA_ENTRE_TENTATIVAS_MS = 1500
+
+/**
  * Tempo máximo aguardando o Plyr emitir o evento `ready`, em ms.
  *
  * O Plyr pode montar sem disparar o evento (elemento já controlado, erro

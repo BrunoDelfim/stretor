@@ -142,15 +142,17 @@ estados visíveis:
 4. **Reproduzindo** — a playlist está pronta e o player é liberado.
 
 Quando nenhuma fonte sobra, o overlay entra em **erro** com a explicação do que
-houve. Desde a correção da resolução de nome na fonte direta, esse estado tem uma
-saída própria: o botão *Tentar novamente*, em
-[`tentarDeNovo()`](../frontend/src/components/PlayerOverlay.vue:2112), refaz a
-busca sem exigir fechar e reabrir o episódio. O caso que o motivou é a fonte única
-que caiu por um instante de rede — ali uma segunda tentativa costuma bastar, e
-reabrir o filme repetia a busca inteira para chegar ao mesmo lugar. O placar de
-motivos ganhou o rótulo `rede` (do `motivo=rede` que o media-service devolve),
-com mensagem própria porque a conclusão do usuário é outra: não é o lançamento que
-não tem fonte, é o caminho até ela que falhou naquele momento.
+houve. A falha de caminho, porém, não chega mais até aí: o laço de fontes insiste
+na **mesma** fonte até `TENTATIVAS_FONTE_REDE` vezes quando o motivo é `rede` — o
+nome não resolveu naquele instante, a conversão caiu na abertura, o CDN recusou por
+um momento. Cada volta é uma sessão nova no media-service, com conexão e resolução
+de nome novas, e o overlay anuncia a insistência na própria mensagem ("A fonte não
+respondeu. Tentando de novo (2 de 3)..."). Antes disso, a única saída era fechar e
+reabrir o episódio — e era exatamente o que o usuário fazia para o vídeo tocar na
+segunda vez. O placar de motivos ganhou o rótulo `rede` (do `motivo=rede` que o
+media-service devolve), com mensagem própria porque a conclusão do usuário é
+outra: não é o lançamento que não tem fonte, é o caminho até ela que falhou
+naquele momento.
 
 O player é o **Plyr**, que recebe apenas uma fonte HLS válida
 (`application/x-mpegURL`). Onde o navegador não toca HLS nativamente
@@ -164,7 +166,7 @@ paravam de ser requisitados e — o mais grave — uma fonte já pronta era desc
 em sequência até esgotar a lista.
 
 O fluxo correto, implementado em
-[`iniciarPlayer()`](../frontend/src/components/PlayerOverlay.vue:247):
+[`iniciarPlayer()`](../frontend/src/components/PlayerOverlay.vue:249):
 
 1. O container do vídeo usa **`v-if="estado === 'reproduzindo'"`** (não `v-show`),
    então o elemento só existe no DOM quando deve aparecer. Com `v-show`, o Plyr
@@ -203,7 +205,7 @@ Configurar `startPosition` **não** resolve, porque o valor é ignorado no camin
 "ao vivo", e o `startLoad(0)` no evento `MANIFEST_PARSED` cobre apenas a partida:
 ele define a posição inicial, mas qualquer recuo posterior devolve o playhead à
 borda. A correção decisiva está em
-[`fixarBordaAoPlayhead()`](../frontend/src/components/PlayerOverlay.vue:614):
+[`fixarBordaAoPlayhead()`](../frontend/src/components/PlayerOverlay.vue:616):
 `liveSyncPosition` é um getter da classe `Hls` e não há configuração para
 substituí-lo, então o componente define uma versão própria na instância,
 devolvendo o `media.currentTime` atual. Com a borda presa ao playhead, os três
@@ -230,11 +232,11 @@ esses navegadores entravam pelo caminho do Safari: o `<video>` recebia a playlis
 como `src` e ficava parado, porque nenhum deles decodifica HLS por conta própria.
 
 Agora o `hls.js` tem prioridade sempre que
-[`Hls.isSupported()`](../frontend/src/components/PlayerOverlay.vue:375) for
+[`Hls.isSupported()`](../frontend/src/components/PlayerOverlay.vue:377) for
 verdadeiro, e o caminho nativo fica como alternativa apenas para o Safari de
 verdade. O vigia de reprodução também deixou de ser decidido por `canPlayType`:
 ele é iniciado quando **não** existe instância do `hls.js`
-([`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:661)), o que
+([`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:663)), o que
 cobre o caminho nativo sem depender de um teste que mente.
 
 ### Arranque da reprodução
@@ -247,7 +249,7 @@ some e o Plyr é liberado, mas o filme não começa.
 O arranque agora espera o sinal certo: o evento **`FRAG_BUFFERED`**, que só
 dispara com o primeiro trecho carregado **e anexado** ao buffer. É a partir daí
 que o elemento tem o que tocar. O handler chama
-[`vigiarReproducao()`](../frontend/src/components/PlayerOverlay.vue:817), que
+[`vigiarReproducao()`](../frontend/src/components/PlayerOverlay.vue:819), que
 insiste em `play()` a cada 1 s (até 30 tentativas) enquanto o vídeo continuar
 pausado. O vigia é idempotente — o `FRAG_BUFFERED` dispara a cada trecho e
 reiniciar a contagem não faria sentido — e se encerra sozinho assim que o vídeo
@@ -270,7 +272,7 @@ enquanto `alvoDeSeek` estiver definido: um `play()` ali tocaria a partir do
 buffer antigo, desfazendo a busca.
 
 A recusa por autoplay é tratada em
-[`tentarReproduzir()`](../frontend/src/components/PlayerOverlay.vue:692): quando o
+[`tentarReproduzir()`](../frontend/src/components/PlayerOverlay.vue:694): quando o
 navegador devolve `NotAllowedError` (a interação do usuário se perde no meio das
 requisições assíncronas), o player é silenciado e o `play()` é repetido — mutado
 o autoplay é sempre permitido, o filme começa de verdade e o usuário só precisa
@@ -281,7 +283,7 @@ um alarme de 5 s confere se algum trecho chegou ao buffer; se a carga não andou
 (uma playlist ao vivo descartada pelo `startLoad` deixaria a tela parada sem
 nenhum erro visível), ele retoma com `startLoad(0)` e registra o aviso.
 
-Quando a reprodução não anda, [`registrarErroDeMidia()`](../frontend/src/components/PlayerOverlay.vue:665)
+Quando a reprodução não anda, [`registrarErroDeMidia()`](../frontend/src/components/PlayerOverlay.vue:667)
 imprime no console o `MediaError` do elemento, o `readyState`, o estado de pausa
 e a quantidade de faixas em buffer. Sem isso, `NotAllowedError` (autoplay
 bloqueado), `NotSupportedError` (faixa que o MSE não decodifica) e um simples
@@ -292,7 +294,7 @@ buffer vazio produzem a mesma tela parada.
 Prender a borda ao playhead resolve os recuos, mas havia um segundo caminho para
 o filme abrir no meio: o `hls.js` pode escolher como trecho inicial um fragmento
 bem à frente do começo. Para isso existe um ajuste de uma única vez no evento
-`FRAG_LOADED` ([`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:497)):
+`FRAG_LOADED` ([`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:499)):
 quando o **primeiro** trecho carregado começa depois de ~0,5 s, o componente
 volta o `media.currentTime` para zero; se o playhead já andou sozinho, ele também
 é ancorado em zero. Uma flag (`primeiroTrechoAncorado`) garante que isso aconteça
@@ -317,7 +319,7 @@ permite ver se o problema está na playlist (servidor) ou na escolha do trecho
 Fechar o player precisa encerrar **tudo** o que sobrou do filme anterior,
 inclusive o torrent e o FFmpeg no servidor — senão a próxima reprodução encontra
 o mesmo arquivo pela metade, herdando o estado da anterior. Do lado do
-[`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:127),
+[`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:129),
 `limparSessao()` faz, nesta ordem:
 
 1. Marca `cancelado = true`.
@@ -335,7 +337,7 @@ depois é descartada em vez de ressuscitar a interface antiga.
 A captura do `sessaoId` antes do `await` atende ao mesmo fim: sem ela, o passo de
 encerrar usava o id que uma tentativa posterior já havia substituído, e o
 servidor recebia um id que não era o da sessão a encerrar.
-[`limparSessaoAtual()`](../frontend/src/components/PlayerOverlay.vue:1071) faz o
+[`limparSessaoAtual()`](../frontend/src/components/PlayerOverlay.vue:1073) faz o
 mesmo para o caso de uma fonte descartada no meio da fila.
 
 Do lado do servidor, [`encerrarSessao`](../media-service/src/services/sessoes.js:2620)
@@ -346,7 +348,7 @@ torrent do cliente compartilhado — ver
 ### Busca (seek)
 
 A busca é decidida em
-[`executarSeek()`](../frontend/src/components/PlayerOverlay.vue:976) por três
+[`executarSeek()`](../frontend/src/components/PlayerOverlay.vue:978) por três
 caminhos, na ordem:
 
 1. **Alvo já em buffer** — basta escrever `midia.currentTime`. Aqui **não** se
@@ -362,7 +364,7 @@ caminhos, na ordem:
    segmentos na ordem do filme, então o pedido volta 404 e o `hls.js` emite um
    erro fatal depois de esgotar as próprias tentativas — embora a fonte esteja
    saudável. O handler de `ERROR` em
-   [`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:482)
+   [`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:484)
    reconhece esse caso (`NETWORK_ERROR` + `FRAG_LOAD_ERROR`) e **retoma a carga do
    ponto buscado** em intervalos de 2 s com `startLoad(media.currentTime)`, até o
    segmento aparecer. Cada trecho que chega (`FRAG_LOADED`) zera a contagem, e o
@@ -380,7 +382,7 @@ O Plyr tem o próprio handler de `seeking`, que escreve `media.currentTime` com 
 valor da barra. Como o elemento clampeia esse valor ao fim do `seekable` — que,
 numa playlist `EVENT`, cobre só o trecho convertido —, o Plyr acabava sendo o
 autor do "arrasto a barra e volto ao início". Por isso
-[`ligarControleDeSeek()`](../frontend/src/components/PlayerOverlay.vue:952)
+[`ligarControleDeSeek()`](../frontend/src/components/PlayerOverlay.vue:954)
 interrompe a propagação no `change` (`preventDefault` +
 `stopImmediatePropagation`): quem escreve no elemento é só o `executarSeek()`.
 
@@ -414,7 +416,7 @@ Durante a conversão, porém, a playlist ainda é `EVENT` e o `hls.js` só conhe
 os segmentos já publicados — a duração que ele calcula é a do trecho convertido,
 não a do filme. O ffprobe já leu a duração total no media-service e ela chega
 pelo status da sessão (`duracao`); o overlay a guarda em `duracaoTotal` e a
-repassa ao Plyr em [`aplicarDuracaoReal()`](../frontend/src/components/PlayerOverlay.vue:644).
+repassa ao Plyr em [`aplicarDuracaoReal()`](../frontend/src/components/PlayerOverlay.vue:646).
 
 A via usada é a opção **`config.duration`** do Plyr, a duração "de fachada": o
 getter interno de `duration` devolve esse número no lugar do `media.duration`
@@ -440,7 +442,7 @@ Os padrões do `hls.js` (`maxBufferLength: 30`, `maxBufferSize: 60 MB`) assumem
 banda confortável. Numa conexão abaixo de 1 Mbps o buffer enche e esvazia no
 mesmo ritmo, e o player entra em `mediaError/bufferStalledError` a cada poucos
 segundos — o vídeo trava, retoma, trava de novo. A instância em
-[`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:375) sobe os
+[`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:377) sobe os
 limites para dar folga a esse cenário:
 
 - `maxBufferLength: 120` e `maxMaxBufferLength: 600` — o alvo de buffer vai a
@@ -460,7 +462,7 @@ sobrevive a oscilações de banda que antes a derrubavam.
 ### Mensagens de progresso
 
 O overlay traduz o status cru do media-service em mensagens úteis via
-[`mensagemDeProgresso()`](../frontend/src/components/PlayerOverlay.vue:967).
+[`mensagemDeProgresso()`](../frontend/src/components/PlayerOverlay.vue:969).
 Quando a fonte conectou mas não há peers, a mensagem ganha o sufixo "(sem
 peers)"; quando há tráfego, mostra a contagem de peers e a velocidade. Isso
 distingue "conectando" de "baixando de verdade" — antes, uma fonte morta exibia
@@ -470,7 +472,7 @@ motivo.
 Abaixo do contador "Fonte X de Y", o overlay mostra a **origem e o idioma** da
 fonte em teste a partir de `provedor_rotulo` e do idioma deduzido pelo backend
 (ex.: `Indexador (Torznab) · Dublado` ou `YTS · Idioma original`), em
-[`tentarFontes()`](../frontend/src/components/PlayerOverlay.vue:920). É o que
+[`tentarFontes()`](../frontend/src/components/PlayerOverlay.vue:922). É o que
 explica um áudio em inglês sem precisar caçar no log: se ali está `YTS`, a reserva
 em inglês entrou em cena; se está `Indexador (Torznab)` com "Idioma original", foi
 o indexador que não trouxe dublado. Ver
@@ -480,8 +482,8 @@ o indexador que não trouxe dublado. Ver
 
 A fonte é considerada **vencedora assim que a playlist fica pronta no servidor**
 (`status === 'pronto'` com `playlist` preenchido), em
-[`aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:999). Montar o
-player é um passo separado: [`iniciarPlayer()`](../frontend/src/components/PlayerOverlay.vue:247)
+[`aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:1001). Montar o
+player é um passo separado: [`iniciarPlayer()`](../frontend/src/components/PlayerOverlay.vue:249)
 não devolve mais booleano e não decide mais o destino da fonte.
 
 O media-service também falha rápido quando a fonte não envia dados: se nenhum
@@ -492,7 +494,7 @@ Há ainda um caso que nem o timeout nem o `erro` cobriam: a fonte com **poucos
 peers que conecta mas não entrega bytes**. Ela não gera erro — o torrent fica
 vivo, só que a 0 MB/s — e prendia o usuário pelos 90 s inteiros. Para isso o
 overlay acompanha a telemetria de `download` em
-[`aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:1375): se nada
+[`aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:1377): se nada
 foi baixado **e** a velocidade segue zerada por `ESTAGNACAO_FONTE_MS` (20 s), a
 fonte é abandonada e o laço segue para a próxima.
 
@@ -512,7 +514,7 @@ anteriores: com várias fontes na fila, uma fonte morta prendia o usuário por
 minutos.
 
 Ao descartar uma fonte por falha real (timeout ou `status === 'erro'`),
-[`limparSessaoAtual()`](../frontend/src/components/PlayerOverlay.vue:1166) faz
+[`limparSessaoAtual()`](../frontend/src/components/PlayerOverlay.vue:1168) faz
 duas limpezas:
 
 1. **Destrói o `hls.js`** (`destruirPlayer()`). Sem isso, a instância antiga
@@ -547,10 +549,10 @@ Agora [`statusSessao()`](../frontend/src/services/streaming.js:84) traduz o 404
 num estado próprio, `inexistente`, e os dois laços de espera o tratam como
 terminal:
 
-- [`aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:999) chama
+- [`aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:1001) chama
   `limparSessaoAtual()` e devolve `'falhou'`, liberando a fila para a próxima
   fonte.
-- [`aguardarReposicionamento()`](../frontend/src/components/PlayerOverlay.vue:975)
+- [`aguardarReposicionamento()`](../frontend/src/components/PlayerOverlay.vue:977)
   resolve com `null`, encerrando a espera do seek.
 
 Qualquer outro erro HTTP continua sendo relançado, para não mascarar falhas

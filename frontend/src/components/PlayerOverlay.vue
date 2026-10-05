@@ -6,9 +6,11 @@ import 'plyr/dist/plyr.css'
 
 import { streamingService } from '@/services/streaming'
 import {
+  ESPERA_ENTRE_TENTATIVAS_MS,
   ESTAGNACAO_DIRETA_MS,
   ESTAGNACAO_FONTE_MS,
   INTERVALO_STATUS_SESSAO_MS,
+  TENTATIVAS_FONTE_REDE,
   TIMEOUT_DIRETO_MS,
   TIMEOUT_FONTE_MS,
   TIMEOUT_PLYR_READY_MS,
@@ -1532,46 +1534,68 @@ async function tentarFontes(fontes, minhaGeracao, minhaAbertura, filme) {
 
     try {
       /*
-       * A numeração vem do snapshot `filme`, capturado quando este fluxo
-       * começou — nunca de `props.filme`. Ler a prop aqui dentro era o que
-       * misturava os episódios: quando a busca do episódio 2 demorava e o
-       * usuário fechava e reabria, o loop antigo (ainda vivo) passava a ler a
-       * prop já trocada e criava sessões com a numeração do episódio errado.
-       *
-       * A fonte direta não tem magnet: ela carrega uma URL de vídeo e o
-       * media-service a converte para HLS pelo endpoint próprio. O resto do
-       * acompanhamento é idêntico — o overlay nem precisa saber a diferença.
+       * A mesma fonte é tentada mais de uma vez quando a falha foi do caminho
+       * (`rede`) — o servidor não resolveu o nome, a conversão caiu na abertura, o
+       * CDN recusou por um instante. Cada volta é uma sessão nova no
+       * media-service, com conexão e resolução novas, e é isso que faz o episódio
+       * tocar sozinho em vez de exigir que o usuário feche e reabra o player (o
+       * que ele fazia — e era o que fazia funcionar na segunda vez).
        */
-      const sessao = fonte.tipo === 'direto'
-        ? await streamingService.criarSessaoDireta(
-          fonte.stream,
-          filme.id,
-          filme.temporada,
-          filme.episodio
-        )
-        : await streamingService.criarSessao(
-          fonte.magnet,
-          filme.id,
-          filme.temporada,
-          filme.episodio
-        )
+      for (let tentativa = 1; tentativa <= TENTATIVAS_FONTE_REDE; tentativa += 1) {
+        /*
+         * A numeração vem do snapshot `filme`, capturado quando este fluxo
+         * começou — nunca de `props.filme`. Ler a prop aqui dentro era o que
+         * misturava os episódios: quando a busca do episódio 2 demorava e o
+         * usuário fechava e reabria, o loop antigo (ainda vivo) passava a ler a
+         * prop já trocada e criava sessões com a numeração do episódio errado.
+         *
+         * A fonte direta não tem magnet: ela carrega uma URL de vídeo e o
+         * media-service a converte para HLS pelo endpoint próprio. O resto do
+         * acompanhamento é idêntico — o overlay nem precisa saber a diferença.
+         */
+        const sessao = fonte.tipo === 'direto'
+          ? await streamingService.criarSessaoDireta(
+            fonte.stream,
+            filme.id,
+            filme.temporada,
+            filme.episodio
+          )
+          : await streamingService.criarSessao(
+            fonte.magnet,
+            filme.id,
+            filme.temporada,
+            filme.episodio
+          )
 
-      if (cancelado || minhaAbertura !== abertura) return
+        if (cancelado || minhaAbertura !== abertura) return
 
-      sessaoId = sessao.sessao_id
+        sessaoId = sessao.sessao_id
 
-      // A sessão foi criada; acompanhamos até ficar pronta ou falhar. Se
-      // falhar, o loop segue para a próxima fonte.
-      const resultado = await aguardarFonte(minhaGeracao, fonte)
+        // A sessão foi criada; acompanhamos até ficar pronta ou falhar.
+        const resultado = await aguardarFonte(minhaGeracao, fonte)
 
-      if (resultado.desfecho === 'pronto') {
-        return
-      }
+        if (resultado.desfecho === 'pronto') {
+          return
+        }
 
-      if (resultado.desfecho === 'sem_audio_pt') {
-        recusadasPorIdioma += 1
-      } else {
-        registrarDesistencia(desistencias, resultado.motivo)
+        if (resultado.desfecho === 'sem_audio_pt') {
+          recusadasPorIdioma += 1
+          break
+        }
+
+        // Só a falha de caminho merece outra volta: um release sem áudio em
+        // português ou sem peers não muda por insistir.
+        if (resultado.motivo !== 'rede' || tentativa >= TENTATIVAS_FONTE_REDE) {
+          registrarDesistencia(desistencias, resultado.motivo)
+          break
+        }
+
+        estado.value = 'tentando'
+        mensagem.value = `A fonte não respondeu. Tentando de novo (${tentativa + 1} de ${TENTATIVAS_FONTE_REDE})...`
+
+        await new Promise((resolve) => setTimeout(resolve, ESPERA_ENTRE_TENTATIVAS_MS))
+
+        if (cancelado || minhaAbertura !== abertura) return
       }
     } catch {
       // Fonte indisponível: seguimos para a próxima.
@@ -2100,21 +2124,6 @@ function fechar() {
   emit('fechar')
 }
 
-/**
- * Refaz a busca a partir do estado de erro.
- *
- * O erro não tinha saída: a única forma de tentar de novo era fechar e reabrir o
- * episódio, repetindo a busca inteira sem nenhuma vantagem para quem só perdeu a
- * vez por um soluço de rede. E esse é justamente o caso comum da fonte direta,
- * que muitas vezes é a única que existe para o episódio — ali a falha é do
- * caminho até o CDN, não do lançamento.
- */
-async function tentarDeNovo() {
-  if (estado.value !== 'erro') return
-
-  await iniciar()
-}
-
 function aoTeclar(evento) {
   if (evento.key === 'Escape') fechar()
 }
@@ -2222,20 +2231,6 @@ onUnmounted(() => {
             -->
             <p v-if="rotuloFonte" class="text-xs text-slate-400">{{ rotuloFonte }}</p>
           </div>
-
-          <!--
-            Saída para o estado de erro. Sem ele, tentar outra vez exigia fechar e
-            reabrir o episódio — caro demais quando a fonte única do episódio caiu
-            por um problema de rede que já passou.
-          -->
-          <button
-            v-if="estado === 'erro'"
-            type="button"
-            class="rounded-full bg-brand-600 px-6 py-2 text-sm font-semibold text-white transition hover:bg-brand-700"
-            @click="tentarDeNovo"
-          >
-            Tentar novamente
-          </button>
         </div>
 
         <!--
