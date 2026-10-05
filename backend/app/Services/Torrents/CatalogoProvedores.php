@@ -1635,9 +1635,16 @@ class CatalogoProvedores
     /**
      * Consulta o provedor com cache e absorve a falha.
      *
-     * A resposta vazia também é cacheada: um site que não tem o filme hoje (ou
-     * está fora do ar) seria martelado a cada abertura do player sem que houvesse
-     * chance de mudar de resposta dentro do TTL.
+     * A resposta vazia também é cacheada — um site que não tem o filme hoje (ou
+     * está fora do ar) seria martelado a cada abertura do player sem chance de
+     * mudar de resposta. O prazo dela, porém, é **curto** (`cache_ttl_vazio`), e
+     * essa diferença é o que separa "o lançamento não existe" de "a busca deu
+     * errado". O fallback de stream direto é um encadeamento de raspagens com
+     * orçamento curto: quando ele volta vazio, o motivo costuma ser o caminho —
+     * um blip de rede, uma página que não respondeu, o prazo consumido por uma
+     * consulta lenta. Guardar esse vazio por meia hora transformava um minuto ruim
+     * em trinta minutos de "nenhuma fonte encontrada", até para quem fechasse e
+     * reabrisse o episódio.
      *
      * A numeração do episódio entra na chave porque o mesmo provedor responde
      * coisas diferentes para cada episódio da série: sem ela, o resultado do
@@ -1663,6 +1670,9 @@ class CatalogoProvedores
             .md5(mb_strtolower($titulo).'|'.$ano.'|'.$imdbId.'|'.$temporada.'|'.$episodio);
 
         $ttl = (int) config('services.torrents.cache_ttl', 1800);
+
+        // Prazo próprio do resultado vazio: ver o comentário do método.
+        $ttlVazio = (int) config('services.torrents.cache_ttl_vazio', 120);
 
         $bypass = (bool) config('services.torrents.cache_bypass', false);
 
@@ -1693,27 +1703,18 @@ class CatalogoProvedores
          */
         $inicio = hrtime(true);
 
-        $fontes = Cache::remember($chave, $ttl, function () use ($provedor, $id, $titulo, $ano, $imdbId, $temporada, $episodio) {
-            try {
-                $fontes = $provedor->buscar($titulo, $ano, $imdbId, $temporada, $episodio);
+        if ($doCache) {
+            /*
+             * Leitura direta em vez de `remember()`: o prazo já foi decidido quando
+             * o valor foi gravado, e reescrevê-lo aqui renovaria indefinidamente o
+             * TTL curto que uma resposta vazia recebe.
+             */
+            $fontes = (array) Cache::get($chave, []);
+        } else {
+            $fontes = $this->consultarProvedor($provedor, $id, $titulo, $ano, $imdbId, $temporada, $episodio);
 
-                Log::debug('Provedor de torrents respondeu.', [
-                    'provedor' => $id,
-                    'titulo' => $titulo,
-                    'temporada' => $temporada,
-                    'episodio' => $episodio,
-                    'fontes' => count($fontes),
-                ]);
-
-                return $fontes;
-            } catch (\Throwable $excecao) {
-                $this->censo[$id]['erros']++;
-
-                report($excecao);
-
-                return [];
-            }
-        });
+            Cache::put($chave, $fontes, $fontes === [] ? $ttlVazio : $ttl);
+        }
 
         $this->censo[$id]['consultas']++;
         $this->censo[$id]['brutas'] += count($fontes);
@@ -1724,6 +1725,43 @@ class CatalogoProvedores
         }
 
         return $fontes;
+    }
+
+    /**
+     * Chama o provedor e absorve a falha, para o cache guardar resultado e não
+     * exceção. Uma fonte que levantou erro é devolvida como lista vazia — o
+     * provedor seguinte da cascata continua tendo a vez.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function consultarProvedor(
+        ProvedorTorrents $provedor,
+        string $id,
+        string $titulo,
+        ?int $ano,
+        ?string $imdbId,
+        ?int $temporada,
+        ?int $episodio,
+    ): array {
+        try {
+            $fontes = $provedor->buscar($titulo, $ano, $imdbId, $temporada, $episodio);
+
+            Log::debug('Provedor de torrents respondeu.', [
+                'provedor' => $id,
+                'titulo' => $titulo,
+                'temporada' => $temporada,
+                'episodio' => $episodio,
+                'fontes' => count($fontes),
+            ]);
+
+            return $fontes;
+        } catch (\Throwable $excecao) {
+            $this->censo[$id]['erros']++;
+
+            report($excecao);
+
+            return [];
+        }
     }
 
     /**

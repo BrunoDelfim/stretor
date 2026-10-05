@@ -2,6 +2,7 @@
 
 namespace App\Providers;
 
+use App\Services\Torrents\ClienteHttp;
 use App\Services\Torrents\OrcamentoBusca;
 use Illuminate\Support\ServiceProvider;
 
@@ -20,6 +21,20 @@ class AppServiceProvider extends ServiceProvider
          * justamente o que estoura o tempo do frontend.
          */
         $this->app->singleton(OrcamentoBusca::class);
+
+        /*
+         * O cliente HTTP é um singleton pelo mesmo motivo, e por um motivo próprio:
+         * os serviços de uma mesma busca — o provedor direto, a busca nos
+         * agregadores, o motor web e o resolvedor de embeds — precisam compartilhar
+         * o que aprenderam sobre o caminho até os sites. É aqui que fica, por
+         * exemplo, a desistência do FlareSolverr nesta rodada: uma resposta `500`
+         * dele custa cerca de 20 s, e sem esta marca cada serviço pagaria o mesmo
+         * preço para receber o mesmo erro, comendo o orçamento da busca inteira.
+         *
+         * Como o contêiner é remontado a cada requisição, o singleton tem o escopo
+         * de uma busca: a próxima começa com o socorro disponível de novo.
+         */
+        $this->app->singleton(ClienteHttp::class);
     }
 
     /**

@@ -11,6 +11,37 @@ cd /var/www/backend
 echo "[backend] Iniciando bootstrap..."
 
 # ---------------------------------------------------------------------------
+# 0. DNS
+# ---------------------------------------------------------------------------
+# O `resolv.conf` que o Docker gera aponta só para o forwarder embutido dele
+# (127.0.0.11) — um hop a mais no caminho da resolução, e foi ele que falhou nas
+# rajadas medidas neste stack: o cliente HTTP do backend devolvia
+# `Resolving timed out after 3000 milliseconds` para o agregador enquanto a
+# consulta direta aos mesmos servidores respondia no mesmo instante. Sem uma
+# segunda opção na lista, cada rajada era uma busca perdida.
+#
+# Aqui o forwarder continua **primeiro** de propósito: é ele quem resolve os
+# nomes internos do compose (`postgres`, `redis`, `prowlarr`, `searxng`) sem ida
+# à internet, e essa é a resolução que o backend usa a cada requisição. Os
+# servidores externos entram como reserva, e o `timeout:1 attempts:2` é o que
+# torna a reserva barata: uma consulta externa que o forwarder não responde cai
+# para o Cloudflare em cerca de um segundo, em vez de gastar os cinco rounds do
+# ajuste padrão. No media-service a ordem se inverte — ver
+# docker/media-service/entrypoint.sh —, porque aquele container fala só com a
+# internet e a origem do arquivo é outra.
+DNS_PRIMARIO="${DNS_PRIMARIO:-1.1.1.1}"
+DNS_SECUNDARIO="${DNS_SECUNDARIO:-8.8.8.8}"
+
+{
+  echo "nameserver 127.0.0.11"
+  echo "nameserver $DNS_PRIMARIO"
+  if [ -n "$DNS_SECUNDARIO" ]; then echo "nameserver $DNS_SECUNDARIO"; fi
+  echo "options timeout:1 attempts:2 ndots:0"
+} > /etc/resolv.conf
+
+echo "[backend] DNS: 127.0.0.11 (interno) + $DNS_PRIMARIO (reserva)"
+
+# ---------------------------------------------------------------------------
 # 0. Diretórios de storage/cache
 # ---------------------------------------------------------------------------
 mkdir -p storage/framework/{cache/data,sessions,views} storage/logs bootstrap/cache

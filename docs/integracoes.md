@@ -316,7 +316,7 @@ A correção tem duas camadas, porque uma só não fecha o buraco:
    ([`temFaixaPortuguesa()`](../media-service/src/services/hls.js:563)) vira o
    fato `tem_audio_pt` no status da sessão
    ([`obterSessao()`](../media-service/src/services/sessoes.js:2255)). O frontend
-   ([`aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:1449))
+   ([`aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:1451))
    compara a promessa da fonte (`idioma` = `pt-BR`/`dual`) com esse fato: se a
    fonte prometia português e o arquivo só tem áudio original, a sessão é
    descartada e o laço segue para a próxima — em vez de tocar em inglês. Quando
@@ -403,7 +403,7 @@ uma única API Torznab. Ele é o **degrau 2** da cadeia: só é consultado quand
 busca nativa do backend (degrau 1) não encontra nenhuma fonte dublada válida. O
 YTS é o degrau 3 — a reserva do Prowlarr.
 
-- O Prowlarr roda no serviço `prowlarr` do [`docker-compose.yml`](../docker-compose.yml:190)
+- O Prowlarr roda no serviço `prowlarr` do [`docker-compose.yml`](../docker-compose.yml:196)
   e o painel fica em `http://localhost:9696`.
 - **Sem configuração manual**: na subida do container o backend descobre a chave
   da API e cadastra os indexadores PT-BR sozinho — ver "Provisionamento
@@ -534,7 +534,7 @@ por dois motivos independentes, ambos silenciosos:
 
 1. **O `PROWLARR_CONFIG_PATH` não chegava ao container.** O `ProwlarrService`
    lê esse caminho via `env()`, mas o serviço `backend` do
-   [`docker-compose.yml`](../docker-compose.yml:56) não o declarava. Sem o
+   [`docker-compose.yml`](../docker-compose.yml:62) não o declarava. Sem o
    caminho, o `chave()` devolvia `null` e o fluxo parava antes de tentar
    cadastrar qualquer coisa. Agora as três variáveis do Prowlarr
    (`PROWLARR_URL`, `PROWLARR_CONFIG_PATH`, `PROWLARR_TEMPO_LIMITE`) são
@@ -596,7 +596,7 @@ carregue a mesma tag sai pelo proxy.
 
 O arranjo é automático, como o resto do provisionamento:
 
-- o [`docker-compose.yml`](../docker-compose.yml:248) sobe o serviço
+- o [`docker-compose.yml`](../docker-compose.yml:254) sobe o serviço
   `flaresolverr` na rede interna, sem porta publicada no host: só o Prowlarr fala
   com ele;
 - antes de cadastrar os indexadores, o
@@ -649,7 +649,7 @@ O arranjo é automático, como o resto do provisionamento:
 - o FlareSolverr é o segundo container a **resolver domínios por conta própria** —
   quem consulta o DNS é o Chromium lá dentro. Por isso ele recebe o mesmo bloco
   `dns:` do Prowlarr, e o `DNS_OVER_HTTPS` ligado
-  ([`docker-compose.yml`](../docker-compose.yml:257)): o resolver do operador
+  ([`docker-compose.yml`](../docker-compose.yml:263)): o resolver do operador
   bloqueia o 1337x, e a falha chega disfarçada de duas formas. Numa, o Chromium
   não resolve e o FlareSolverr devolve `500` com
   `net::ERR_NAME_NOT_RESOLVED`, que o Prowlarr reporta como *"HTTP request
@@ -662,7 +662,7 @@ O arranjo é automático, como o resto do provisionamento:
 - o Chromium embutido precisa de `/dev/shm` com folga: o padrão de 64 MB do
   Docker o mata ao subir, e o FlareSolverr passa a devolver `500` em toda
   requisição. Daí o `shm_size: "1gb"`
-  ([`docker-compose.yml`](../docker-compose.yml:263)).
+  ([`docker-compose.yml`](../docker-compose.yml:269)).
 
 O `torrentdosfilmes` fica **fora** dessa lista de propósito: o problema dele não é
 desafio do CloudFlare, e sim o domínio sequestrado — não há proxy que resolva
@@ -703,7 +703,7 @@ convite. Para ter uma fonte pública em PT-BR, o projeto versiona uma definiçã
 própria:
 
 - Arquivo: [`docker/prowlarr/Definitions/Custom/torrentdosfilmes.yml`](../docker/prowlarr/Definitions/Custom/torrentdosfilmes.yml:1).
-- O [`docker-compose.yml`](../docker-compose.yml:204) monta essa pasta em
+- O [`docker-compose.yml`](../docker-compose.yml:210) monta essa pasta em
   `/config/Definitions/Custom/` dentro do container, então a definição é
   versionada com o código e sobrevive a recriações.
 - **Ela está fora do provisionamento.** Ter o `.yml` na pasta só a deixa
@@ -867,7 +867,7 @@ requisição era cancelada antes de a lista chegar à tela.
 
 O [`OrcamentoBusca`](../backend/app/Services/Torrents/OrcamentoBusca.php:1) é o
 relógio único que a busca inteira enxerga. Ele é registrado como **singleton** no
-[`AppServiceProvider`](../backend/app/Providers/AppServiceProvider.php:13) de
+[`AppServiceProvider`](../backend/app/Providers/AppServiceProvider.php:14) de
 propósito: o catálogo e o cliente HTTP precisam ver o **mesmo** prazo, senão o
 socorro pelo FlareSolverr começaria uma espera de 70 s a poucos segundos do fim.
 
@@ -882,10 +882,10 @@ O ciclo é curto:
    rodada é o que fecha a última brecha: sem ela, uma rodada iniciada a segundos do
    fim ainda percorria todos os provedores restantes, e a soma deles estourava o
    tempo do frontend mesmo com o orçamento global em 45 s.
-3. O [`ClienteHttp`](../backend/app/Services/Torrents/ClienteHttp.php:250) limita o
+3. O [`ClienteHttp`](../backend/app/Services/Torrents/ClienteHttp.php:285) limita o
    socorro pelo FlareSolverr ao que resta do orçamento — um `maxTimeout` de 70 s
    não pode começar quando faltam 3 s. O mesmo corte vale para a **tentativa
-   direta**: [`tempoDisponivel()`](../backend/app/Services/Torrents/ClienteHttp.php:165)
+   direta**: [`tempoDisponivel()`](../backend/app/Services/Torrents/ClienteHttp.php:200)
    encolhe o `tempo_limite` de cada requisição ao que sobra, e uma requisição que
    já nasce fora do prazo nem começa.
 4. O [`TorznabService`](../backend/app/Services/TorznabService.php:116) também
@@ -1023,7 +1023,7 @@ uma lista inteira vinda de um provedor só, quando outros tinham material que
 nunca chegou a ser consultado.
 
 O comportamento padrão passou a ser o de **percorrer o registro inteiro**. A
-chave é [`buscar_todos`](../backend/config/services.php:353)
+chave é [`buscar_todos`](../backend/config/services.php:366)
 (`TORRENTS_BUSCAR_TODOS`, ligada por padrão), lida pelo helper
 [`buscarTodos()`](../backend/app/Services/Torrents/CatalogoProvedores.php:700).
 Com ela ligada, a meta PT-BR deixa de encerrar a busca: ela só marca o ponto em
@@ -1140,7 +1140,7 @@ identificam a origem:
 Os três primeiros formam o degrau 1 (busca por nome), o `torrentio` entra pelo
 `imdb_id` e o `torznab` é o degrau 2; o `yts` é a reserva em inglês.
 
-O [`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:560) junta
+O [`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:562) junta
 esse rótulo com o idioma detectado e mostra, abaixo do contador "Fonte X de Y"
 (ex.: `Indexador (Torznab) · Dublado` ou `YTS · Idioma original`). É o que
 responde, de relance, se a lista veio do indexador onde as tags PT-BR foram
@@ -1409,7 +1409,7 @@ passou a procurar o pacote quando os termos de episódio não acham fonte dublad
   episódios. Sessões de filme (`episodio === null`) não passam pelo isolamento.
 - O frontend propaga o par pelo
   [`streamingService.criarSessao()`](../frontend/src/services/streaming.js:74) e pelo
-  [`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:1506).
+  [`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:1508).
 
 #### A exceção de idioma do pack
 
@@ -1898,7 +1898,7 @@ a paciência sem mexer no código.
 **No frontend:**
 
 - `VITE_TIMEOUT_FONTE_MS` (padrão `90000`) — prazo total por fonte em
-  [`aguardarFonte`](../frontend/src/components/PlayerOverlay.vue:1651). Numa
+  [`aguardarFonte`](../frontend/src/components/PlayerOverlay.vue:1675). Numa
   conexão de 1 Mbps o buffer inicial do HLS demora bem mais que os 90 s padrão, e
   uma fonte que baixa normalmente era abandonada no meio do preparo.
 - `VITE_ESTAGNACAO_FONTE_MS` (padrão `20000`) — tempo parado a 0 MB/s antes de
@@ -1913,7 +1913,7 @@ qualquer byte chegou, a fonte provou estar viva e não é mais abandonada por
 estagnação — segue só sob o `VITE_TIMEOUT_FONTE_MS`. Sem essa trava, a velocidade
 oscilava até zero entre ciclos enquanto o WebTorrent negociava, e uma conexão
 lenta derrubava fontes boas no meio de um download que estava andando. A marca
-`jaEntregouBytes` em [`aguardarFonte`](../frontend/src/components/PlayerOverlay.vue:1662)
+`jaEntregouBytes` em [`aguardarFonte`](../frontend/src/components/PlayerOverlay.vue:1686)
 é o que separa "fonte morta" de "fonte lenta".
 
 Problemas de ambiente e de streaming encontrados na validação, já tratados:
@@ -2160,7 +2160,7 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   preventiva; a falha do caso *Lanterns* era a profundidade de cor, acima.
 - **Recuperação de erro de mídia no player**: um `MEDIA_ERROR` fatal do `hls.js`
   não é rede — o segmento chegou, mas o `SourceBuffer` o recusou. Antes, o handler
-  em [`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:713) só
+  em [`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:715) só
   tratava `NETWORK_ERROR`/`FRAG_LOAD_ERROR` como recuperável e mandava qualquer
   outro erro fatal direto para a tela de falha. Agora um `MEDIA_ERROR` chama
   `recoverMediaError()` (até `LIMITE_RECUPERACOES_DE_MIDIA` = 3 vezes), que
@@ -2216,7 +2216,7 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   ficava em `readyState === "ended"`, de onde **todo** `appendBuffer` falha. É
   uma armadilha latente de qualquer playlist que ainda está crescendo, e por isso
   a configuração em
-  [`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:474) ficou
+  [`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:476) ficou
   com `liveDurationInfinity: true`: nos níveis live a duração permanece
   `Infinity` e não existe "fim" que o buffer possa alcançar. A barra de progresso
   não perde nada — a duração exibida continua vindo de `aplicarDuracaoReal()`,
@@ -2294,7 +2294,7 @@ booleano continua `true`. O watcher não via mudança nenhuma — a sessão do e
 2 tocava o episódio 1.
 
 A correção troca o gatilho pelo **conteúdo**: o watcher observa
-[`props.filme`](../frontend/src/components/PlayerOverlay.vue:1991) inteiro. Cada
+[`props.filme`](../frontend/src/components/PlayerOverlay.vue:2015) inteiro. Cada
 episódio é um objeto novo, então a troca sempre conta como caso novo.
 
 ##### A limpeza mora num lugar só
@@ -2308,7 +2308,7 @@ caso o watcher chega com o valor anterior `null`, a limpeza era pulada, e o
 episódio 1.
 
 Agora a limpeza é incondicional e vive no começo de
-[`iniciar()`](../frontend/src/components/PlayerOverlay.vue:1879): ele chama
+[`iniciar()`](../frontend/src/components/PlayerOverlay.vue:1903): ele chama
 `destruirPlayer()` e `await limparSessao()` antes de qualquer outra coisa. Os dois
 caminhos — troca direta e reabertura após fechar — passam pelo mesmo ponto, sem
 assimetria.
@@ -2324,7 +2324,7 @@ o player do episódio recém-aberto.
 
 A solução separa as duas responsabilidades:
 
-- **`abertura`** ([`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:151))
+- **`abertura`** ([`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:153))
   é a identidade da abertura. Só avança em `iniciar()`, uma vez por abertura, e é o
   que os passos assíncronos comparam para saber se ainda são os correntes.
 - **`geracao`** continua invalidando os passos do fluxo que sai, mas agora só é
@@ -2496,7 +2496,7 @@ para que os dois cenários funcionem:
 Atenção ao segundo caso: tratar `http://localhost/media` como "porta crua"
 gerava o caminho duplicado `/api/media/api/media/sessao`, e o Express respondia
 `Cannot POST /api/media/api/media/sessao`. Como o overlay percorre as fontes em
-sequência ([`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:223)),
+sequência ([`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:225)),
 o erro se repetia uma vez por fonte — daí a rajada de requisições com o mesmo
 404.
 
@@ -2967,7 +2967,7 @@ nenhuma dessas APIs tem lugar no caminho da fonte direta.
    containers com 202, e as instâncias públicas de SearXNG vêm e vão — nenhuma das
    duas é base confiável para um fallback que precisa funcionar justamente quando
    o resto falhou. A solução foi **auto-hospedar o SearXNG**: o serviço
-   [`searxng`](../docker-compose.yml:413) usa a imagem oficial
+   [`searxng`](../docker-compose.yml:419) usa a imagem oficial
    `searxng/searxng` e é consultado só pela rede interna, em
    `http://searxng:8080/search`. Não expõe porta no host, então não há instância
    pública envolvida nem IP de container bloqueado por terceiros.
@@ -2982,7 +2982,7 @@ nenhuma dessas APIs tem lugar no caminho da fonte direta.
    saudável e o backend não sobe esperando um motor quebrado.
 
    O backend espera o `searxng` ficar saudável antes de subir
-   ([`docker-compose.yml`](../docker-compose.yml:186)), pelo mesmo motivo que
+   ([`docker-compose.yml`](../docker-compose.yml:192)), pelo mesmo motivo que
    espera o FlareSolverr: subir apontando para um motor que ainda não responde só
    gastaria o orçamento do fallback à toa.
 
@@ -3224,7 +3224,7 @@ nenhuma dessas APIs tem lugar no caminho da fonte direta.
 
    ##### Os cabeçalhos: tráfego de navegador, não de cliente HTTP
 
-   O [`ClienteHttp`](../backend/app/Services/Torrents/ClienteHttp.php:258) passou
+   O [`ClienteHttp`](../backend/app/Services/Torrents/ClienteHttp.php:293) passou
    a enviar cabeçalhos de navegador comum em toda requisição: `Accept` de
    documento HTML, `Accept-Language: pt-BR,pt;q=0.9,en;q=0.8`, `Cache-Control` e
    `Pragma` de navegação, os `Sec-Fetch-*` e `Upgrade-Insecure-Requests`. O
@@ -3552,11 +3552,11 @@ quebrado era o forwarder, e o preço dele só aparecia no container de musl.
   decide o que merece nova tentativa: `EAI_AGAIN`, `ETIMEDOUT`, `ECONNRESET`, o
   `I/O error` do HTTP e as recusas do CDN (`429`, `5xx`).
 
-Falha de caminho passou a subir rotulada: `motivo=rede`. O overlay ganhou uma
-mensagem própria para ela e um botão **Tentar novamente** — antes, a única saída
-era fechar e reabrir o episódio. A fonte única deixou de ser beco sem saída: a
-tentativa seguinte é um clique, e o caso comum é justamente a fonte única que
-caiu por um instante de rede.
+Falha de caminho passou a subir rotulada: `motivo=rede`, e o overlay não deixa
+que ela encerre a tentativa — o laço de fontes insiste na **mesma** fonte
+(`TENTATIVAS_FONTE_REDE`), criando uma sessão nova a cada volta. A fonte única
+deixou de ser beco sem saída: quem sofreu o blip é reaberto pela própria tela, sem
+o usuário fechar e reabrir o episódio.
 
 **A verificação ao vivo.** Com as três defesas no lugar, a primeiríssima abertura
 do episódio ficou `pronto` em **10,6 s** com 8 segmentos publicados (32 s de
@@ -3604,7 +3604,7 @@ conversão**. O resultado era um link HTTP saudável rotulado como "sem peers" e
 abandonado no meio da conversão.
 
 O fluxo direto ganhou tratamento próprio em
-[`PlayerOverlay::aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:1690):
+[`PlayerOverlay::aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:1714):
 
 - O teto de espera é `TIMEOUT_DIRETO_MS` (5 min), não o `TIMEOUT_FONTE_MS` (90 s)
   pensado para torrent.
@@ -3879,7 +3879,7 @@ CloudFlare — como o `assistaonline.tv`, que tem o episódio — morriam com er
 tipo em vez de serem lidas. O bug não tinha relação com o conteúdo da página; era
 o estado global do cliente HTTP vazando para dentro do método.
 
-A correção em [`ClienteHttp::chamarFlareSolverr()`](../backend/app/Services/Torrents/ClienteHttp.php:337)
+A correção em [`ClienteHttp::chamarFlareSolverr()`](../backend/app/Services/Torrents/ClienteHttp.php:472)
 constrói a resposta **direto sobre o PSR-7**:
 
 ```php

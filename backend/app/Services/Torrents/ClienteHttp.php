@@ -53,6 +53,41 @@ class ClienteHttp
     }
 
     /**
+     * Quantas vezes a requisição direta é tentada antes do socorro.
+     *
+     * A queda de rede aqui é transitória com frequência — um blip de resolução,
+     * uma conexão derrubada no handshake — e o `connectTimeout` de 3 s, que existe
+     * para não pendurar a cascata, corta justamente o instante ruim. Medido no
+     * container: a busca do agregador que responde em 0,6 s falhou por um blip e
+     * foi entregue ao FlareSolverr, que devolveu erro 19 s depois e levou junto o
+     * orçamento da busca inteira. Repetir a direta custa, no pior caso, mais um
+     * `connectTimeout` — e evita o caminho caro que não conserta nada.
+     */
+    private const TENTATIVAS_DIRETAS = 2;
+
+    /**
+     * Custo real do socorro pelo FlareSolverr, acima do `maxTimeout` pedido.
+     *
+     * O `maxTimeout` cobre a espera pelo desafio, mas não o resto: abrir o
+     * Chromium, navegar e devolver o DOM. Medido no container, uma chamada que
+     * pedia 8 s levou **19,2 s** para responder. Chamar o socorro sem que o prazo
+     * cubra esse total entrega o orçamento da busca a uma resposta que já chega
+     * tarde — o resultado é descartado e as páginas seguintes ficam sem tempo.
+     */
+    private const CUSTO_DO_SOCORRO_SEGUNDOS = 20;
+
+    /**
+     * O socorro pelo FlareSolverr não está valendo nesta busca.
+     *
+     * O servidor responde `500` quando não vence o desafio dentro do `maxTimeout`,
+     * e cada uma dessas respostas custa o custo real medido (`≈20 s`). Uma já é
+     * prova de que o socorro não está entregando nesta rodada; insistir na página
+     * seguinte gasta de novo o mesmo tempo para receber o mesmo erro — foi assim
+     * que uma busca de 45 s terminou sem abrir a página certa.
+     */
+    private bool $socorroIndisponivel = false;
+
+    /**
      * Status que denunciam bloqueio por Cloudflare, paywall ou rate limit.
      *
      * O 403 é o clássico do desafio; o 429 é o "calma lá" do rate limit; o 503
@@ -277,25 +312,56 @@ class ClienteHttp
         int $timeout,
         array $cabecalhos = [],
     ): ?Response {
-        try {
-            $requisicao = $this->requisicao($userAgent, $timeout, $cabecalhos);
+        for ($tentativa = 1; ; $tentativa += 1) {
+            try {
+                $requisicao = $this->requisicao($userAgent, $timeout, $cabecalhos);
 
-            /*
-             * O `get()` do Laravel recebe a query num segundo argumento e o Guzzle
-             * a usa para **substituir** a query embutida na URL. Passar um array
-             * vazio, então, não é inócuo: ele apaga o `?q=...` do endereço e o site
-             * devolve a própria home — a busca volta vazia sem erro nenhum. Era o
-             * que acontecia com os trackers PT-BR e com a busca direta dos
-             * agregadores (`verpobreflix.net/search?q=...` chegava como `/search`).
-             * Quando não há parâmetros, a requisição sai com um argumento só e a
-             * query da URL fica intacta.
-             */
-            return $consulta === []
-                ? $requisicao->get($url)
-                : $requisicao->get($url, $consulta);
-        } catch (\Throwable) {
-            return null;
+                /*
+                 * O `get()` do Laravel recebe a query num segundo argumento e o Guzzle
+                 * a usa para **substituir** a query embutida na URL. Passar um array
+                 * vazio, então, não é inócuo: ele apaga o `?q=...` do endereço e o site
+                 * devolve a própria home — a busca volta vazia sem erro nenhum. Era o
+                 * que acontecia com os trackers PT-BR e com a busca direta dos
+                 * agregadores (`verpobreflix.net/search?q=...` chegava como `/search`).
+                 * Quando não há parâmetros, a requisição sai com um argumento só e a
+                 * query da URL fica intacta.
+                 */
+                return $consulta === []
+                    ? $requisicao->get($url)
+                    : $requisicao->get($url, $consulta);
+            } catch (\Throwable $excecao) {
+                /*
+                 * A repetição vale só para o fracasso que **não chegou a ser
+                 * resposta**: um servidor que devolveu 403 ou desafio não melhora
+                 * na segunda vez, e insistir gastaria orçamento à toa. Também só
+                 * repete se o prazo ainda cobrir a nova tentativa inteira.
+                 */
+                if ($tentativa >= self::TENTATIVAS_DIRETAS || ! $this->cabeRepetir($timeout)) {
+                    Log::debug('Cliente HTTP: tentativa direta não completou.', [
+                        'url' => $url,
+                        'tentativas' => $tentativa,
+                        'erro' => $excecao->getMessage(),
+                    ]);
+
+                    return null;
+                }
+            }
         }
+    }
+
+    /**
+     * Diz se o orçamento ainda cobre uma nova tentativa direta inteira.
+     *
+     * Repetir ajuda quando a falha foi do caminho (blip de DNS, handshake
+     * derrubado), mas não quando o prazo já não comporta outra conexão: aí a
+     * segunda volta nasceria perdida e ainda atrasaria o socorro ou a próxima
+     * página.
+     */
+    private function cabeRepetir(int $timeout): bool
+    {
+        $restante = $this->orcamento->restante();
+
+        return $restante === null || $restante > $timeout;
     }
 
     /**
@@ -405,6 +471,16 @@ class ClienteHttp
      */
     private function chamarFlareSolverr(array $pedido): ?Response
     {
+        /*
+         * Uma falha já encerra as tentativas de socorro desta busca: cada resposta
+         * `500` custa o custo real medido (`≈20 s`) e devolve a mesma coisa. Insistir
+         * é o que fazia duas páginas consumirem os 45 s do orçamento e a busca
+         * terminar sem fonte.
+         */
+        if ($this->socorroIndisponivel) {
+            return null;
+        }
+
         $base = rtrim($this->flaresolverrUrl(), '/');
 
         /*
@@ -429,6 +505,26 @@ class ClienteHttp
                 return null;
             }
 
+            /*
+             * O socorro só vale a pena se o prazo cobrir o **custo real** dele, e
+             * não apenas o `maxTimeout` que ele recebe: medido no container, uma
+             * chamada que pedia 8 s levou 19,2 s para responder, porque o Chromium
+             * ainda sobe depois da espera pelo desafio. Sem esta conta, o socorro
+             * de uma página consumia o orçamento de todas as outras e a busca
+             * terminava sem abrir a página certa.
+             */
+            $necessario = (int) ceil(((int) ($pedido['maxTimeout'] ?? 0)) / 1000) + self::CUSTO_DO_SOCORRO_SEGUNDOS;
+
+            if ($restante < $necessario) {
+                Log::debug('FlareSolverr: socorro não cabe no orçamento restante.', [
+                    'url' => $pedido['url'] ?? '',
+                    'restante' => $restante,
+                    'necessario' => $necessario,
+                ]);
+
+                return null;
+            }
+
             $teto = min($teto, $restante);
             $pedido['maxTimeout'] = min((int) ($pedido['maxTimeout'] ?? $teto * 1000), $teto * 1000);
         }
@@ -438,6 +534,8 @@ class ClienteHttp
                 ->acceptJson()
                 ->post($base.'/v1', $pedido);
         } catch (\Throwable $excecao) {
+            $this->socorroIndisponivel = true;
+
             Log::info('FlareSolverr indisponível para o provedor nativo.', [
                 'url' => $pedido['url'] ?? '',
                 'motivo' => $excecao->getMessage(),
@@ -447,6 +545,8 @@ class ClienteHttp
         }
 
         if ($resposta->failed()) {
+            $this->socorroIndisponivel = true;
+
             return null;
         }
 

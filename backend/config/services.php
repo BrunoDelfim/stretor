@@ -290,6 +290,19 @@ return [
         'cache_ttl' => (int) env('TORRENTS_CACHE_TTL', 1800),
 
         /*
+         * Prazo do cache de resultado **vazio**, bem menor que o prazo normal.
+         *
+         * O cache de vazio existe para não martelar um site que não tem o título —
+         * mas ele não pode trancar a porta por meia hora quando o vazio foi culpa
+         * do caminho. O fallback de stream direto gasta um orçamento curto em
+         * raspagens encadeadas: um blip de rede, uma página que não responde ou o
+         * prazo consumido por uma consulta lenta devolvem "nenhuma fonte" sem que
+         * isso diga qualquer coisa sobre o acervo. Com o prazo curto, a próxima
+         * tentativa volta a ter chance sozinha.
+         */
+        'cache_ttl_vazio' => (int) env('TORRENTS_CACHE_TTL_VAZIO', 120),
+
+        /*
          * --- Fallback: stream direto (MP4/HLS) ---
          *
          * O último recurso para conteúdo antigo ou raro em PT-BR, onde os

@@ -49,6 +49,12 @@ services:
       - TMDB_REGION=${TMDB_REGION:-BR}
       - TMDB_MAX_PAGES=${TMDB_MAX_PAGES:-25}
       - TORRENTS_TORZNAB_URL=${TORRENTS_TORZNAB_URL:-http://prowlarr:9696}
+      # Servidores de DNS que o entrypoint grava no `/etc/resolv.conf` do
+      # container, depois do forwarder do Docker (que resolve os nomes internos do
+      # compose). O forwarder sozinho foi o hop que falhou nas rajadas de
+      # resolução — ver o comentário do `dns:` no serviço `media-service`.
+      - DNS_PRIMARIO=${DNS_PRIMARIO:-1.1.1.1}
+      - DNS_SECUNDARIO=${DNS_SECUNDARIO:-8.8.8.8}
       # Normalmente vazio: o entrypoint grava aqui a chave descoberta no
       # Prowlarr. Só defina no .env para usar um Prowlarr externo.
       - TORRENTS_TORZNAB_KEY=${TORRENTS_TORZNAB_KEY:-}

@@ -50,9 +50,9 @@ docker compose up -d --build
 
 > **DNS dos containers:** o `docker-compose.yml` já fixa Cloudflare (`1.1.1.1`) e
 > Google (`8.8.8.8`) como resolvers do backend, do Prowlarr e do FlareSolverr
-> ([`docker-compose.yml`](../docker-compose.yml:257)). Isso não é detalhe: quem
+> ([`docker-compose.yml`](../docker-compose.yml:263)). Isso não é detalhe: quem
 > resolve o domínio do tracker é o Chromium embutido no FlareSolverr
-> ([`docker-compose.yml`](../docker-compose.yml:248)), e o resolver padrão do
+> ([`docker-compose.yml`](../docker-compose.yml:254)), e o resolver padrão do
 > host, herdado da operadora, costuma bloquear ou devolver NXDOMAIN — o indexador
 > aparece como "fora do ar" no painel sem que haja nada errado com ele. O
 > FlareSolverr ainda recebe `DNS_OVER_HTTPS=true`, que resolve por fora do UDP/53
@@ -116,7 +116,7 @@ O Prowlarr só traz, de fábrica, trackers brasileiros **privados** (que exigem
 conta e convite). Para um indexador público, o projeto versiona uma definição
 própria em [`docker/prowlarr/Definitions/Custom/`](../docker/prowlarr/Definitions/Custom/torrentdosfilmes.yml:1),
 montada em `/config/Definitions/Custom/` dentro do container pelo
-[`docker-compose.yml`](../docker-compose.yml:204). Assim a definição sobrevive a
+[`docker-compose.yml`](../docker-compose.yml:210). Assim a definição sobrevive a
 recriações do container e é versionada junto com o código.
 
 Essa definição está **fora do provisionamento**: o domínio do tracker foi
@@ -252,7 +252,7 @@ direta, todas marcadas como privadas.
 > **HMR do Vite:** no Codespaces o proxy é HTTPS, então o websocket de recarga
 > precisa apontar para a porta 443 em `wss`. O `post-create.sh` grava
 > `VITE_HMR_CLIENT_PORT=443` no `.env` e o serviço `frontend` do
-> [`docker-compose.yml`](../docker-compose.yml:240) repassa a variável ao
+> [`docker-compose.yml`](../docker-compose.yml:246) repassa a variável ao
 > container, de onde o [`vite.config.js`](../frontend/vite.config.js:1) a lê.
 > No PC local o valor continua 80, sem mudança de comportamento.
 >
