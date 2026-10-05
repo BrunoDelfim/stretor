@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Enums\IdiomaFonte;
 use App\Services\TorrentService;
 use App\Services\Torrents\CatalogoProvedores;
+use App\Services\Torrents\OrcamentoBusca;
 use Mockery;
 use Tests\TestCase;
 
@@ -114,7 +115,7 @@ class SegundaTentativaTest extends TestCase
             )
         );
 
-        return new TorrentService($catalogo);
+        return new TorrentService($catalogo, new OrcamentoBusca());
     }
 
     public function test_a_segunda_fase_nao_e_disparada_com_a_meta_batida(): void

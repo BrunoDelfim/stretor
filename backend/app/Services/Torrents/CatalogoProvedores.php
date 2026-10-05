@@ -161,19 +161,19 @@ class CatalogoProvedores
      * Diz se foi este canal que abriu o orçamento da busca.
      *
      * O orçamento é um singleton compartilhado entre os canais, mas só quem o
-     * abriu deve fechá-lo. Sem esta posse explícita, o stream direto — que é o
-     * canal preferido das séries antigas — fecharia o relógio ao terminar e
-     * deixaria a cascata de torrents (o fallback cruzado) sem prazo nenhum.
+     * abriu deve fechá-lo. Sem esta posse explícita, o stream direto — que roda
+     * primeiro e abre o canal dele — fecharia o relógio ao terminar e deixaria a
+     * cascata de torrents, que entra logo depois, sem prazo nenhum.
      */
     private bool $orcamentoAbertoAqui = false;
 
     /**
-     * Provedor de stream direto — o fallback de conteúdo raro.
+     * Provedor de stream direto — o scraper web, primeiro método da busca.
      *
      * Fica fora dos degraus de propósito: não é consultado junto com os torrents,
-     * e sim depois que a cascata inteira termina sem fonte aproveitável. Guardado
-     * como propriedade (e não só no registro) porque o gatilho do fallback precisa
-     * chamá-lo diretamente, sem passar pelo laço de grupos.
+     * e sim acionado à parte, antes da cascata. Guardado como propriedade (e não
+     * só no registro) porque o método de indexação precisa chamá-lo diretamente,
+     * sem passar pelo laço de grupos.
      */
     private ProvedorStreamDireto $streamDireto;
 
@@ -196,7 +196,9 @@ class CatalogoProvedores
 
         // A ordem do relatório é a ordem da cascata: os por identificador abrem, os
         // por nome seguem, o indexador com o YTS fecham os degraus e o stream direto
-        // fica por último — é o único que só entra quando todos os outros falharam.
+        // fica por último. Ele não é um degrau: é o outro método de indexação, que
+        // roda à parte — sempre, e antes da cascata — e por isso fecha o relatório,
+        // com o `agregadores` detalhando por baixo cada site consultado.
         $this->registro = [
             ...$this->porIdentificador,
             ...$this->primarios,
@@ -247,9 +249,9 @@ class CatalogoProvedores
          * O relógio é compartilhado com o [`ClienteHttp`] (mesmo singleton), para
          * que o socorro pelo FlareSolverr também encolha junto com o prazo.
          *
-         * O canal é fixado em `torrents` antes de abrir: a cascata pode rodar
-         * depois do stream direto (fallback cruzado), e sem esta fixação ela leria
-         * o prazo do canal errado — o do stream direto, de 90 s.
+         * O canal é fixado em `torrents` antes de abrir: a cascata roda depois do
+         * stream direto, na mesma busca, e sem esta fixação ela leria o prazo do
+         * canal errado — o do stream direto, dimensionado para o FlareSolverr.
          */
         $this->orcamento->usarCanal(OrcamentoBusca::CANAL_PADRAO);
 
@@ -468,23 +470,22 @@ class CatalogoProvedores
     /**
      * Aciona o provedor de stream direto e devolve o que ele achar.
      *
-     * Este é o socorro do conteúdo raro, e ele **não** mora dentro da cascata: a
-     * cascata devolve o que os torrents deram, e quem decide se o fallback entra é
-     * o [`TorrentService`], depois de `ordenar()` — porque só lá se sabe o que
-     * sobrou de fato. A cascata pode ter recebido dezenas de fontes do Torrentio e
-     * descartado todas no filtro de idioma; para o usuário, isso é lista vazia, e é
-     * aí que o stream direto vale. Disparar aqui dentro, com a lista bruta, daria
-     * fallback até quando o filtro ainda ia aproveitar metade do que veio.
+     * É o **primeiro** método de indexação da busca, e ele não mora dentro da
+     * cascata: os torrents são consultados à parte, logo depois, e quem costura os
+     * dois é o [`TorrentService`]. A ordem é do interesse da resposta — a fonte
+     * direta toca sem malha, então ela tem de estar na mão antes das raspagens
+     * lentas. O nome com "fallback" ficou do tempo em que ele só rodava quando a
+     * cascata voltava vazia, e é mantido aqui porque os logs e os testes o
+     * conhecem por ele.
      *
-     * Roda com orçamento próprio: o relógio global da cascata já foi fechado (ou
-     * está prestes a ser), e reaproveitá-lo faria o fallback nascer sem tempo. O
-     * teto é curto de propósito — o fallback acontece depois de a cascata inteira
-     * ter gastado o orçamento dela, e a resposta ainda precisa caber nos 60 s do
-     * frontend.
+     * Roda com orçamento próprio: o canal `torrents` tem o dele e este tem o seu,
+     * dimensionado para o custo do FlareSolverr (10 a 15 s por página). Como os
+     * dois canais sempre rodam, a soma é contida pelo teto global da busca
+     * (`tempo_total_busca`), aplicado em [`OrcamentoBusca::abrir()`].
      *
      * O censo do provedor é preenchido à mão porque ele não passa pelo
      * `buscarGrupo()`: sem isto, o relatório o mostraria como `nao_consultado`
-     * mesmo tendo sido a única fonte da busca.
+     * mesmo tendo sido consultado.
      *
      * @param  array<int, string>  $titulos
      * @return array<int, array<string, mixed>>
@@ -540,13 +541,13 @@ class CatalogoProvedores
         $inicio = microtime(true);
 
         /*
-         * O stream direto tem o **próprio relógio**, e não o global. O custo dos
-         * dois canais é de ordens diferentes: um provedor de torrent responde em
-         * milissegundos, enquanto o stream direto paga uma renderização de
+         * O stream direto tem o **próprio relógio**, e não o da cascata. O custo
+         * dos dois canais é de ordens diferentes: um provedor de torrent responde
+         * em milissegundos, enquanto o stream direto paga uma renderização de
          * navegador (FlareSolverr) por página, de 10 a 15 s cada, e precisa de
          * duas páginas no mínimo — a listagem da série e a do episódio. Com o
          * prazo único de 45 s, a cascata de torrents consumia o orçamento inteiro
-         * e o stream direto, que só entra depois como fallback, nascia sem tempo:
+         * e o stream direto, que rodava depois na mesma busca, nascia sem tempo:
          * o FlareSolverr respondia 200 com a página do episódio quando chamado à
          * mão, mas o provedor desistia antes de chamá-lo, porque `restante()` já
          * devolvia zero.
@@ -554,19 +555,19 @@ class CatalogoProvedores
          * A troca de canal é o que separa os dois relógios. A partir daqui, o
          * [`ClienteHttp`] e o trait [`ConsultaComOrcamento`] leem o prazo do canal
          * `stream_direto` — dimensionado para o custo real do FlareSolverr —, e
-         * não o da cascata. Os dois orçamentos **não somam** para o usuário: o
-         * stream direto só roda quando a cascata falhou, então o tempo dele é o
-         * tempo da resposta.
+         * não o da cascata. Como os dois métodos sempre rodam, estes orçamentos
+         * **somam** no tempo da resposta; quem impede a soma de estourar o que o
+         * frontend espera é o teto global da busca (`tempo_total_busca`), que
+         * corta os dois canais em [`OrcamentoBusca::abrir()`].
          *
-         * O `abrirSeFechado()` continua idempotente dentro do canal: se o stream
-         * direto já estiver de pé (por exemplo, quando ele é o canal preferido de
-         * uma série antiga e a cascata de torrents entra depois como fallback
-         * cruzado), o relógio não é reiniciado.
+         * O `abrirSeFechado()` continua idempotente dentro do canal: se o canal
+         * `stream_direto` já estiver de pé (por uma chamada anterior da mesma
+         * busca), o relógio não é reiniciado.
          */
         $this->orcamento->usarCanal(OrcamentoBusca::CANAL_STREAM_DIRETO);
 
         $this->orcamentoAbertoAqui = $this->orcamento->abrirSeFechado(
-            (int) config('services.torrents.stream_direto_orcamento', 90),
+            (int) config('services.torrents.stream_direto_orcamento', 45),
             OrcamentoBusca::CANAL_STREAM_DIRETO
         );
 
@@ -591,13 +592,13 @@ class CatalogoProvedores
             /*
              * O relógio do stream direto **não** é fechado aqui, e o canal ativo
              * volta para o padrão. Fechá-lo deixaria a cascata de torrents — que
-             * pode entrar logo depois como fallback cruzado — sem prazo nenhum,
-             * reabrindo um orçamento novo do zero. Quem fecha os dois canais é o
+             * entra logo depois, na mesma busca — sem prazo nenhum, reabrindo um
+             * orçamento novo do zero. Quem fecha os dois canais é o
              * [`TorrentService`], no fim da busca inteira, via `fecharOrcamento()`.
              *
-             * A volta do canal é obrigatória: sem ela, a cascata de torrents que
-             * rodasse depois leria o prazo do stream direto (90 s) em vez do
-             * próprio (45 s), e o orçamento global perderia o sentido.
+             * A volta do canal é obrigatória: sem ela, a cascata de torrents, que
+             * roda logo depois na mesma busca, leria o prazo do stream direto em
+             * vez do próprio, e o orçamento global perderia o sentido.
              */
             $this->orcamento->usarCanal(OrcamentoBusca::CANAL_PADRAO);
         }
@@ -797,12 +798,40 @@ class CatalogoProvedores
         }
 
         foreach ($fontes as $fonte) {
-            $provedor = (string) ($fonte['provedor'] ?? '');
+            /*
+             * A fonte direta carrega em `provedor` o site de origem, e não o nome
+             * do método: quem faz o casamento com a linha certa do censo é
+             * [`linhaDoCenso()`].
+             */
+            $provedor = $this->linhaDoCenso($fonte);
 
             if ($provedor !== '' && isset($this->censo[$provedor])) {
                 $this->censo[$provedor]['na_lista']++;
             }
         }
+    }
+
+    /**
+     * Diz a qual linha do censo uma fonte pertence.
+     *
+     * A fonte de torrent traz o identificador do provedor em `provedor` e o
+     * casamento é direto. A fonte direta, não: o `provedor` dela carrega o **site
+     * de origem** — o agregador onde o vídeo foi achado, que é o que o usuário
+     * reconhece na lista —, e o censo tem uma linha só para o método
+     * (`stream_direto`). Sem este desvio, as duas contas que dependem do
+     * casamento (`aproveitadas` e `na_lista`) ficariam zeradas para o stream
+     * direto, e a cobertura diria `barrado_no_filtro` ou
+     * `descartado_na_montagem` de fontes que estão na lista.
+     *
+     * @param  array<string, mixed>  $fonte
+     */
+    private function linhaDoCenso(array $fonte): string
+    {
+        if (($fonte['tipo'] ?? '') === 'direto') {
+            return $this->streamDireto->identificador();
+        }
+
+        return (string) ($fonte['provedor'] ?? '');
     }
 
     /**
@@ -813,13 +842,12 @@ class CatalogoProvedores
      * de um relatório vazio que não distingue nada.
      *
      * O stream direto é a exceção. Ele não passa pela cascata: é acionado à parte,
-     * antes ou depois dela, e o seu censo é preenchido à mão em
-     * [`buscarFallbackDireto()`]. Quando o roteador manda a série antiga para o
-     * stream direto primeiro e ele volta vazio, o fallback cruzado chama `buscar()`
-     * — que zera o censo e apagaria o registro do stream direto. O relatório então
-     * diria `nao_consultado` de um provedor que rodou, o que é justamente a mentira
-     * que o censo existe para evitar. Preservar o registro dele aqui mantém a
-     * contagem da consulta que já aconteceu.
+     * antes dela, e o seu censo é preenchido à mão em [`buscarFallbackDireto()`].
+     * Como ele sempre roda primeiro e a cascata sempre vem depois, `buscar()`
+     * zeraria o censo logo em seguida e apagaria o registro do stream direto — o
+     * relatório diria `nao_consultado` de um provedor que rodou, que é justamente
+     * a mentira que o censo existe para evitar. Preservar o registro dele aqui
+     * mantém a contagem da consulta que já aconteceu.
      */
     private function reiniciarCenso(): void
     {
@@ -875,7 +903,7 @@ class CatalogoProvedores
 
             $this->fontesNoCenso[$id] = true;
 
-            $provedor = (string) ($fonte['provedor'] ?? '');
+            $provedor = $this->linhaDoCenso($fonte);
 
             if ($provedor === '' || ! isset($this->censo[$provedor])) {
                 continue;
@@ -941,8 +969,8 @@ class CatalogoProvedores
     {
         /*
          * O orçamento **não** é fechado aqui. Ele é compartilhado entre os canais
-         * e precisa continuar de pé quando a cascata é só a primeira metade da
-         * busca — o fallback cruzado ainda pode entrar depois. Quem fecha é o
+         * e precisa continuar de pé quando a cascata é só a segunda metade da
+         * busca — o stream direto já rodou antes dela. Quem fecha é o
          * [`TorrentService`], no fim da busca inteira, via `fecharOrcamento()`.
          */
 
@@ -1061,16 +1089,31 @@ class CatalogoProvedores
     }
 
     /**
-     * Diz se a busca já rendeu alguma fonte aproveitável de episódio.
+     * Diz se a **cascata** já rendeu alguma fonte aproveitável de episódio.
      *
      * É o gatilho que dispensa os termos de socorro (pack e série): eles só fazem
      * sentido quando os termos de episódio não acharam nada. A conta olha o censo
      * inteiro, e não a lista corrente, porque a fonte pode ter vindo de qualquer
      * provedor já consultado — o que importa é que o episódio tem resposta.
+     *
+     * O stream direto fica **fora** da conta, e a exclusão é a razão de o laço
+     * comparar o id. Desde que os dois métodos de indexação passaram a rodar
+     * sempre, o stream direto roda antes e o seu censo sobrevive ao
+     * [`reiniciarCenso()`] da cascata — então uma única URL tocável achada no
+     * acervo web faria o `aproveitadas` dele dispensar os termos de pack e de
+     * série. O efeito seria o sintoma que o censo existe para evitar: "só veio do
+     * superflix". A pergunta aqui é sobre a malha — se os trackers acharam o
+     * episódio —, e quem responde por ela são os provedores da cascata.
      */
     private function jaTemEpisodioAproveitado(): bool
     {
-        foreach ($this->censo as $censo) {
+        $streamDireto = $this->streamDireto->identificador();
+
+        foreach ($this->censo as $id => $censo) {
+            if ($id === $streamDireto) {
+                continue;
+            }
+
             if ($censo['aproveitadas'] > 0) {
                 return true;
             }

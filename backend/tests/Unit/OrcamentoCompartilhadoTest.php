@@ -21,16 +21,17 @@ use Tests\TestCase;
  * Trava os relógios por canal da busca.
  *
  * O orçamento era um relógio único, e isso matava o stream direto: a cascata de
- * torrents consumia os 45 s e o fallback — que só entra depois — nascia sem
+ * torrents consumia os 45 s e a consulta direta — que rodava depois — nascia sem
  * tempo. O FlareSolverr respondia 200 com a página do episódio quando chamado à
  * mão, mas o provedor desistia antes de chamá-lo, porque `restante()` já devolvia
  * zero.
  *
- * A correção separou os canais: a cascata de torrents mantém o orçamento global
- * (45 s) e o stream direto tem o próprio (90 s), dimensionado para o custo real
- * do FlareSolverr — 10 a 15 s por página, e duas páginas no mínimo (série e
- * episódio). Estes testes provam que os dois relógios não se contaminam e que a
- * abertura continua idempotente dentro de cada canal.
+ * A correção separou os canais: a cascata de torrents mantém o orçamento global e
+ * o stream direto tem o próprio, dimensionado para o custo real do FlareSolverr —
+ * 10 a 15 s por página, e duas páginas no mínimo (série e episódio). Como os dois
+ * métodos passaram a rodar sempre, um teto global (`tempo_total_busca`) limita a
+ * soma dos dois. Estes testes provam que os relógios não se contaminam, que o
+ * teto corta cada canal e que a abertura continua idempotente dentro de cada um.
  */
 class OrcamentoCompartilhadoTest extends TestCase
 {
@@ -106,8 +107,9 @@ class OrcamentoCompartilhadoTest extends TestCase
     /**
      * Os canais têm relógios independentes.
      *
-     * Abrir o canal `torrents` não abre o `stream_direto`, e vice-versa. É o que
-     * permite ao stream direto ter um orçamento maior sem esticar o da cascata.
+     * Abrir o canal `torrents` não abre o `stream_direto`, e vice-versa: cada
+     * método tem o prazo que o custo dele pede. A independência não é licença para
+     * somar — o teto global corta os dois.
      */
     public function test_canais_tem_relogios_independentes(): void
     {
@@ -121,12 +123,21 @@ class OrcamentoCompartilhadoTest extends TestCase
             'Abrir um canal não pode abrir o outro.'
         );
 
+        // O serviço fixa o teto da busca inteira antes de os canais abrirem; aqui
+        // ele é pedido de propósito abaixo do orçamento do canal, para provar o
+        // corte.
+        $orcamento->definirTetoGlobal(55);
         $orcamento->abrir(90, OrcamentoBusca::CANAL_STREAM_DIRETO);
 
         $this->assertGreaterThan(
             45,
             $orcamento->restante(OrcamentoBusca::CANAL_STREAM_DIRETO),
             'O canal do stream direto tem o próprio prazo, maior que o global.'
+        );
+        $this->assertLessThanOrEqual(
+            55,
+            $orcamento->restante(OrcamentoBusca::CANAL_STREAM_DIRETO),
+            'O teto global da busca corta o orçamento maior do canal.'
         );
         $this->assertLessThanOrEqual(
             45,
@@ -136,11 +147,12 @@ class OrcamentoCompartilhadoTest extends TestCase
     }
 
     /**
-     * O caso central: o stream direto abre o próprio orçamento, não o global.
+     * O caso central: o stream direto abre o próprio orçamento, não o da cascata.
      *
-     * Quando o roteador manda a série antiga para o stream direto, ele precisa de
-     * tempo para pagar o FlareSolverr de cada página. Se ele usasse o orçamento
-     * global de 45 s, a renderização da série mais a do episódio já o estourariam.
+     * A descida paga o FlareSolverr de cada página e precisa de tempo para isso; se
+     * usasse o orçamento da cascata, a renderização da série mais a do episódio já
+     * o estourariam. O que o teto da busca impede é esse orçamento maior virar
+     * soma — `abrir()` corta o prazo do canal no teto global.
      */
     public function test_stream_direto_abre_o_proprio_orcamento(): void
     {
@@ -176,8 +188,8 @@ class OrcamentoCompartilhadoTest extends TestCase
      * O stream direto não contamina o relógio da cascata.
      *
      * Depois de o stream direto rodar, o canal ativo volta para `torrents`. Sem
-     * isso, a cascata que entrasse como fallback cruzado leria o prazo do stream
-     * direto em vez do próprio.
+     * isso, a cascata — que roda logo depois na mesma busca — leria o prazo do
+     * stream direto em vez do próprio.
      */
     public function test_stream_direto_devolve_o_canal_ativo_ao_padrao(): void
     {

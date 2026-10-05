@@ -368,4 +368,88 @@ class ProvedorStreamDiretoTest extends TestCase
         );
         $this->assertSame(0, array_sum(array_column($censo, 'consultas')));
     }
+
+    /**
+     * A fonte direta é marcada pelo **site de origem**, não pelo nome do método.
+     *
+     * Sem essa marca, dois links do mesmo agregador pareciam vir de provedores
+     * diferentes e não havia como saber que a lista saiu toda de um site. O
+     * `www.` sai junto: `www.site.com` e `site.com` são o mesmo site, e a
+     * diferença faria o teto por origem contar a mesma página duas vezes.
+     */
+    public function test_origem_da_pagina_e_o_dominio_do_site(): void
+    {
+        [$id, $rotulo] = $this->invocar('origemDa', 'https://verpobreflix.net/serie/ahp/1/1');
+
+        $this->assertSame('verpobreflix.net', $id);
+        $this->assertSame('Verpobreflix.net', $rotulo);
+    }
+
+    public function test_origem_sem_www_e_a_mesma_origem(): void
+    {
+        [$id] = $this->invocar('origemDa', 'https://www.verpobreflix.net/serie/ahp/1/1');
+
+        $this->assertSame('verpobreflix.net', $id);
+    }
+
+    /**
+     * Sem host reconhecível, a fonte volta a ser rotulada pelo método. É o caso
+     * de uma página que chegou sem endereço válido: melhor o rótulo genérico do
+     * que um campo de origem vazio, que quebraria o agrupamento do teto.
+     */
+    public function test_origem_sem_host_cai_no_nome_do_metodo(): void
+    {
+        [$id, $rotulo] = $this->invocar('origemDa', '/caminho/solto');
+
+        $this->assertSame('stream_direto', $id);
+        $this->assertSame('Stream direto', $rotulo);
+    }
+
+    /**
+     * O teto por site corta o excesso **daquela** origem, não a lista inteira.
+     */
+    public function test_teto_por_site_corta_o_excesso_de_cada_origem(): void
+    {
+        $fontes = [
+            ['id' => 'a1', 'provedor' => 'site-a.com'],
+            ['id' => 'b1', 'provedor' => 'site-b.com'],
+            ['id' => 'a2', 'provedor' => 'site-a.com'],
+            ['id' => 'a3', 'provedor' => 'site-a.com'],
+            ['id' => 'a4', 'provedor' => 'site-a.com'],
+            ['id' => 'b2', 'provedor' => 'site-b.com'],
+        ];
+
+        $mantidas = $this->invocar('limitarPorOrigem', $fontes, 2);
+
+        $this->assertSame(
+            ['a1', 'b1', 'a2', 'b2'],
+            array_column($mantidas, 'id'),
+            'Cada origem entrega até o teto, e a ordem de chegada é preservada.'
+        );
+    }
+
+    /**
+     * Teto desligado (zero ou negativo) devolve tudo: é o comportamento antigo,
+     * em que uma página podia ocupar a lista inteira.
+     */
+    public function test_teto_zerado_nao_corta_nada(): void
+    {
+        $fontes = [
+            ['id' => 'a1', 'provedor' => 'site-a.com'],
+            ['id' => 'a2', 'provedor' => 'site-a.com'],
+            ['id' => 'a3', 'provedor' => 'site-a.com'],
+        ];
+
+        $this->assertCount(3, $this->invocar('limitarPorOrigem', $fontes, 0));
+    }
+
+    /**
+     * O teto lido da configuração é o que a varredura aplica.
+     */
+    public function test_teto_por_site_vem_da_configuracao(): void
+    {
+        config()->set('services.torrents.stream_direto_max_fontes_por_site', 1);
+
+        $this->assertSame(1, $this->invocar('tetoPorSite'));
+    }
 }

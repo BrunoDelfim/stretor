@@ -228,23 +228,40 @@ return [
         /*
          * Orçamento de tempo, em segundos, só para o canal do stream direto.
          *
-         * Ele é separado do global porque o custo é de outra ordem. Um provedor de
-         * torrent responde em milissegundos; o stream direto paga uma renderização
-         * de navegador (FlareSolverr) por página, de 10 a 15 s cada, e precisa de
-         * duas páginas no mínimo — a listagem da série e a do episódio. Com o
-         * prazo único de 45 s, a cascata de torrents consumia o orçamento inteiro
-         * e o stream direto, que só entra depois como fallback, nascia sem tempo:
-         * o FlareSolverr respondia 200 com a página do episódio quando chamado à
-         * mão, mas o provedor desistia antes de chamá-lo, porque `restante()` já
-         * devolvia zero.
+         * Ele é separado do da cascata porque o custo é de outra ordem. Um provedor
+         * de torrent responde em milissegundos; o stream direto paga uma
+         * renderização de navegador (FlareSolverr) por página, de 10 a 15 s cada, e
+         * precisa de duas páginas no mínimo — a listagem da série e a do episódio.
+         * Com um prazo único, a cascata de torrents consumia o orçamento inteiro e
+         * o stream direto, que roda como primeiro método da mesma busca, nascia sem
+         * tempo: o FlareSolverr respondia 200 com a página do episódio quando
+         * chamado à mão, mas o provedor desistia antes de chamá-lo, porque
+         * `restante()` já devolvia zero.
          *
-         * Os dois orçamentos **não somam** para o usuário: o stream direto só roda
-         * quando a cascata de torrents falhou, então o tempo dele é o tempo da
-         * resposta, não uma adição ao da cascata. O valor padrão cobre a descida
-         * (série → episódio) com folga para o FlareSolverr de cada página, sem
-         * deixar a resposta passar de um minuto.
+         * Como os dois métodos sempre rodam, este orçamento **soma** ao da cascata
+         * — quem impede a soma de estourar o tempo do frontend é o
+         * `tempo_total_busca`: cada canal é aberto com o menor prazo entre o seu e
+         * o teto global. O valor padrão cobre a descida (série → episódio) com
+         * folga para o FlareSolverr de cada página.
          */
         'stream_direto_orcamento' => (int) env('TORRENTS_STREAM_DIRETO_ORCAMENTO', 45),
+
+        /*
+         * Teto, em segundos, da busca inteira — os dois métodos de indexação
+         * somados.
+         *
+         * Como o stream direto e a cascata de torrents sempre rodam, os seus
+         * orçamentos somariam e o pior caso passaria dos ~60 s que o frontend
+         * espera (`TIMEOUT_REQUISICAO_MS`). Este é o freio que vale para a busca
+         * toda: nenhum canal é aberto com prazo além dele, então o método que roda
+         * depois só enxerga o tempo que sobrou. O primeiro pode gastar o seu
+         * orçamento à vontade; a soma dos dois nunca passa daqui.
+         *
+         * O padrão (55) fica logo abaixo do limite do frontend, com folga para o
+         * transporte e a montagem da resposta. Zero ou negativo cai no mínimo de
+         * 1 s imposto pelo [`OrcamentoBusca`].
+         */
+        'tempo_total_busca' => (int) env('TORRENTS_TEMPO_TOTAL_BUSCA', 55),
 
         // --- Degrau 2: indexador Torznab (Prowlarr) ---
 
@@ -426,6 +443,20 @@ return [
         'stream_direto_max_fontes' => (int) env('TORRENTS_STREAM_DIRETO_MAX_FONTES', 2),
 
         /*
+         * Teto de fontes **por site de origem**.
+         *
+         * O alvo acima conta fontes de qualquer origem, e isso deixava uma única
+         * página encher a lista: um agregador que entrega cinco espelhos do mesmo
+         * episódio ocupava as cinco posições, e o site seguinte — que poderia ter
+         * o arquivo que toca — nunca era colocado à prova. O teto por origem
+         * garante diversidade: cada site contribui com o que tem, até este
+         * limite, e o restante da lista vem dos outros.
+         *
+         * Zero ou negativo desliga o corte.
+         */
+        'stream_direto_max_fontes_por_site' => (int) env('TORRENTS_STREAM_DIRETO_MAX_FONTES_POR_SITE', 3),
+
+        /*
          * Passe do Cloudflare para os hosts com **desafio embutido**.
          *
          * O `superflixapi.quest` fecha a página do episódio com um widget
@@ -561,32 +592,6 @@ return [
          * no padrão embutido no código (`vizer.autos`).
          */
         'stream_direto_vod_hosts' => $lista(env('TORRENTS_STREAM_DIRETO_VOD_HOSTS'), []),
-
-        /*
-         * Estratégia de roteamento por idade da série.
-         *
-         * Uma série recente tem release fresco nos indexadores de torrent e o
-         * Torrentio responde em segundos. Uma série antiga é o contrário: os
-         * indexadores devolvem pouco ou nada, e a cascata gasta o orçamento
-         * inteiro antes de o fallback de stream direto — que é quem acha o
-         * conteúdo raro — sequer começar. Com esta chave ligada, série fora do
-         * limiar começa pelo stream direto e só cai nos torrents se o scraper
-         * falhar (fallback cruzado).
-         *
-         * Desligar devolve o fluxo antigo: torrents primeiro, sempre.
-         */
-        'busca_por_idade_habilitada' => (bool) env('TORRENTS_BUSCA_POR_IDADE_HABILITADA', true),
-
-        /*
-         * Limiar, em anos, que separa série recente de série antiga. O critério é
-         * o ano de lançamento da **série**, não o da temporada: uma série de 2004
-         * continua sendo de 2004 na décima temporada, e é isso que se quer — o
-         * catálogo de torrents envelhece junto com a série.
-         *
-         * O limiar é inclusivo: com 2, uma série de dois anos ainda é recente e
-         * uma de três já é antiga. Zero ou negativo desliga o corte na prática.
-         */
-        'busca_idade_limite_anos' => (int) env('TORRENTS_BUSCA_IDADE_LIMITE_ANOS', 2),
 
         /*
          * Bypass do cache de consultas aos provedores. Com isto ligado, a busca

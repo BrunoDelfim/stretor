@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Enums\IdiomaFonte;
 use App\Services\TorrentService;
 use App\Services\Torrents\CatalogoProvedores;
+use App\Services\Torrents\OrcamentoBusca;
 use App\Support\MensagensTorrent;
 use Mockery;
 use Tests\TestCase;
@@ -83,7 +84,7 @@ class MontagemFinalTest extends TestCase
             )
         );
 
-        return new TorrentService($catalogo);
+        return new TorrentService($catalogo, new OrcamentoBusca());
     }
 
     /**

@@ -19,27 +19,33 @@ namespace App\Services\Torrents;
  * orçamento. Sem o compartilhamento, o FlareSolverr continuaria estourando o
  * tempo sozinho, por mais que a cascata soubesse que o prazo acabou.
  *
- * ## Os canais
+ * ## Os métodos e os canais
  *
- * O relógio deixou de ser um só. A cascata de torrents e o stream direto têm
- * custos muito diferentes: um provedor de torrent responde em milissegundos,
- * enquanto o stream direto paga uma renderização de navegador (FlareSolverr) por
- * página, de 10 a 15 s cada. Com um prazo único de 45 s, a cascata de torrents
- * consumia o orçamento inteiro e o stream direto — que só entra depois, como
- * fallback — nascia sem tempo nenhum. Era esse o sintoma: o FlareSolverr
- * respondia 200 com a página do episódio quando chamado à mão, mas o provedor
- * desistia antes de chamá-lo, porque `restante()` já devolvia zero.
+ * O relógio tem um canal por método de indexação. A cascata de torrents e o
+ * stream direto têm custos muito diferentes: um provedor de torrent responde em
+ * milissegundos, enquanto o stream direto paga uma renderização de navegador
+ * (FlareSolverr) por página, de 10 a 15 s cada. Cada canal tem o seu próprio
+ * orçamento, dimensionado para o custo real do método.
  *
- * Cada canal tem o seu próprio relógio, nomeado. O canal `torrents` mantém o
- * orçamento global; o canal `stream_direto` tem um orçamento maior, dimensionado
- * para o custo real do FlareSolverr. Os dois **não somam** para o usuário: o
- * stream direto só roda quando a cascata de torrents falhou, então o tempo dele
- * é o tempo da resposta, não uma adição ao da cascata.
+ * O canal `torrents` mantém o orçamento global; o canal `stream_direto` tem um
+ * orçamento maior, dimensionado para o FlareSolverr. Desde que os dois métodos
+ * passaram a rodar sempre, os dois orçamentos **somam** para o usuário — e é por
+ * isso que existe o teto global descrito abaixo.
  *
  * O canal ativo é uma propriedade do objeto, e não um parâmetro espalhado por
  * toda a assinatura. O [`ClienteHttp`] e o trait [`ConsultaComOrcamento`] leem o
  * relógio sem saber de qual canal se trata — quem troca o canal é o
- * [`CatalogoProvedores`], no ponto exato em que aciona cada metade da busca.
+ * [`CatalogoProvedores`], no ponto exato em que aciona cada método.
+ *
+ * ## O teto global
+ *
+ * Como os dois métodos sempre rodam, os prazos dos canais deixariam de ser um
+ * limite e virariam uma soma: dois orçamentos de 45 s dariam 90 s de pior caso,
+ * acima dos ~60 s que o frontend espera. O teto global é o prazo absoluto que
+ * **nenhum** canal pode ultrapassar: o [`TorrentService`] o define no início da
+ * busca e `abrir()` corta cada prazo nele. Assim o primeiro método pode gastar o
+ * seu orçamento à vontade, mas o segundo só enxerga o que sobrou do teto — e a
+ * soma nunca passa do que o frontend tolera.
  */
 class OrcamentoBusca
 {
@@ -64,6 +70,27 @@ class OrcamentoBusca
      * Canal cujo relógio as leituras (`restante()`, `esgotado()`) consultam.
      */
     private string $canalAtivo = self::CANAL_PADRAO;
+
+    /**
+     * Prazo absoluto, em marca de tempo, que nenhum canal pode ultrapassar.
+     *
+     * Fica `null` enquanto o [`TorrentService`] não o define no início da busca;
+     * sem teto, cada canal vale só pelo próprio orçamento.
+     */
+    private ?float $tetoGlobal = null;
+
+    /**
+     * Define o teto absoluto da busca inteira, contado a partir de agora.
+     *
+     * Enquanto ele estiver de pé, todo `abrir()` corta o prazo do canal no teto —
+     * um canal jamais é esticado para além dele. Sem o teto, dois métodos que
+     * sempre rodam somariam os seus orçamentos; com ele, o segundo método só
+     * enxerga o tempo que sobrou da busca.
+     */
+    public function definirTetoGlobal(int $segundos): void
+    {
+        $this->tetoGlobal = microtime(true) + max(1, $segundos);
+    }
 
     /**
      * Seleciona o canal cujo relógio passa a valer para as leituras seguintes.
@@ -93,7 +120,15 @@ class OrcamentoBusca
      */
     public function abrir(int $segundos, ?string $canal = null): void
     {
-        $this->prazos[$canal ?? $this->canalAtivo] = microtime(true) + max(1, $segundos);
+        $prazo = microtime(true) + max(1, $segundos);
+
+        // O teto da busca inteira nunca é esticado por um canal: o stream direto
+        // pode pedir 45 s, mas se só restarem 10 s do teto, são 10 s.
+        if ($this->tetoGlobal !== null) {
+            $prazo = min($prazo, $this->tetoGlobal);
+        }
+
+        $this->prazos[$canal ?? $this->canalAtivo] = $prazo;
     }
 
     /**
@@ -151,6 +186,7 @@ class OrcamentoBusca
     public function fecharTudo(): void
     {
         $this->prazos = [];
+        $this->tetoGlobal = null;
     }
 
     /** O orçamento do canal ativo acabou? */

@@ -6,19 +6,20 @@ use App\Enums\IdiomaFonte;
 use App\Services\TorrentService;
 use App\Services\Torrents\CatalogoProvedores;
 use App\Services\Torrents\NormalizaFonte;
+use App\Services\Torrents\OrcamentoBusca;
 use Mockery;
 use Tests\TestCase;
 
 /**
  * Trava o contrato da fonte direta (MP4/HLS) na montagem final.
  *
- * O stream direto é a rede de segurança do conteúdo raro: quando a cascata de
- * torrents termina sem nenhuma fonte viva, o backend oferece uma URL de vídeo em
- * vez de um magnet. O risco desta expansão é silencioso — a fonte direta não tem
- * `seeds` nem `magnet`, então os filtros que sempre valeram para torrent a
- * descartariam sem que ninguém percebesse. Estes testes fixam os dois pontos que
- * a salvam: o ramo `tipo === 'direto'` em `ordenar()` e a montagem que preenche
- * `stream` com `magnet` vazio.
+ * O stream direto é o primeiro método de indexação da busca: roda antes da
+ * cascata de torrents e entra na frente dela na lista final, porque não depende
+ * de malha. O risco desta expansão é silencioso — a fonte direta não tem `seeds`
+ * nem `magnet`, então os filtros que sempre valeram para torrent a descartariam
+ * sem que ninguém percebesse. Estes testes fixam os pontos que a salvam: o ramo
+ * `tipo === 'direto'` em `ordenar()` (para as diretas que chegam pela cascata) e
+ * a montagem que preenche `stream` com `magnet` vazio.
  *
  * Como nos demais testes de montagem, o catálogo é substituído por um dublê e
  * nada aqui toca em rede ou banco.
@@ -85,9 +86,10 @@ class StreamDiretoTest extends TestCase
     /**
      * Substitui o catálogo por um dublê que devolve as fontes dadas.
      *
-     * O fallback direto é dublado à parte: o gatilho mora no `TorrentService`,
-     * depois de `ordenar()`, então o teste precisa controlar o que ele devolve
-     * sem que o catálogo real seja tocado.
+     * Os dois métodos são dublados à parte porque os dois rodam e compõem a
+     * lista: `buscar()` devolve a cascata de torrents e `buscarFallbackDireto()`
+     * devolve o stream direto. Assim o teste controla cada método sem tocar o
+     * catálogo real nem em rede.
      *
      * @param  array<int, array<string, mixed>>  $fontes
      * @param  array<int, array<string, mixed>>  $diretas
@@ -105,7 +107,7 @@ class StreamDiretoTest extends TestCase
             )
         );
 
-        return new TorrentService($catalogo);
+        return new TorrentService($catalogo, new OrcamentoBusca());
     }
 
     /**
@@ -145,15 +147,14 @@ class StreamDiretoTest extends TestCase
     }
 
     /**
-     * O gatilho só dispara quando a lista **final** fica vazia.
+     * A fonte direta cobre o caso em que os torrents são todos descartados.
      *
      * O Torrentio devolveu uma fonte, mas ela é lixo: sem seeds, o filtro de
-     * `ordenar()` a descarta. A lista bruta não estava vazia — a final está. É
-     * exatamente esse o caso que o fallback existe para cobrir, e é o que a
-     * mudança de momento garante: antes, o gatilho olhava a lista bruta e nunca
-     * chegava a disparar aqui.
+     * `ordenar()` a descarta. Quando isso acontece, a lista final fica só com o
+     * que o stream direto trouxe — que é exatamente o papel dele: cobrir o
+     * conteúdo que os trackers não entregam vivo.
      */
-    public function test_fallback_dispara_quando_o_filtro_esvazia_a_lista(): void
+    public function test_stream_direto_cobre_quando_os_torrents_sao_descartados(): void
     {
         $lixo = $this->fonteTorrent('lixo');
         $lixo['seeds'] = 0;
@@ -168,32 +169,33 @@ class StreamDiretoTest extends TestCase
     }
 
     /**
-     * O controle do gatilho: com torrent PT-BR vivo, o fallback não é acionado.
+     * Com torrent vivo, o stream direto entra mesmo assim — e na frente.
      *
-     * O stream direto é socorro, não segunda opinião. Se sobrou fonte com áudio
-     * PT-BR, o player tem o que tentar e o provedor direto não deve gastar
-     * orçamento.
+     * Este caso substitui o controle antigo ("com torrent vivo, o fallback não
+     * dispara"). Aquilo valia quando o stream direto era socorro, acionado só com
+     * a lista final vazia. Agora os dois métodos sempre rodam e a lista final é a
+     * soma, com o direto na frente: quando o acervo web tem o título, ele toca sem
+     * esperar o tracker. O torrent continua na lista, como alternativa.
      */
-    public function test_fallback_nao_dispara_quando_ha_torrent_vivo(): void
+    public function test_stream_direto_convive_com_torrent_vivo_e_vem_primeiro(): void
     {
         $servico = $this->servicoComFontes([$this->fonteTorrent('viva')], [$this->fonteDireta('socorro')]);
 
         $fontes = $servico->fontes('Filme Raro');
 
-        $this->assertCount(1, $fontes);
-        $this->assertSame('torrent', $fontes[0]['tipo'], 'Com torrent vivo, a lista não pode virar stream direto.');
+        $this->assertCount(2, $fontes, 'Os dois métodos compõem a lista.');
+        $this->assertSame('direto', $fontes[0]['tipo'], 'O stream direto vem primeiro.');
+        $this->assertSame('torrent', $fontes[1]['tipo'], 'O torrent continua como alternativa.');
     }
 
     /**
      * O caso do conteúdo PT-BR raro: só veio original.
      *
      * Quando o Torrentio devolve apenas releases em inglês, o corte duro de
-     * idioma esvazia a lista — o original não é resposta para quem pediu
-     * português. Com a lista vazia, o gatilho do `TorrentService` aciona o
-     * fallback, que devolve o stream direto. É este o cenário que o gatilho
-     * antigo (que olhava a lista bruta) nunca alcançava.
+     * idioma esvazia a lista de torrents — o original não é resposta para quem
+     * pediu português. A fonte direta, que já rodou, é a única da lista final.
      */
-    public function test_fallback_dispara_quando_so_veio_original(): void
+    public function test_stream_direto_e_a_unica_fonte_quando_so_veio_original(): void
     {
         $original = $this->fonteTorrent('original', 'en');
         $original['idioma'] = 'original';
@@ -209,14 +211,14 @@ class StreamDiretoTest extends TestCase
     }
 
     /**
-     * O controle do caso acima: sem PT-BR e sem fallback, a lista sai vazia.
+     * O controle do caso acima: sem PT-BR e sem fonte direta, a lista sai vazia.
      *
      * O original em inglês não volta como consolação — o corte duro de idioma o
-     * descarta, e o fallback, tendo voltado vazio, não repõe nada. A lista vazia
-     * é a resposta correta: o cliente mostra "sem fontes" em vez de oferecer um
-     * release que o usuário não pediu.
+     * descarta, e o stream direto, tendo voltado vazio, não repõe nada. A lista
+     * vazia é a resposta correta: o cliente mostra "sem fontes" em vez de oferecer
+     * um release que o usuário não pediu.
      */
-    public function test_lista_sai_vazia_quando_o_fallback_nao_acha_nada(): void
+    public function test_lista_sai_vazia_quando_nao_ha_pt_br_nem_stream_direto(): void
     {
         $original = $this->fonteTorrent('original', 'en');
         $original['idioma'] = 'original';
@@ -304,7 +306,7 @@ class StreamDiretoTest extends TestCase
         $catalogo->shouldReceive('reconciliarCenso')->andReturnNull();
         $catalogo->shouldReceive('fecharOrcamento')->andReturnNull();
 
-        $servico = new TorrentService($catalogo);
+        $servico = new TorrentService($catalogo, new OrcamentoBusca());
 
         $fontes = $servico->fontes('');
 
@@ -326,8 +328,8 @@ class StreamDiretoTest extends TestCase
 
         $catalogo = Mockery::mock(CatalogoProvedores::class);
         $catalogo->shouldReceive('buscar')->andReturn([]);
-        // A segunda fase pergunta se a coleta já basta; sem PT-BR, ela dispara e
-        // o original entra na lista antes do fallback.
+        // O stream direto roda primeiro, antes da segunda fase da cascata, então a
+        // lista de termos dele nasce do traduzido mais o original.
         $catalogo->shouldReceive('ptBrSuficiente')->andReturnFalse();
         $catalogo->shouldReceive('buscarFallbackDireto')
             ->once()
@@ -339,7 +341,7 @@ class StreamDiretoTest extends TestCase
         $catalogo->shouldReceive('reconciliarCenso')->andReturnNull();
         $catalogo->shouldReceive('fecharOrcamento')->andReturnNull();
 
-        $servico = new TorrentService($catalogo);
+        $servico = new TorrentService($catalogo, new OrcamentoBusca());
 
         $servico->fontes('Donas de Casa Desesperadas', null, null, 'Desperate Housewives');
 
@@ -348,13 +350,13 @@ class StreamDiretoTest extends TestCase
     }
 
     /**
-     * O fallback não repete o título original quando ele já está na lista.
+     * O stream direto não repete o título quando ele já está na lista.
      *
-     * Quando a segunda fase rodou, o original já entrou em `$titulos`; acrescentá-lo
-     * de novo faria o scraper repetir a mesma consulta. A deduplicação protege o
-     * orçamento do fallback.
+     * O mesmo título pode chegar por dois caminhos (traduzido e original, ou o
+     * `$titulos` já preenchido); acrescentá-lo de novo faria o scraper repetir a
+     * consulta. A deduplicação protege o orçamento do stream direto.
      */
-    public function test_fallback_nao_duplica_titulo_original(): void
+    public function test_stream_direto_nao_duplica_titulo(): void
     {
         $recebidos = null;
 
@@ -370,10 +372,10 @@ class StreamDiretoTest extends TestCase
         $catalogo->shouldReceive('reconciliarCenso')->andReturnNull();
         $catalogo->shouldReceive('fecharOrcamento')->andReturnNull();
 
-        $servico = new TorrentService($catalogo);
+        $servico = new TorrentService($catalogo, new OrcamentoBusca());
 
-        // Sem título original distinto, a segunda fase não roda e a lista do
-        // fallback deve conter só o título traduzido, uma única vez.
+        // Sem título original distinto, a lista do stream direto deve conter só o
+        // título traduzido, uma única vez.
         $servico->fontes('Filme Raro');
 
         $this->assertSame(['Filme Raro'], $recebidos, 'Sem original distinto, o fallback recebe só o traduzido.');

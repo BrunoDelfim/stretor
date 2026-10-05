@@ -200,24 +200,25 @@ class ProvedorStreamDireto implements ProvedorTorrents
         /*
          * O alvo de fontes é diferente do teto de páginas, e antes os dois eram a
          * mesma variável — o que fazia o laço parar só depois de abrir seis
-         * páginas, mesmo com duas fontes já na mão. O fallback é socorro, não
-         * catálogo: assim que há fontes suficientes para o usuário escolher, parar
-         * é o certo. O alvo é configurável porque "suficiente" é uma decisão de
-         * operação, não uma verdade do código.
+         * páginas, mesmo com duas fontes já na mão. O stream direto é o primeiro
+         * método da busca, mas o papel dele aqui é socorro, não catálogo: assim que
+         * há fontes suficientes para o usuário escolher, parar é o certo — a
+         * cascata de torrents roda logo depois e traz volume. O alvo é configurável
+         * porque "suficiente" é uma decisão de operação, não uma verdade do código.
          */
         $alvoFontes = (int) config('services.torrents.stream_direto_max_fontes', 2);
 
         /*
          * O teto de cada consulta ao motor e a margem de segurança que impede
-         * começar uma requisição que não caberia no orçamento. Sem a margem, o
-         * fallback iniciava a última consulta a 1 s do fim, esperava o teto cheio
-         * e devolvia zero — o orçamento inteiro gasto sem nada entregue.
+         * começar uma requisição que não caberia no orçamento. Sem a margem, a
+         * última consulta começava a 1 s do fim, esperava o teto cheio e devolvia
+         * zero — o orçamento inteiro gasto sem nada entregue.
          *
-         * O stream direto não tem mais um teto próprio de relógio: quando ele é o
-         * canal preferido (série antiga), é o único canal e trabalha com o
-         * orçamento global inteiro. O laço respeita esse orçamento via
+         * O stream direto tem o relógio do próprio canal (`stream_direto`), não o
+         * da cascata de torrents. O laço respeita esse orçamento via
          * `temTempoParaConsulta()` e para quando o que resta não cobre uma
-         * consulta.
+         * consulta; o teto global da busca, em [`OrcamentoBusca::abrir()`], limita
+         * o canal por cima.
          */
         $tetoConsulta = (int) config('services.torrents.stream_direto_tempo_limite', 10);
 
@@ -334,7 +335,7 @@ class ProvedorStreamDireto implements ProvedorTorrents
             }
         }
 
-        $unicas = $this->deduplicar($fontes);
+        $unicas = $this->limitarPorOrigem($this->deduplicar($fontes), $this->tetoPorSite());
 
         /*
          * O rastro dos domínios que passaram pelo filtro e foram abertos. Sem
@@ -385,6 +386,53 @@ class ProvedorStreamDireto implements ProvedorTorrents
     private function alvoAtingido(array $fontes, int $alvo): bool
     {
         return $alvo > 0 && count($fontes) >= $alvo;
+    }
+
+    /**
+     * Teto de fontes por site de origem, lido da configuração.
+     *
+     * Zero ou negativo desliga o corte — e aí uma única página pode ocupar a
+     * lista inteira, como era antes.
+     */
+    private function tetoPorSite(): int
+    {
+        return (int) config('services.torrents.stream_direto_max_fontes_por_site', 3);
+    }
+
+    /**
+     * Mantém, no máximo, `$teto` fontes de cada site de origem.
+     *
+     * A ordem de chegada é preservada: a primeira fonte de cada site é a que o
+     * site apresentou primeiro, e é a que fica. O corte roda **durante** a
+     * varredura, e não só no fim, porque o alvo de fontes olha a contagem total —
+     * se cinco espelhos de um agregador enchessem o alvo, os sites seguintes
+     * deixariam de ser consultados, que é exatamente o empobrecimento que o teto
+     * existe para evitar.
+     *
+     * @param  array<int, array<string, mixed>>  $fontes
+     * @return array<int, array<string, mixed>>
+     */
+    private function limitarPorOrigem(array $fontes, int $teto): array
+    {
+        if ($teto <= 0) {
+            return $fontes;
+        }
+
+        $contagem = [];
+        $mantidas = [];
+
+        foreach ($fontes as $fonte) {
+            $origem = (string) ($fonte['provedor'] ?? '');
+            $contagem[$origem] = ($contagem[$origem] ?? 0) + 1;
+
+            if ($contagem[$origem] > $teto) {
+                continue;
+            }
+
+            $mantidas[] = $fonte;
+        }
+
+        return $mantidas;
     }
 
     /**
@@ -443,7 +491,16 @@ class ProvedorStreamDireto implements ProvedorTorrents
 
             $paginasVisitadas[$pagina] = true;
 
-            $fontes = array_merge($fontes, $this->rasparPagina($pagina, $titulo, $temporada, $episodio));
+            /*
+             * O teto por site é aplicado a cada página, e não só no fim. O alvo de
+             * fontes olha a contagem total: sem o corte aqui, cinco espelhos de um
+             * agregador encheriam o alvo e os sites seguintes nem seriam
+             * consultados — a lista sairia toda de uma origem só.
+             */
+            $fontes = $this->limitarPorOrigem(
+                array_merge($fontes, $this->rasparPagina($pagina, $titulo, $temporada, $episodio)),
+                $this->tetoPorSite()
+            );
         }
 
         return false;
@@ -740,10 +797,38 @@ class ProvedorStreamDireto implements ProvedorTorrents
                 'url' => $url,
                 'titulo' => $this->limparTexto($titulo),
                 'idioma' => $this->idiomaDaPagina($pagina),
-            ], $this->identificador(), $this->rotulo());
+            ], ...$this->origemDa($pagina));
         }
 
         return $fontes;
+    }
+
+    /**
+     * Identifica o **site de origem** de uma página, para marcar a fonte e
+     * limitar quantas cada site contribui.
+     *
+     * A fonte direta era rotulada só como `stream_direto`, o nome do método. Para
+     * quem olha a lista isso não diz nada: dois links do mesmo agregador pareciam
+     * de provedores diferentes, e não havia como saber que a lista veio toda de um
+     * site só. A origem é o domínio da página onde o vídeo foi encontrado — é ela
+     * que o usuário reconhece e é por ela que o teto por site conta.
+     *
+     * @return array{0: string, 1: string} Domínio e rótulo legível
+     */
+    private function origemDa(string $pagina): array
+    {
+        $dominio = $this->dominiosDe([$pagina])[0] ?? '';
+
+        // O `www.` cai antes de qualquer coisa: sem isso, `www.site.com` e
+        // `site.com` contariam como dois sites e o teto por origem seria burlado
+        // pela mesma página servida nos dois endereços.
+        $dominio = preg_replace('/^www\./', '', $dominio) ?? $dominio;
+
+        if ($dominio === '') {
+            return [$this->identificador(), $this->rotulo()];
+        }
+
+        return [$dominio, ucfirst($dominio)];
     }
 
     /**
@@ -783,7 +868,7 @@ class ProvedorStreamDireto implements ProvedorTorrents
             'url' => $resolvido['url'],
             'titulo' => $this->limparTexto($titulo),
             'idioma' => $resolvido['idioma'] ?? $this->idiomaDaPagina($pagina),
-        ], $this->identificador(), $this->rotulo())];
+        ], ...$this->origemDa($pagina))];
     }
 
     /**

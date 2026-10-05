@@ -80,15 +80,15 @@ trait NormalizaFonte
     /**
      * Monta uma fonte de **stream direto** (MP4/HLS) no mesmo contrato do frontend.
      *
-     * É o irmão de [`montarFonte()`] para o fallback de conteúdo raro: quando os
-     * torrents morreram, o provedor direto entrega uma URL tocável em vez de um
-     * magnet. O contrato é o mesmo — o player só olha o campo `tipo` para saber
-     * qual caminho seguir —, mas os campos que só fazem sentido para torrent
-     * (`magnet`, `seeds`, `peers`) saem vazios ou zerados de propósito.
+     * É o irmão de [`montarFonte()`] para o **stream direto**: em vez de um magnet,
+     * o provedor entrega uma URL tocável (MP4/HLS). O contrato é o mesmo — o player
+     * só olha o campo `tipo` para saber qual caminho seguir —, mas os campos que só
+     * fazem sentido para torrent (`magnet`, `seeds`, `peers`) saem vazios ou
+     * zerados de propósito.
      *
      * O `seeds` recebe o piso [`SEEDS_NAO_MEDIDOS`] em vez de zero: a montagem
      * final descarta fonte com `seeds <= 0`, e um link direto não tem malha para
-     * medir. Zerá-lo faria a própria fonte que o fallback acabou de achar ser
+     * medir. Zerá-lo faria a própria fonte que o provedor acabou de achar ser
      * jogada fora no último filtro.
      *
      * @param  array<string, mixed>  $dados  Campos crus do provedor (`url`, `titulo`, `idioma`...)

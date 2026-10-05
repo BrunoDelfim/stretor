@@ -1524,8 +1524,8 @@ async function tentarFontes(fontes, minhaGeracao, minhaAbertura, filme) {
     /*
      * Provedor de origem + idioma detectado (ex.: "Indexador (Torznab) · Dublado").
      * Numa fonte direta acrescentamos o rótulo "Link direto" para o usuário
-     * entender que aquele caminho não é um torrent — é o socorro que só entra
-     * quando a malha falhou.
+     * entender que aquele caminho não é um torrent — ele carrega uma URL de vídeo
+     * que o media-service converte para HLS, e não um magnet.
      */
     const rotuloOrigem = fonte.tipo === 'direto' ? 'Link direto' : null
 

@@ -90,11 +90,11 @@ export const streamingService = {
   /**
    * Cria uma sessão de reprodução a partir de um link direto (MP4/HLS).
    *
-   * É o caminho de socorro do conteúdo raro: quando a cascata de torrents não
-   * devolve nenhuma fonte viva, o backend oferece uma URL de streaming direto e
-   * o media-service a converte para HLS. O contrato de acompanhamento é o mesmo
-   * de `criarSessao` — o overlay consulta o status do mesmo jeito e nem precisa
-   * saber de onde veio o vídeo.
+   * É o caminho das fontes que não passam por torrent: o backend oferece a URL de
+   * streaming direto, achada pelo provedor antes das raspagens de torrent, e o
+   * media-service a converte para HLS. O contrato de acompanhamento é o mesmo de
+   * `criarSessao` — o overlay consulta o status do mesmo jeito e nem precisa saber
+   * de onde veio o vídeo.
    */
   async criarSessaoDireta(url, filmeId, temporada = null, episodio = null) {
     const corpo = {
