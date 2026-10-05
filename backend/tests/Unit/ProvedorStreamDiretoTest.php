@@ -340,4 +340,32 @@ class ProvedorStreamDiretoTest extends TestCase
     {
         $this->assertNull($this->invocar('resolverEndereco', 'temporada-1/episodio-1', '/caminho/solto'));
     }
+
+    /**
+     * O censo dos agregadores existe desde a construção, antes de qualquer busca.
+     *
+     * É o que permite à cobertura dizer "o superflix não foi perguntado" em vez de
+     * não dizer nada: a lista já nasce completa — todos em `nao_consultado`, com os
+     * contadores em zero —, e a varredura só sobrescreve a situação de quem ela de
+     * fato consulta. A chave da busca direta é fixada aqui para o teste não
+     * depender do `.env` de quem ligou ou desligou o atalho.
+     */
+    public function test_censo_dos_agregadores_existe_antes_de_qualquer_busca(): void
+    {
+        config()->set('services.torrents.stream_direto_busca_direta', true);
+
+        $censo = app(ProvedorStreamDireto::class)->censoDosAgregadores();
+
+        $this->assertSame(
+            ['superflixapi.quest', 'verpobreflix.net'],
+            array_column($censo, 'agregador'),
+            'O censo precisa listar todos os agregadores declarados, na ordem da declaração.'
+        );
+        $this->assertSame(
+            ['nao_consultado', 'nao_consultado'],
+            array_column($censo, 'situacao'),
+            'Sem varredura, nenhum agregador pode aparecer como consultado.'
+        );
+        $this->assertSame(0, array_sum(array_column($censo, 'consultas')));
+    }
 }

@@ -41,10 +41,26 @@ if [ ! -f .env ]; then
   cp .env.example .env
 fi
 
-if ! grep -q '^VITE_HMR_CLIENT_PORT=' .env; then
-  printf '\n# Porta pública do HMR do Vite atrás do proxy HTTPS do Codespaces.\n' >> .env
-  printf 'VITE_HMR_CLIENT_PORT=443\n' >> .env
-fi
+# O .env do PC local aponta o frontend para http://localhost. No Space isso
+# quebra: o navegador do usuário resolve "localhost" para a máquina dele, não
+# para o container, e a Home fica sem filmes. Aqui os caminhos viram relativos
+# (mesmo host), que é como o Nginx serve frontend e API na mesma origem.
+ajustar_variavel() {
+  local chave="$1" valor="$2"
+  if grep -q "^${chave}=" .env; then
+    sed -i "s|^${chave}=.*|${chave}=${valor}|" .env
+  else
+    printf '%s=%s\n' "$chave" "$valor" >> .env
+  fi
+}
+
+ajustar_variavel VITE_API_URL "/api"
+ajustar_variavel VITE_MEDIA_SERVICE_URL "/media"
+
+# O HMR do Vite precisa apontar para a porta pública do proxy HTTPS do
+# Codespaces (443), e não para a 80 do PC local — senão a recarga automática
+# tenta um websocket em ws:// e o navegador bloqueia por ser página HTTPS.
+ajustar_variavel VITE_HMR_CLIENT_PORT "443"
 
 # ---------------------------------------------------------------------------
 # 3. Sobe o stack

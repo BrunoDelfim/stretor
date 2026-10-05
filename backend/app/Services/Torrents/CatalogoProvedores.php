@@ -604,6 +604,16 @@ class CatalogoProvedores
         $this->censo[$id]['ms'] += (int) round((microtime(true) - $inicio) * 1000);
         $this->censo[$id]['brutas'] += count($fontes);
 
+        /*
+         * O censo dos agregadores viaja junto da linha do provedor. A linha diz
+         * que o stream direto foi consultado, quanto tempo levou e o que devolveu
+         * — mas não **a quem** ele perguntou, e é isso que o usuário precisa saber
+         * quando o fallback volta vazio: o superflix chegou a ser procurado? A
+         * resposta dele foi a tela de verificação? Ele devolveu a ficha em vez da
+         * página do episódio?
+         */
+        $this->censo[$id]['agregadores'] = $this->streamDireto->censoDosAgregadores();
+
         Log::debug('Stream direto: fallback concluído.', [
             'provedor' => $id,
             'fontes' => count($fontes),
@@ -716,6 +726,12 @@ class CatalogoProvedores
      * nada sobreviveu ao gate) ou `com_fonte`. Sem o relatório, "o indexador não
      * trouxe nada" e "o indexador nunca foi perguntado" viram a mesma linha de log.
      *
+     * O stream direto é o único provedor com um **nível abaixo**: a chave
+     * `agregadores` repete o relatório para cada agregador de vídeo consultado por
+     * ele. A linha dele sozinha não distingue "o superflix não tem o episódio" de
+     * "o superflix nunca foi perguntado" — e é exatamente essa dúvida que aparece
+     * quando o fallback volta vazio.
+     *
      * @return array<int, array<string, mixed>>
      */
     public function cobertura(): array
@@ -743,6 +759,15 @@ class CatalogoProvedores
                 // cascata e o censo mente: um provedor que só trouxe original fica
                 // `com_fonte` mesmo sem nenhuma fonte na lista que o usuário vê.
                 'na_lista' => $censo['na_lista'],
+                /*
+                 * O único provedor que tem um nível abaixo é o stream direto: ele
+                 * não consulta um site, consulta uma lista de agregadores de vídeo
+                 * (e, depois, o motor web). A linha dele sozinha não diz a quem —
+                 * e "0 fontes" com "1 consulta" é indistinguível de "nem chegou a
+                 * perguntar ao superflix". Os demais provedores devolvem lista
+                 * vazia aqui: o censo por agregador só existe onde há agregadores.
+                 */
+                'agregadores' => $censo['agregadores'] ?? [],
             ];
         }
 

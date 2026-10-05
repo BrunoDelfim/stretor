@@ -184,7 +184,7 @@ services:
       - TORRENTS_STREAM_DIRETO_INTERVALO_MAX=${TORRENTS_STREAM_DIRETO_INTERVALO_MAX:-2200}
       - TORRENTS_STREAM_DIRETO_MAX_PAGINAS=${TORRENTS_STREAM_DIRETO_MAX_PAGINAS:-6}
       - TORRENTS_STREAM_DIRETO_TEMPO_LIMITE=${TORRENTS_STREAM_DIRETO_TEMPO_LIMITE:-10}
-      - TORRENTS_STREAM_DIRETO_ORCAMENTO=${TORRENTS_STREAM_DIRETO_ORCAMENTO:-12}
+      - TORRENTS_STREAM_DIRETO_ORCAMENTO=${TORRENTS_STREAM_DIRETO_ORCAMENTO:-45}
       # Busca direta nos agregadores, antes do motor web. O atalho contorna a
       # suspensão dos buscadores comerciais que o SearXNG agrega: em vez de
       # perguntar ao motor onde o episódio mora, o provedor pergunta à busca
@@ -194,6 +194,15 @@ services:
       # terceiro (plenoflu.com), o provedor percorre a cadeia até o master.m3u8
       # assinado em vez de descartar a página.
       - TORRENTS_STREAM_DIRETO_RESOLVER_EMBEDS=${TORRENTS_STREAM_DIRETO_RESOLVER_EMBEDS:-true}
+      # Passe do Cloudflare para os hosts com desafio embutido (superflix). A
+      # página do episódio é fechada por um widget Turnstile que só um navegador
+      # humano vence; o passe é o cookie `cf_clearance` e/ou o token `cfv` que a
+      # sua aba ganha ao passar pela verificação, e vale também para o backend
+      # porque os dois saem pelo mesmo IP. Vence em 45 minutos.
+      - TORRENTS_PASSE_CLOUDFLARE_HOSTS=${TORRENTS_PASSE_CLOUDFLARE_HOSTS:-superflixapi.quest}
+      - TORRENTS_PASSE_CLOUDFLARE_CLEARANCE=${TORRENTS_PASSE_CLOUDFLARE_CLEARANCE:-}
+      - TORRENTS_PASSE_CLOUDFLARE_TOKEN=${TORRENTS_PASSE_CLOUDFLARE_TOKEN:-}
+      - TORRENTS_PASSE_CLOUDFLARE_AGENTE=${TORRENTS_PASSE_CLOUDFLARE_AGENTE:-}
     depends_on:
       init:
         condition: service_completed_successfully

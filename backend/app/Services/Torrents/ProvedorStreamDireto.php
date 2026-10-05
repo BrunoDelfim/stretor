@@ -109,6 +109,22 @@ class ProvedorStreamDireto implements ProvedorTorrents
     }
 
     /**
+     * Censo da busca direta da última varredura, para o relatório de cobertura.
+     *
+     * O provedor é **um** na cobertura — a linha `stream_direto` diz que ele foi
+     * consultado e quanto tempo levou —, mas quem de fato é perguntado são os
+     * agregadores de vídeo. Sem esta lista, um fallback que volta vazio deixa o
+     * relatório sem resposta para a única pergunta que importa ali: o superflix foi
+     * procurado? O que ele devolveu?
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function censoDosAgregadores(): array
+    {
+        return $this->agregadores->censo();
+    }
+
+    /**
      * Entrada do contrato: um título só.
      *
      * O catálogo chama `buscarComTitulos()` quando tem as variações do nome; este
@@ -197,6 +213,15 @@ class ProvedorStreamDireto implements ProvedorTorrents
          */
         $tetoConsulta = (int) config('services.torrents.stream_direto_tempo_limite', 10);
 
+        /*
+         * O censo dos agregadores é zerado aqui, no começo da varredura, e não
+         * dentro do gerador: ele precisa nascer limpo mesmo quando `candidatas()`
+         * devolve cedo (busca direta desligada, nenhum título) — e é esta lista
+         * que a cobertura mostra dentro da linha do stream direto, para responder
+         * se o superflix chegou a ser consultado.
+         */
+        $this->agregadores->reiniciarCenso();
+
         $parar = false;
 
         /*
@@ -207,13 +232,18 @@ class ProvedorStreamDireto implements ProvedorTorrents
          * episódio mora; perguntar direto a ele é o caminho que não depende do
          * motor. As páginas que voltam daqui entram no mesmo crivo das que vêm
          * do motor — a origem do link muda, o tratamento não.
+         *
+         * A varredura é **degrau a degrau**: um agregador é consultado, suas
+         * páginas são abertas até o alvo de fontes e só então o próximo é
+         * perguntado. É a mesma cascata dos provedores de torrent, e a diferença
+         * é de custo, não de forma — abrir a página é a parte caríssima do
+         * fallback, e um agregador morto não pode consumir o orçamento que o
+         * seguinte precisava para achar o episódio.
          */
-        $diretas = $this->agregadores->buscar($titulos);
-
-        if ($diretas !== []) {
-            Log::debug('Stream direto: candidatas da busca direta nos agregadores.', [
+        foreach ($this->agregadores->candidatas($titulos, $temporada, $episodio) as $dominio => $diretas) {
+            Log::debug('Stream direto: candidatas da busca direta no agregador.', [
+                'dominio' => $dominio,
                 'candidatas' => count($diretas),
-                'dominios' => $this->dominiosDe($diretas),
             ]);
 
             $parar = $this->visitar(
@@ -226,6 +256,10 @@ class ProvedorStreamDireto implements ProvedorTorrents
                 $alvoFontes,
                 $tetoConsulta,
             );
+
+            if ($parar) {
+                break;
+            }
         }
 
         if (! $parar) {
@@ -280,6 +314,16 @@ class ProvedorStreamDireto implements ProvedorTorrents
          */
         Log::debug('Stream direto: domínios consultados.', [
             'dominios' => $this->dominiosDe(array_keys($paginasVisitadas)),
+        ]);
+
+        /*
+         * O censo por agregador vai para o log no mesmo formato que a cobertura
+         * devolve na API. É o que permite ler, de dentro do container, a quem o
+         * fallback perguntou e o que cada um respondeu — sem precisar chamar o
+         * `/fontes` e garimpar a resposta.
+         */
+        Log::debug('Stream direto: censo dos agregadores.', [
+            'agregadores' => $this->agregadores->censo(),
         ]);
 
         Log::debug('Stream direto: busca concluída.', [

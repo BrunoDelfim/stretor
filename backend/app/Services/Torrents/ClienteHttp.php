@@ -49,7 +49,22 @@ class ClienteHttp
      */
     public function __construct(
         private readonly OrcamentoBusca $orcamento,
+        /*
+         * O passe dos hosts com desafio embutido (superflix). É opcional de
+         * propósito: os testes constroem o cliente só com o orçamento, e sem
+         * passe injetado o container resolve o serviço — o passe não interfere
+         * em nada quando o host da requisição não está na lista de portões.
+         */
+        private readonly ?PasseCloudflare $passe = null,
     ) {
+    }
+
+    /**
+     * O serviço do passe, resolvido pelo container quando não foi injetado.
+     */
+    private function passe(): PasseCloudflare
+    {
+        return $this->passe ?? app(PasseCloudflare::class);
     }
 
     /**
@@ -116,7 +131,28 @@ class ClienteHttp
         'checking your browser',
         'attention required',
         'enable javascript and cookies',
+        /*
+         * As marcas do **desafio embutido** do Cloudflare, que é o do superflix: a
+         * página publica um formulário de volta na própria URL carregando
+         * `cf_embed_challenge`. São nomes de campo do widget, e não do interstício
+         * clássico, então nenhuma das marcas acima reconhece essa tela — e sem
+         * reconhecê-la o provedor a tratava como resultado legítimo de busca,
+         * gastando a extração numa página de verificação.
+         */
+        'cf_embed_challenge',
+        'cf_embed_hash',
     ];
+
+    /**
+     * Quantos caracteres do corpo são olhados em busca das marcas de desafio.
+     *
+     * O interstício clássico mora nos primeiros kilobytes, mas o desafio embutido
+     * do superflix **abre com o CSS do widget** e só publica os nomes dos campos
+     * depois: medido no host, a tela de verificação dele tem 18 KB, e uma amostra
+     * de 4 KB lia o bloqueio como se fosse a página do episódio. Olhar 20 KB por
+     * página custa nada.
+     */
+    private const AMOSTRA_DO_DESAFIO = 20000;
 
     /**
      * Faz um GET, tentando direto e caindo para o FlareSolverr em caso de bloqueio.
@@ -142,7 +178,32 @@ class ClienteHttp
             return null;
         }
 
+        if ($this->passe()->exige($url)) {
+            $consulta = $this->passe()->consultaComToken($consulta);
+            $cabecalhos = array_merge($this->passe()->cabecalhosDeAcesso(), $cabecalhos);
+        }
+
         $direta = $this->tentarDireto($url, $consulta, $userAgent, $timeout, $cabecalhos);
+
+        /*
+         * O portão embutido do Cloudflare não é o desafio que o socorro resolve:
+         * o FlareSolverr devolve `Challenge not detected!` e a mesma casca, uns
+         * 20 s depois. Quando o passe está ausente ou vencido, a resposta volta
+         * como está — o log diz qual dos dois casos é —, e o provedor descarta a
+         * página sem gastar o orçamento no caminho que não abre.
+         */
+        if ($this->passe()->exige($url) && $this->passe()->paginaDeDesafio((string) ($direta?->body() ?? ''))) {
+            Log::warning('Passe do Cloudflare ausente ou vencido.', [
+                'url' => $url,
+                'passe' => $this->passe()->disponivel() ? 'enviado e recusado' : 'ausente',
+                // O agente vai junto porque o passe vale para o par IP+agente: sem
+                // ele, comparar o que o backend mandou com o agente da aba seria
+                // adivinhação — e é justamente esse par que o host confere.
+                'agente' => mb_substr($this->passe()->agente(), 0, 80),
+            ]);
+
+            return $direta;
+        }
 
         if ($direta !== null && ! $this->pareceBloqueio($direta)) {
             return $direta;
@@ -196,6 +257,11 @@ class ClienteHttp
             return null;
         }
 
+        if ($this->passe()->exige($url)) {
+            $url = $this->passe()->urlComToken($url);
+            $cabecalhos = array_merge($this->passe()->cabecalhosDeAcesso(), $cabecalhos);
+        }
+
         $direta = $this->tentarDiretoPost($url, $corpo, $userAgent, $timeout, $cabecalhos);
 
         if ($direta !== null && ! $this->pareceBloqueio($direta)) {
@@ -243,6 +309,20 @@ class ClienteHttp
     public function getRenderizado(string $url, ?int $timeout = null): ?Response
     {
         if (! $this->proxyDisponivel()) {
+            return null;
+        }
+
+        /*
+         * No host com portão embutido o Chromium não resolve nada: o FlareSolverr
+         * não reconhece esse desafio — registra `Challenge not detected!` e
+         * devolve a mesma casca —, e a espera custa uns 20 s de orçamento para
+         * receber a tela de verificação de volta. Renderizar aqui só atrasaria a
+         * busca; a página com portão é liberada pelo passe, não pelo navegador do
+         * proxy.
+         */
+        if ($this->passe()->exige($url)) {
+            Log::debug('Passe do Cloudflare: host com portão embutido não é renderizado.', ['url' => $url]);
+
             return null;
         }
 
@@ -392,11 +472,36 @@ class ClienteHttp
          * rápido e o socorro pelo FlareSolverr assume sem esperar o handshake
          * inteiro.
          */
-        return Http::withUserAgent($userAgent ?? $this->navegador())
+        return Http::withUserAgent($this->agenteDoPedido($userAgent, $cabecalhos))
             ->withHeaders(array_merge($this->cabecalhosDeNavegador(), $cabecalhos))
             ->connectTimeout(max(1, min(3, $timeout)))
             ->timeout($timeout)
             ->withOptions(['allow_redirects' => ['max' => 5]]);
+    }
+
+    /**
+     * Decide com que agente a requisição se apresenta.
+     *
+     * O `withUserAgent()` do Laravel é aplicado na hora do envio e **atropela** um
+     * `User-Agent` que venha nos cabeçalhos extras. Era o que acontecia com o passe
+     * do Cloudflare: o agente que venceu o widget chegava em `$cabecalhos` e era
+     * descartado em silêncio, e o host recusava o `cf_clearance` por causa do par
+     * IP+agente trocado — sem nada no log explicando o motivo.
+     *
+     * Quem tem passe manda: o agente dele vence o padrão, que segue valendo para
+     * todas as outras requisições.
+     *
+     * @param  array<string, string>  $cabecalhos
+     */
+    private function agenteDoPedido(?string $userAgent, array $cabecalhos): string
+    {
+        foreach ($cabecalhos as $nome => $valor) {
+            if (strcasecmp((string) $nome, 'User-Agent') === 0 && trim((string) $valor) !== '') {
+                return (string) $valor;
+            }
+        }
+
+        return $userAgent ?? $this->navegador();
     }
 
     /**
@@ -619,9 +724,7 @@ class ClienteHttp
 
     private function temMarcaDeDesafio(string $corpo): bool
     {
-        // O desafio mora no começo do documento; varrer o HTML inteiro de um
-        // resultado grande seria desperdício.
-        $amostra = mb_strtolower(mb_substr($corpo, 0, 4000));
+        $amostra = mb_strtolower(mb_substr($corpo, 0, self::AMOSTRA_DO_DESAFIO));
 
         foreach (self::MARCAS_DO_DESAFIO as $marca) {
             if (str_contains($amostra, $marca)) {

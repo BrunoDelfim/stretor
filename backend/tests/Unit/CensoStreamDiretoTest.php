@@ -55,7 +55,9 @@ class CensoStreamDiretoTest extends TestCase
      * Monta o catálogo com todos os provedores substituídos por dublês.
      *
      * O stream direto é um dublê que responde vazio: o que interessa aqui é o
-     * registro da consulta no censo, não as fontes que ele devolveria.
+     * registro da consulta no censo, não as fontes que ele devolveria. O censo dos
+     * agregadores vem preenchido à mão — é o que ele devolveria de verdade depois
+     * de perguntar ao superflix —, para o teste provar que ele chega à cobertura.
      */
     private function catalogo(): CatalogoProvedores
     {
@@ -64,6 +66,26 @@ class CensoStreamDiretoTest extends TestCase
         $streamDireto->shouldReceive('rotulo')->andReturn('Stream direto');
         $streamDireto->shouldReceive('disponivel')->andReturn(true);
         $streamDireto->shouldReceive('buscarComTitulos')->andReturn([]);
+        $streamDireto->shouldReceive('censoDosAgregadores')->andReturn([
+            [
+                'agregador' => 'superflixapi.quest',
+                'situacao' => 'com_pagina',
+                'consultas' => 1,
+                'paginas' => 1,
+                'ms' => 320,
+                'titulo' => 'Donas de Casa Desesperadas',
+                'encontradas' => ['https://superflixapi.quest/serie/693/1/1'],
+            ],
+            [
+                'agregador' => 'verpobreflix.net',
+                'situacao' => 'nao_consultado',
+                'consultas' => 0,
+                'paginas' => 0,
+                'ms' => 0,
+                'titulo' => '',
+                'encontradas' => [],
+            ],
+        ]);
 
         return new CatalogoProvedores(
             $this->duble(ProvedorTrackersBr::class, 'trackers-br'),
@@ -137,5 +159,53 @@ class CensoStreamDiretoTest extends TestCase
             $this->situacao($catalogo, 'stream_direto'),
             'Sem consulta ao stream direto, o censo deve continuar dizendo nao_consultado.'
         );
+    }
+
+    /**
+     * A linha do stream direto carrega o censo dos agregadores dentro dela.
+     *
+     * É o que responde "0 fontes com 1 consulta" sem deixar dúvida: a consulta ao
+     * provedor aconteceu e ela de fato perguntou ao superflix — que devolveu a
+     * página do episódio. Sem esta chave, o relatório diria o mesmo de um fallback
+     * que nem chegou a tocar no agregador.
+     */
+    public function test_cobertura_do_stream_direto_traz_os_agregadores(): void
+    {
+        $catalogo = $this->catalogo();
+
+        $catalogo->buscarFallbackDireto(['Donas de Casa Desesperadas'], 2004, null, 1, 1);
+
+        $linha = collect($catalogo->cobertura())->firstWhere('provedor', 'stream_direto');
+
+        $this->assertSame('superflixapi.quest', $linha['agregadores'][0]['agregador']);
+        $this->assertSame('com_pagina', $linha['agregadores'][0]['situacao']);
+        $this->assertSame(
+            ['https://superflixapi.quest/serie/693/1/1'],
+            $linha['agregadores'][0]['encontradas'],
+            'Os endereços entregues pelo agregador são o que prova onde a busca parou.'
+        );
+        $this->assertSame(
+            'nao_consultado',
+            $linha['agregadores'][1]['situacao'],
+            'Um agregador que a cascata não chegou a consultar precisa aparecer como tal.'
+        );
+    }
+
+    /**
+     * Os demais provedores não têm um nível abaixo: a chave existe, mas vazia.
+     *
+     * A ausência da chave obrigaria o consumidor a um `??` linha a linha, e a
+     * diferença entre "não tem agregadores" e "não foi consultado" voltaria a se
+     * esconder — que é justamente o problema que o censo resolve.
+     */
+    public function test_provedor_sem_agregadores_devolve_a_chave_vazia(): void
+    {
+        $catalogo = $this->catalogo();
+
+        $catalogo->buscar(['Donas de Casa Desesperadas S01E01'], 2004, null, 1, 1);
+
+        $linha = collect($catalogo->cobertura())->firstWhere('provedor', 'torrentio');
+
+        $this->assertSame([], $linha['agregadores']);
     }
 }

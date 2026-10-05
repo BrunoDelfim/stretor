@@ -67,6 +67,9 @@ class OrcamentoCompartilhadoTest extends TestCase
         $streamDireto->shouldReceive('rotulo')->andReturn('Stream direto');
         $streamDireto->shouldReceive('disponivel')->andReturn(true);
         $streamDireto->shouldReceive('buscarComTitulos')->andReturn([]);
+        // O censo dos agregadores é lido pela cobertura logo depois da consulta;
+        // aqui ele só precisa existir para o dublê não estourar.
+        $streamDireto->shouldReceive('censoDosAgregadores')->andReturn([]);
 
         return new CatalogoProvedores(
             $this->duble(ProvedorTrackersBr::class, 'trackers-br'),

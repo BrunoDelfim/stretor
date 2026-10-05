@@ -27,20 +27,28 @@ fi
 # ---------------------------------------------------------------------------
 # 2. Ajustes específicos do Codespaces no .env
 # ---------------------------------------------------------------------------
-# O Codespaces expõe cada porta encaminhada numa URL pública própria. O Nginx
-# continua na 80 dentro do Space, então as URLs relativas do frontend
-# (http://localhost/api e http://localhost/media) funcionam sem alteração: o
-# navegador do usuário fala com a porta 80 encaminhada e o Nginx roteia para
-# os serviços internos. Não é preciso reescrever VITE_API_URL.
+# O .env.example aponta o frontend para http://localhost. No PC local isso está
+# certo, mas no Space quebra: o navegador do usuário resolve "localhost" para a
+# máquina dele, não para o container, e a Home fica sem filmes. Aqui as URLs
+# viram relativas (mesmo host), que é como o Nginx serve frontend e API na
+# mesma origem — o navegador fala com a porta 80 encaminhada e o Nginx roteia
+# para os serviços internos.
 #
-# O que muda é o HMR do Vite: ele precisa saber a porta pública do proxy do
-# Codespaces para o websocket de recarga. O Vite lê isso do próprio host da
-# página quando `hmr.clientPort` está definido como 443 (HTTPS do Codespaces),
-# então ajustamos a variável abaixo para o frontend usar a porta certa.
-if ! grep -q '^VITE_HMR_CLIENT_PORT=' .env; then
-  printf '\n# Porta pública do HMR do Vite atrás do proxy HTTPS do Codespaces.\n' >> .env
-  printf 'VITE_HMR_CLIENT_PORT=443\n' >> .env
-fi
+# O HMR do Vite também muda: ele precisa da porta pública do proxy HTTPS do
+# Codespaces (443), e não da 80 do PC local. Com 80, o websocket de recarga
+# tentaria ws:// numa página HTTPS e o navegador bloquearia.
+ajustar_variavel() {
+  local chave="$1" valor="$2"
+  if grep -q "^${chave}=" .env; then
+    sed -i "s|^${chave}=.*|${chave}=${valor}|" .env
+  else
+    printf '%s=%s\n' "$chave" "$valor" >> .env
+  fi
+}
+
+ajustar_variavel VITE_API_URL "/api"
+ajustar_variavel VITE_MEDIA_SERVICE_URL "/media"
+ajustar_variavel VITE_HMR_CLIENT_PORT "443"
 
 # ---------------------------------------------------------------------------
 # 3. Sentinela de bootstrap

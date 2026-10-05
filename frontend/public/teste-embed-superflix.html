@@ -1,0 +1,1175 @@
+<!doctype html>
+<!--
+  Bancada de teste do embed do superflix, no caso concreto que a motivou:
+  **Donas de Casa Desesperadas** (Desperate Housewives, 2004), **T04E17 —
+  "Liberdade"** (exibido em 2008-05-18). Três iframes, o mesmo episódio, e um
+  campo livre em cada um para quando a receita mudar.
+
+  ## O que esta página faz aqui e não no backend
+
+  A pergunta é uma só: *o embed do superflix entrega este episódio?* Ela roda no
+  navegador de propósito. O host fica atrás do Cloudflare Turnstile, e vencer o
+  desafio exige um navegador de verdade — o `ResolvedorEmbed` registra que o
+  FlareSolverr devolve a tela de verificação, não o player, e o motivo é o IP do
+  container. Quem consegue responder é este navegador, na sua conexão.
+
+  É um arquivo estático em `frontend/public/`, servido pelo próprio Vite/Nginx:
+
+      local:      http://localhost/teste-embed-superflix.html
+      Codespace:  https://<nome-do-space>-80.app.github.dev/teste-embed-superflix.html
+
+  ## Os dois portões (2026-05-10, medidos de dentro do container)
+
+  A sondagem desta rodada derrubou uma confusão que custou uma investigação
+  inteira: **o site tem dois portões, e só um deles é do Cloudflare.**
+
+  1. **Verificação** — o Turnstile embutido. Responde **200** com
+     `x-cloudflare-captcha: required`, `<title>Verificação</title>` e um POST para
+     a própria URL com `cf_embed_challenge`, `cf_embed_hash`, `cf_client_mobile` e
+     `cf-turnstile-response`. **Não emite cookie nenhum** na resposta do GET, não
+     redireciona (medido com `allow_redirects: false`): o estado do desafio viaja
+     nos campos do formulário. É esta a tela que o backend encontra.
+  2. **Acesso Restrito · Visualização Externa** — o anti-hotlink do site, que
+     oferece o código de incorporação e um botão *Visualizar*. Ele aparece quando o
+     pedido chega com `Referer` de outro domínio, e é o que uma aba aberta a partir
+     de uma página nossa vê. O backend manda `Sec-Fetch-Site: none` e **nenhum**
+     `Referer`, então nunca esbarra nele — e o link "abrir em aba" daqui passou a
+     ir com `referrerpolicy="no-referrer"` para se comportar igual.
+
+  Na mesma rodada, o FlareSolverr 3.5.2 (Chrome 152) foi testado **com o cookie do
+  passe injetado** e devolveu a mesma tela de verificação em 14 s, com
+  `Challenge not detected!` — o mesmo veredito de antes, agora com o passe em mãos.
+  O passe, aliás, chegou **sem nome de cookie** (um token solto de 519 caracteres,
+  que não casa com a forma de um `cf_clearance`): virou aviso no ato da colagem,
+  em vez de silêncio. Daí a instrução nova — colar o **"Copy as cURL"** do pedido
+  do documento, que traz todos os cookies com os nomes, e nada é recortado.
+
+  ## O que a sondagem de 2026-05-10 provou (com `curl`, sem navegador)
+
+  - `/serie/693/4/17` → **200** e `<title>Verificação</title>`: a rota do
+    episódio existe; o que falta é passar o desafio. A chave do Turnstile é
+    `0x4AAAAAAE8_yrTzhL7CTZiB` — a mesma que aparecia nos artefatos da
+    investigação anterior, o que fecha a identidade do alvo.
+  - `/serie/99999999/9/9` → **200** também: o portão responde *antes* de validar
+    o id. Ou seja, **200 nesta host não prova que o id existe**; só um id
+    malformado (`/serie/nao-existe/4/17`) dá 404. A prova do id veio por fora —
+    ver a busca abaixo.
+  - `/filme/958186` → cartão da home é **"Tótem"**, e a API do TMDB confirma
+    `movie/958186 = Tótem`. Logo os **ids numéricos do superflix são ids do
+    TMDB** (a série confere: `tv/693` = Donas de Casa Desesperadas, IMDb
+    `tt0410975`).
+  - `/pesquisar?s=Donas+de+Casa+Desesperadas` → **200 sem Turnstile**, e devolve
+    `/serie/693` com o título e o IMDb. É o jeito de descobrir o id sem desafio.
+  - `/serie/donas-de-casa-desesperadas` (o slug que a home anuncia em
+    `data-embed`) → **404**. Por isso esta página usa a forma numérica.
+  - A tela de verificação é um **POST para a própria URL** com
+    `cf_embed_challenge`, `cf_embed_hash`, `cf_client_mobile` e
+    `cf-turnstile-response`; o JS só preenche o token e submete o formulário. O
+    grant que o backend chama de `cfv` nasce desse POST — é por isso que ele não
+    existe na query até você passar o desafio uma vez.
+
+  ## O que a sondagem do backend corrigiu (2026-10-05)
+
+  Feita de dentro do container, com o `ClienteHttp` de verdade, a sondagem mudou
+  três coisas — e destravou a integração:
+
+  - **A busca devolve um slug, não o id.** O `href` do cartão é
+    `/serie/donas-de-casa-desesperadas`, que responde **404**. O endereço bom
+    está num `data-copy="https://superflixapi.quest/serie/693"` — o botão "copiar
+    link" —, ao lado de `data-copy="693"` ("TMDB ID copiado!"). É esse atributo
+    que o `BuscaAgregadores` lê agora, e é dele que sai a rota numérica.
+  - **O FlareSolverr não reconhece o desafio.** O log dele registra
+    `Challenge not detected!` e devolve a casca em 13 s: o detector só conhece o
+    interstício clássico (`Just a moment...`), e este tem título "Verificação".
+    Daí o `ClienteHttp` não acionar o socorro nesse host, e o `getRenderizado()`
+    se recusar a rodar.
+  - **A tela de verificação tem 18 KB e começa com o CSS do widget** — os campos
+    do formulário só aparecem depois dos primeiros kilobytes. A amostra de 4 KB
+    do detector de bloqueio lia o desafio como se fosse a página do episódio. O
+    `PasseCloudflare` varre o corpo inteiro por isso, e o `ClienteHttp` olha 20 KB.
+
+  A saída é o **passe**: nenhum servidor vence o widget, mas o que a sua aba ganha
+  vale para o backend (navegador e backend saem pelo mesmo IP). A seção abaixo
+  entrega esse passe ao backend — o prazo de 45 minutos é do host, não nosso.
+
+  ## O carimbo do `cf_clearance` é o nascimento do passe (medido em 2026-10-05)
+
+  A leitura do valor fecha uma dúvida que atravessou a investigação inteira: o
+  carimbo dentro do `cf_clearance` marca **quando o passe nasceu**, não quando ele
+  vence. A prova não veio de palpite — veio de um `cf_clearance` conquistado de
+  verdade pelo FlareSolverr num site de teste com o mesmo Cloudflare: o pedido
+  saiu às `15:21:41` (UTC), o valor voltou com o carimbo `1791213718` (o próprio
+  segundo da conquista, 17 s depois), e o vencimento do cookie, lido do navegador
+  pelo CDP, era `1822749718` — exatamente um ano depois. Carimbo e validade são
+  coisas distintas.
+
+  Serve para o que a colagem não responde: um passe conquistado há dois minutos e
+  um esquecido no campo desde ontem chegam ao backend com a mesma cara, e o host
+  recusa os dois do mesmo jeito.
+
+  ## A causa-raiz medida (2026-10-05): navegador e backend saem por famílias diferentes
+
+  Nesta máquina a comparação é direta, e é ela que explicava **todas** as
+  tentativas frustradas de passe:
+
+  | quem pede | o que o Cloudflare vê |
+  | --- | --- |
+  | a aba do usuário (a que vence o widget) | `2804:7f0:ba00:dfef:447e:a576:a669:d53b` — **IPv6** |
+  | o backend (container) | `201.43.197.80` — **IPv4** |
+
+  A aba prefere IPv6 porque o host tem endereço global (`wlp7s0`); a rede do
+  Docker não tem IPv6 nenhum, então o container é IPv4 por falta de opção. O
+  `cf_clearance` é vinculado ao IP que o conquistou, e **a família faz parte
+  disso**: nesse arranjo o passe nunca vale para o backend, por mais fresco e bem
+  colado que esteja — o host devolve a mesma tela de verificação de quem não
+  apresentou nada, e o sintoma se confunde com passe vencido, agente trocado ou
+  colagem incompleta. Foi o agente desta aba (`Chrome/152.0.0.0`, Linux X11) que
+  descartou a hipótese do UA: ele foi testado contra o host e recebeu a
+  verificação igual aos outros.
+
+  Os caminhos para casar os dois:
+
+  1. **Fazer a aba sair por IPv4** (o mais curto, para testar já): desligar o
+     IPv6 da interface por enquanto
+     (`sudo sysctl -w net.ipv6.conf.wlp7s0.disable_ipv6=1`; `=0` desfaz) e vencer
+     o widget de novo; ou abrir o site num Chrome com
+     `--host-resolver-rules="MAP superflixapi.quest 104.21.34.165"` (força o IPv4
+     da Cloudflare); ou num Firefox com `network.dns.disableIPv6 = true`.
+  2. **Dar IPv6 ao backend** (o estrutural): rede do Docker com `enable_ipv6` e
+     NAT66, para os dois saírem pela mesma família. Custa IPv6 na rede do
+     container e depende do roteamento do host; até lá, o passe vive do caminho 1.
+
+  ## O que a conferência responde
+
+  Colar o passe não prova nada. O host recusa um passe de par **IP + agente**
+  trocado devolvendo exatamente a mesma tela de verificação de quem não
+  apresentou nada — sem uma linha explicando o motivo. Três causas se parecem por
+  fora e são idênticas por dentro: o valor colado não é o que o host espera
+  (faltou o `cfv`, faltaram os outros cookies), o agente guardado não é o da aba
+  que venceu, ou a aba que venceu sai por outro IP.
+
+  O botão **Conferir no backend** faz o backend pedir a página de verdade, com o
+  passe anexado, e diz o que voltou: a tela de verificação ou o episódio. Na
+  mesma resposta vêm o carimbo do valor (formatado na hora desta aba, para
+  comparar com o seu relógio), a lista de cookies que o passe traz e o IP por onde
+  o backend sai, com a família — as três metades da comparação que sobra quando a
+  resposta é a verificação. Para fechar a conta do IP, abra
+  `https://cloudflare.com/cdn-cgi/trace` nesta aba e compare a linha `ip=` com a
+  que a conferência mostra.
+
+  ## O que está em mãos, ao pé da letra
+
+  Quando o campo está preenchido e o carimbo não aparece, a conferência lista os
+  cookies que vieram: `(traz: __cf_bm, sr_session)`. Se o `cf_clearance` não está
+  nessa lista, o backend está sem passe nenhum — e o motivo mais comum é que o
+  host marca o `cf_clearance` como **`HttpOnly`**: ele aparece em
+  *Application → Cookies* e no cabeçalho `cookie:` do pedido, mas **não** em
+  `document.cookie`. Quem copia os cookies pelo console cola a lista sem ele, o
+  campo fica com cara de preenchido e a resposta é idêntica à de um passe vencido.
+  O caminho que sempre traz tudo é o cabeçalho: *F12 → Network → o pedido do
+  episódio (Doc) → botão direito → Copy as cURL*.
+
+  ## O IP das duas pontas
+
+  O passe vale para o **IP e o agente** que venceram o widget, e a família do IP
+  faz parte disso. Medido nesta máquina em 2026-10-05: esta aba saía por IPv6
+  (`2804:7f0:ba00:dfef:447e:a576:a669:d53b`, o endereço global da `wlp7s0`)
+  enquanto o container saía por IPv4 (`201.43.197.80`), porque a rede do Docker
+  não tem IPv6 — e nesse arranjo nenhum passe desta aba valeria para o backend.
+
+  Com `sudo sysctl -w net.ipv6.conf.wlp7s0.disable_ipv6=1` (o `=0` desfaz) as
+  duas pontas passam a sair por `201.43.197.80`, e a conferência confirma isso no
+  campo `backend sai por … (ipv4)`. O alinhamento **não** ressuscita um passe
+  antigo: depois de casar os IPs, o widget precisa ser vencido de novo, porque o
+  `cf_clearance` nasce no IP de quem o conquistou.
+
+  ## Os três iframes
+
+  1. **superflix — episódio**: `/serie/{tmdb}/{temporada}/{episodio}`.
+  2. **superflix — ficha**: `/serie/{tmdb}`. Serve de plano B: se a rota com
+     temporada/episódio não resolver depois do desafio, a ficha da série lista o
+     que o host realmente tem.
+  3. **vidsrc — controle**: `/embed/tv/{tmdb}/{t}/{e}`. Responde 200, título
+     "Player", **sem** `X-Frame-Options` e **sem** CSP — é o único dos três que
+     prova, sem desafio nenhum, que o episódio certo está no ar. Se nem ele
+     abrir, o problema é a rede, não o host.
+
+  O **plenoflu** saiu dos iframes de propósito: ele valida o `Referer` e devolve
+  `403 Acesso proibido.` para qualquer origem nossa (`localhost`, `127.0.0.1`,
+  o próprio domínio do Codespace). Por HTTP ele até responde — com `Referer` de
+  outro host, `/tvshow/693/4/17` devolve 200 e o título certo —, mas nada que
+  esta página sirva consegue embutir. O caminho dele é o backend, pela API:
+  `GET https://plenoflu.com/api?action=getOptions&contentid=<DIRECT_EPISODE_ID>`.
+
+  Os parâmetros vão na query e sobrevivem ao recarregar (dá para favoritar):
+
+      ?tmdb=693&temporada=4&episodio=17     série
+      ?tmdb=958186&tipo=filme               filme
+      ?cfv=<grant>                          token emitido pelo backend
+
+  Os campos de endereço de cada painel são editáveis: quando um host mudar de
+  receita, o teste continua sem editar o arquivo.
+
+  ## O censo da busca real
+
+  O botão de teste chama `GET /api/v1/movies/693/fontes?...` e desenha duas coisas:
+  as fontes montadas e a **cobertura** — quem foi consultado, com que situação e em
+  quanto tempo. É o que separa "o indexador não tem" de "o indexador nunca foi
+  perguntado".
+
+  O `stream_direto` é o único provedor com um nível abaixo dele, e a tabela agora
+  mostra esse nível recuado dentro da própria linha: cada agregador de vídeo com
+  situação, tempo, título casado e os endereços devolvidos. As situações são
+
+  - `com_pagina` (verde): entregou endereço de conteúdo;
+  - `sem_resultado` (âmbar): respondeu, mas nada passou pela relevância do título;
+  - `sem_resposta` (âmbar): erro HTTP ou estouro do tempo limite;
+  - `erro` (âmbar): a exceção subiu antes de haver resposta;
+  - `nao_consultado` (âmbar): a cascata parou antes de chegar nele;
+  - `desligada` (âmbar): `TORRENTS_STREAM_DIRETO_BUSCA_DIRETA` está em `false`.
+
+  É por aqui que se lê o efeito do passe: `sem_resposta` no superflix com o passe
+  em mãos significa que o host devolveu a tela de verificação — ou o passe não
+  valeu, ou venceu no meio da busca.
+-->
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Teste de embed — superflix · Donas de Casa Desesperadas T04E17</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --fundo: #0b1120;
+        --painel: #111c33;
+        --borda: #1f2c47;
+        --texto: #e2e8f0;
+        --fraco: #94a3b8;
+        --marca: #7c3aed;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        padding: 1rem;
+        background: var(--fundo);
+        color: var(--texto);
+        font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+
+      header {
+        margin-bottom: 1rem;
+      }
+
+      h1 {
+        margin: 0 0 0.25rem;
+        font-size: 1.1rem;
+      }
+
+      .nota {
+        margin: 0 0 0.75rem;
+        max-width: 96ch;
+        color: var(--fraco);
+        font-size: 0.85rem;
+      }
+
+      .nota code {
+        color: var(--texto);
+      }
+
+      form {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: end;
+        gap: 0.5rem;
+      }
+
+      label {
+        display: flex;
+        flex-direction: column;
+        gap: 0.15rem;
+        color: var(--fraco);
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      input,
+      select,
+      button {
+        border: 1px solid var(--borda);
+        border-radius: 0.4rem;
+        background: var(--painel);
+        color: var(--texto);
+        font: inherit;
+        padding: 0.35rem 0.5rem;
+      }
+
+      input.campo-largo {
+        min-width: 22rem;
+      }
+
+      button {
+        cursor: pointer;
+        background: var(--marca);
+        border-color: var(--marca);
+        font-weight: 600;
+      }
+
+      /* Três colunas quando cabe; empilhado quando não cabe. O `auto-fit` com
+         `minmax` evita media query: cada painel pede 24rem e o navegador decide
+         quantos cabem. */
+      main {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(24rem, 1fr));
+        gap: 0.75rem;
+        margin-bottom: 0.75rem;
+      }
+
+      section {
+        display: flex;
+        flex-direction: column;
+        gap: 0.35rem;
+        padding: 0.6rem;
+        background: var(--painel);
+        border: 1px solid var(--borda);
+        border-radius: 0.5rem;
+      }
+
+      section h2 {
+        display: flex;
+        align-items: baseline;
+        gap: 0.5rem;
+        margin: 0;
+        font-size: 0.85rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      section h2 a {
+        margin-left: auto;
+        color: var(--fraco);
+        font-size: 0.7rem;
+        font-weight: 400;
+        text-transform: none;
+      }
+
+      section input.url {
+        width: 100%;
+        color: var(--fraco);
+        font-family: ui-monospace, "SFMono-Regular", monospace;
+        font-size: 0.7rem;
+      }
+
+      /* 16/9 é o formato em que os serviços embutem. O iframe não tem altura
+         intrínseca: sem isto ele nasce com 150 px e o player aparece espremido. */
+      iframe {
+        width: 100%;
+        aspect-ratio: 16 / 9;
+        border: 0;
+        border-radius: 0.4rem;
+        background: #000;
+      }
+
+      .estado {
+        margin: 0;
+        color: var(--fraco);
+        font-size: 0.75rem;
+      }
+
+      .estado.aviso {
+        color: #fbbf24;
+      }
+
+      /* O resultado da busca real: a tabela é o retrato do que o backend devolveu,
+         com o endereço cortado para não estourar a largura da seção. */
+      table.fontes {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.7rem;
+      }
+
+      table.fontes th,
+      table.fontes td {
+        padding: 0.25rem 0.4rem;
+        border-bottom: 1px solid var(--borda);
+        text-align: left;
+        vertical-align: top;
+      }
+
+      table.fontes th {
+        color: var(--fraco);
+        font-weight: 500;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      table.fontes td.endereco {
+        color: var(--fraco);
+        font-family: ui-monospace, "SFMono-Regular", monospace;
+        word-break: break-all;
+      }
+
+      /*
+       * O segundo nível do censo: só o stream direto tem agregadores abaixo dele, e
+       * eles aparecem recuados dentro da própria linha do provedor. É o que
+       * distingue "o superflix não tem o episódio" de "o superflix nunca foi
+       * perguntado" quando o fallback volta vazio.
+       */
+      table.fontes tr.detalhe > td {
+        padding: 0.2rem 0.4rem 0.5rem 1.2rem;
+        background: rgba(124, 58, 237, 0.06);
+      }
+
+      table.fontes tr.detalhe table.fontes th {
+        font-size: 0.65rem;
+      }
+
+      /* Agregador que entregou página utilizável; o resto pede olhar. */
+      td.situacao.bom {
+        color: #4ade80;
+      }
+
+      td.situacao.ruim {
+        color: #fbbf24;
+      }
+
+      button:disabled {
+        opacity: 0.5;
+      }
+    </style>
+  </head>
+
+  <body>
+    <header>
+      <h1>Teste de embed — superflix · Donas de Casa Desesperadas T04E17</h1>
+      <p class="nota">
+        Três iframes, o mesmo episódio. No superflix, o painel mostra a tela
+        <strong>"Verificação"</strong> e não vai além dela: o widget Turnstile em
+        contexto de terceiro não completa, e é por isso que existe a seção
+        <a href="#p-passe">passe do Cloudflare</a> abaixo — o desafio se vence numa
+        aba de verdade, e o que ela ganha é o que o backend precisa para abrir a
+        página do episódio.
+      </p>
+
+      <form id="controles">
+        <label>
+          Tipo
+          <select id="tipo">
+            <option value="serie">série</option>
+            <option value="filme">filme</option>
+          </select>
+        </label>
+        <label>
+          TMDB
+          <input id="tmdb" inputmode="numeric" size="8" value="693" />
+        </label>
+        <label>
+          Temporada
+          <input id="temporada" inputmode="numeric" size="3" value="4" />
+        </label>
+        <label>
+          Episódio
+          <input id="episodio" inputmode="numeric" size="3" value="17" />
+        </label>
+        <label>
+          grant (cfv)
+          <input id="cfv" class="campo-largo" placeholder="token emitido pelo backend (opcional aqui)" />
+        </label>
+        <button type="submit">Montar</button>
+        <button type="button" id="limpar">Limpar</button>
+      </form>
+
+      <p class="nota" id="apoio"></p>
+    </header>
+
+    <main>
+      <section id="p-superflix">
+        <h2>
+          superflix · episódio
+          <a href="#" target="_blank" rel="noopener">abrir ↗</a>
+        </h2>
+        <input class="url" spellcheck="false" />
+        <iframe title="superflix episódio" referrerpolicy="origin" loading="eager"
+          allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
+          allowfullscreen></iframe>
+        <p class="estado"></p>
+      </section>
+
+      <section id="p-ficha">
+        <h2>
+          superflix · ficha da série
+          <a href="#" target="_blank" rel="noopener">abrir ↗</a>
+        </h2>
+        <input class="url" spellcheck="false" />
+        <iframe title="superflix ficha" referrerpolicy="origin" loading="eager"
+          allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
+          allowfullscreen></iframe>
+        <p class="estado"></p>
+      </section>
+
+      <section id="p-vidsrc">
+        <h2>
+          vidsrc · controle
+          <a href="#" target="_blank" rel="noopener">abrir ↗</a>
+        </h2>
+        <input class="url" spellcheck="false" />
+        <iframe title="vidsrc" referrerpolicy="origin" loading="eager"
+          allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
+          allowfullscreen></iframe>
+        <p class="estado"></p>
+      </section>
+    </main>
+
+    <section id="p-passe">
+      <h2>
+        passe do Cloudflare · para o backend
+        <a href="https://superflixapi.quest/serie/693/4/17" target="_blank"
+          rel="noopener noreferrer" referrerpolicy="no-referrer">abrir em aba ↗</a>
+      </h2>
+      <p class="nota">
+        O painel do episódio <strong>não</strong> libera o backend: iframe em contexto
+        de terceiro não completa o Turnstile, e o FlareSolverr devolve a mesma tela de
+        verificação (<code>Challenge not detected!</code> no log dele). Quem vence o
+        widget é uma aba de verdade — <strong>abrir em aba ↗</strong>, passar a
+        verificação e trazer o que ela ganhou. Vale 45 minutos, o prazo que o host
+        anuncia na própria resposta.
+      </p>
+      <p class="nota">
+        <strong>São dois portões, não um.</strong> O desta seção é a
+        <em>Verificação</em> (o Turnstile do Cloudflare). A tela
+        <em>Acesso Restrito · Visualização Externa</em> é outra coisa: é o anti-hotlink
+        do site, que aparece quando o pedido chega com <code>Referer</code> de fora —
+        é o que a aba aberta por um link daqui veria. O link acima vai sem
+        <code>Referer</code> de propósito, e assim se comporta como o backend (que
+        também não manda nenhum).
+      </p>
+      <p class="nota">
+        <strong>Como copiar o passe.</strong> Na aba já liberada, <kbd>F12</kbd> →
+        <em>Network</em> → o pedido do episódio (o documento, <em>Doc</em>) →
+        <em>botão direito → Copy → Copy as cURL</em>. Cole o bloco inteiro no campo do
+        cookie: o backend recorta a linha <code>cookie:</code> e reenvia
+        <strong>todos</strong> os cookies da sessão, com os nomes. Colar só o valor do
+        <code>cf_clearance</code> (<em>Application → Cookies → duas vezes na
+        célula</em>) também serve, mas aí o backend não sabe de mais nada — e um token
+        sem nome não é cookie: se o que você tem é um token solto, o campo dele é o
+        <code>cfv</code>. O agente já vem preenchido com o desta aba: o passe só vale
+        para o par <strong>IP + agente</strong> que venceu o widget, e o host recusa o
+        par trocado devolvendo a mesma tela de verificação, sem dizer por quê.
+      </p>
+      <p class="nota">
+        <strong>Cuidado com o atalho do console.</strong> O host marca o
+        <code>cf_clearance</code> como <code>HttpOnly</code>: rodar
+        <code>document.cookie</code> na aba devolve os outros cookies e
+        <strong>não</strong> devolve este. Colar essa lista preenche o campo sem
+        entregar passe nenhum, e a conferência mostra isso na lista
+        <em>(traz: …)</em> — sem o <code>cf_clearance</code> entre os nomes. Para
+        copiar de verdade, use o cabeçalho <code>cookie:</code> do pedido
+        (<em>Copy as cURL</em>) ou a linha em <em>Application → Cookies</em>.
+      </p>
+      <form id="passe-controles">
+        <label>
+          cookie da sessão — valor do cf_clearance, a linha <code>cookie:</code> inteira
+          ou o “Copy as cURL”
+          <input id="passe-clearance" class="campo-largo"
+            placeholder="cf_clearance=…; __cf_bm=…" />
+        </label>
+        <label>
+          token cfv (opcional)
+          <input id="passe-token" class="campo-largo"
+            placeholder="o ?cfv=... que a barra de endereços passa a mostrar" />
+        </label>
+        <label>
+          agente desta aba
+          <input id="passe-agente" class="campo-largo"
+            placeholder="deixe vazio: o backend usa o agente desta aba" />
+        </label>
+        <button type="submit">Entregar ao backend</button>
+        <button type="button" id="passe-esquecer">Esquecer</button>
+      </form>
+      <p class="estado" id="passe-estado"></p>
+
+      <button type="button" id="passe-testar">Testar no backend (a busca de verdade)</button>
+      <p class="estado" id="passe-testar-estado"></p>
+      <div id="passe-testar-saida"></div>
+
+      <p class="nota">
+        <strong>Conferir na hora.</strong> O passe guardado não prova nada sozinho: o
+        host recusa o par <strong>IP + agente</strong> trocado devolvendo a mesma tela
+        de verificação de quem não apresentou nada. Este botão faz o backend pedir a
+        página de verdade, com o passe anexado, e diz o que voltou — a verificação ou
+        o episódio —, junto do carimbo do valor e do IP por onde o backend sai.
+      </p>
+      <form id="passe-conferir-controles">
+        <label>
+          endereço da conferência
+          <input id="passe-conferir-url" class="campo-largo"
+            placeholder="montado pelos campos do topo" />
+        </label>
+        <button type="submit">Conferir no backend</button>
+      </form>
+      <p class="estado" id="passe-conferir-estado"></p>
+    </section>
+
+    <script>
+      /*
+       * A página inteira é o navegador montando três endereços e mostrando o que
+       * cada um devolve. Não há chamada ao backend: o backend não atravessa o
+       * Turnstile, e é justamente por isso que a bancada existe.
+       */
+      const CAMPOS = ['tipo', 'tmdb', 'temporada', 'episodio', 'cfv']
+
+      const controles = document.getElementById('controles')
+      const apoio = document.getElementById('apoio')
+      const paineis = {
+        episodio: document.getElementById('p-superflix'),
+        ficha: document.getElementById('p-ficha'),
+        vidsrc: document.getElementById('p-vidsrc'),
+      }
+
+      const ler = (id) => document.getElementById(id).value.trim()
+
+      /*
+       * O grant é o único parâmetro que muda de forma conforme a origem: o
+       * backend o chama de `cfv`, e ele nasce do POST da tela de verificação.
+       * Quando você o tem em mãos (veio do `ProvedorEmbedPtBr`), vai colado à
+       * URL; quando não tem, deixe o campo vazio e resolva o desafio dentro do
+       * painel — que é o caminho normal desta bancada.
+       */
+      function comGrant(url, cfv) {
+        return cfv ? `${url}?cfv=${encodeURIComponent(cfv)}` : url
+      }
+
+      /*
+       * A rota do episódio. Os ids são do **TMDB** — a sondagem confirmou pelos
+       * dois lados: `tv/693` é Donas de Casa Desesperadas e o cartão de
+       * `/filme/958186` na home é "Tótem", que é `movie/958186` no TMDB. Não é
+       * IMDb, apesar de a home também exibir o `tt` de cada título.
+       */
+      function enderecoSuperflixEpisodio({ tipo, tmdb, temporada, episodio, cfv }) {
+        if (tipo === 'filme') {
+          return tmdb ? comGrant(`https://superflixapi.quest/filme/${tmdb}`, cfv) : null
+        }
+
+        return tmdb && temporada && episodio
+          ? comGrant(`https://superflixapi.quest/serie/${tmdb}/${temporada}/${episodio}`, cfv)
+          : null
+      }
+
+      /*
+       * A ficha da série: mesmo id, sem temporada e episódio. É o plano B — o
+       * portão do superflix responde 200 antes de validar o id, então uma rota
+       * de episódio "aceita" pode ainda cair numa página vazia depois do
+       * desafio. A ficha diz o que o host realmente tem.
+       */
+      function enderecoSuperflixFicha({ tipo, tmdb, cfv }) {
+        if (!tmdb) {
+          return null
+        }
+
+        return comGrant(`https://superflixapi.quest/${tipo === 'filme' ? 'filme' : 'serie'}/${tmdb}`, cfv)
+      }
+
+      /*
+       * O vidsrc é o controle: responde 200, sem X-Frame-Options e sem CSP, e
+       * aceita o id do TMDB tanto na série quanto no filme. Se ele mostrar o
+       * episódio e o superflix não, a diferença é o desafio — não o catálogo.
+       */
+      function enderecoVidsrc({ tipo, tmdb, temporada, episodio }) {
+        if (tipo === 'filme') {
+          return tmdb ? `https://vidsrc.sh/embed/movie/${tmdb}` : null
+        }
+
+        return tmdb && temporada && episodio
+          ? `https://vidsrc.sh/embed/tv/${tmdb}/${temporada}/${episodio}`
+          : null
+      }
+
+      function recarregar(painel, url, aviso) {
+        const campo = painel.querySelector('input.url')
+        const quadro = painel.querySelector('iframe')
+        const estado = painel.querySelector('.estado')
+        const abrir = painel.querySelector('h2 a')
+
+        estado.classList.toggle('aviso', Boolean(aviso))
+        estado.textContent = aviso || (url ? '' : 'sem endereço para montar com estes parâmetros')
+
+        if (!url) {
+          campo.value = ''
+          abrir.href = '#'
+          // `about:blank` desmonta o player da tentativa anterior. Sem isso, o
+          // iframe antigo continuaria tocando atrás de um painel sem endereço.
+          quadro.src = 'about:blank'
+
+          return
+        }
+
+        campo.value = url
+        abrir.href = url
+        quadro.src = url
+      }
+
+      function montar() {
+        const valores = {
+          tipo: ler('tipo'),
+          tmdb: ler('tmdb'),
+          temporada: ler('temporada'),
+          episodio: ler('episodio'),
+          cfv: ler('cfv'),
+        }
+
+        recarregar(paineis.episodio, enderecoSuperflixEpisodio(valores))
+        recarregar(
+          paineis.ficha,
+          enderecoSuperflixFicha(valores),
+          valores.tipo === 'serie'
+            ? 'plano B: se a rota do episódio não resolver, a ficha lista o que existe'
+            : 'mesmo endereço do painel do episódio: filme não tem ficha por temporada',
+        )
+        recarregar(paineis.vidsrc, enderecoVidsrc(valores))
+
+        // A query guarda o estado da bancada: assim um caso interessante pode ser
+        // favoritado ou mandado por link, com id, temporada, episódio e grant
+        // juntos — que é como se volta a este episódio amanhã.
+        const query = new URLSearchParams()
+
+        Object.entries(valores).forEach(([chave, valor]) => {
+          if (valor) {
+            query.set(chave, valor)
+          }
+        })
+
+        history.replaceState(null, '', query.toString() ? '?' + query : location.pathname)
+      }
+
+      /*
+       * Duas pistas que não cabem em iframe. A busca do superflix responde sem
+       * Turnstile e devolve o id do TMDB pelo título — foi ela que confirmou o
+       * 693. E o plenoflu responde 403 a qualquer origem nossa, então o caminho
+       * dele é o backend, pela API que o `ResolvedorEmbed` já usa.
+       */
+      apoio.innerHTML =
+        'Fora dos iframes: <code>https://superflixapi.quest/pesquisar?s=&lt;título&gt;</code> '
+        + 'responde sem Turnstile e devolve o id do TMDB · o plenoflu devolve '
+        + '<code>403 Acesso proibido.</code> a qualquer origem nossa, então o caminho dele é o '
+        + 'backend: <code>GET https://plenoflu.com/api?action=getOptions&amp;contentid=&lt;DIRECT_EPISODE_ID&gt;</code>'
+
+      controles.addEventListener('submit', (evento) => {
+        evento.preventDefault()
+        montar()
+      })
+
+      // O `reset()` devolve os campos ao caso desta página (693 / 4 / 17) e esvazia
+      // os painéis: o endereço antigo sairia tocando atrás do novo.
+      document.getElementById('limpar').addEventListener('click', () => {
+        controles.reset()
+        history.replaceState(null, '', location.pathname)
+        Object.values(paineis).forEach((painel) => recarregar(painel, null))
+      })
+
+      // O endereço de cada painel é editável: quando o host muda de receita (ou
+      // quando o grant precisa ir colado à mão), o teste continua possível sem
+      // editar o arquivo.
+      Object.values(paineis).forEach((painel) => {
+        painel.querySelector('input.url').addEventListener('change', (evento) => {
+          recarregar(painel, evento.target.value.trim())
+        })
+      })
+
+      // Os parâmetros da query preenchem os campos antes do primeiro desenho, para
+      // que um link guardado reabra exatamente o mesmo caso.
+      const daQuery = new URLSearchParams(location.search)
+
+      CAMPOS.forEach((campo) => {
+        const valor = daQuery.get(campo)
+
+        if (valor) {
+          document.getElementById(campo).value = valor
+        }
+      })
+
+      /*
+       * O passe não muda nada nesta página: o destino dele é o **backend**. O que
+       * se prova aqui é que ele chega lá e passa a valer — e o retorno diz até
+       * quando, porque o prazo é do host (45 min), não nosso.
+       */
+      const passeControles = document.getElementById('passe-controles')
+      const passeEstado = document.getElementById('passe-estado')
+      const passeAgente = document.getElementById('passe-agente')
+
+      /*
+       * O passe vale para o par IP+agente, então o agente que vai junto é o desta
+       * aba — o mesmo que resolveu o widget. Preencher aqui, em vez de pedir para
+       * digitar, tira o erro mais fácil de cometer: mandar o cookie certo em nome
+       * de outro navegador.
+       */
+      passeAgente.value = navigator.userAgent
+
+      async function estadoDoPasse() {
+        const resposta = await fetch('/api/v1/passe-cloudflare', {
+          headers: { Accept: 'application/json' },
+        })
+
+        if (!resposta.ok) {
+          passeEstado.textContent = 'O backend não respondeu ao estado do passe.'
+          passeEstado.classList.add('aviso')
+          return
+        }
+
+        const dados = await resposta.json()
+        const minutos = Math.max(0, Math.round((dados.expira_em ?? 0) / 60))
+
+        if (!dados.disponivel) {
+          passeEstado.textContent =
+            'sem passe: o backend recebe a tela de verificação no lugar do player '
+            + `(o host dá ${Math.round((dados.prazo ?? 0) / 60)} min de validade).`
+          passeEstado.classList.add('aviso')
+          return
+        }
+
+        const origem = dados.configurado ? 'configurado no ambiente' : 'colado aqui'
+        const agente = dados.agente ?? ''
+        const confere = agente === navigator.userAgent
+
+        /*
+         * O passe de par trocado é o erro silencioso deste caminho: o host devolve a
+         * mesma tela de verificação e nada explica por quê. Esta frase é o que separa
+         * "passe vencido" de "passe enviado em nome de outro navegador".
+         */
+        const veredito = confere
+          ? ' — o backend se apresenta com o agente desta aba.'
+          : ' — ATENÇÃO: o backend está com '
+            + (agente === '' ? 'o agente padrão dele' : 'outro agente')
+            + ', e o host recusa o par trocado. Reenvie para valer o desta aba.'
+
+        passeEstado.textContent = `passe em mãos (${origem}, ${minutos} min)${veredito}`
+        passeEstado.classList.toggle('aviso', ! confere)
+      }
+
+      passeControles.addEventListener('submit', async (evento) => {
+        evento.preventDefault()
+
+        const resposta = await fetch('/api/v1/passe-cloudflare', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify({
+            clearance: document.getElementById('passe-clearance').value.trim(),
+            token: document.getElementById('passe-token').value.trim(),
+            agente: passeAgente.value.trim() || navigator.userAgent,
+          }),
+        })
+
+        const dados = await resposta.json().catch(() => ({}))
+
+        if (!resposta.ok) {
+          passeEstado.textContent = dados.erro ?? dados.message ?? 'O backend recusou o passe.'
+          passeEstado.classList.add('aviso')
+          return
+        }
+
+        await estadoDoPasse()
+
+        /*
+         * O aviso vem do backend junto da confirmação e é o único lugar em que ele
+         * serve: um token colado no campo do cookie não é recusado, e sem esta frase
+         * a pista só apareceria na tela de verificação, meia hora depois.
+         */
+        if (dados.aviso) {
+          passeEstado.textContent = `${passeEstado.textContent} · ${dados.aviso}`
+          passeEstado.classList.add('aviso')
+        }
+
+        /*
+         * Colar sem conferir deixa a dúvida inteira de pé: o passe guardado não
+         * prova nada sozinho. A conferência sai na hora, logo abaixo.
+         */
+        await conferir()
+      })
+
+      // Esquecer é o caminho de "colar outro": um passe vencido guardado é pior que
+      // nenhum, porque mascara a causa da tela de verificação.
+      document.getElementById('passe-esquecer').addEventListener('click', async () => {
+        await fetch('/api/v1/passe-cloudflare', {
+          method: 'DELETE',
+          headers: { Accept: 'application/json' },
+        })
+
+        await estadoDoPasse()
+      })
+
+      /*
+       * A conferência é a única resposta que fecha a dúvida do passe. O host recusa
+       * um par IP+agente trocado devolvendo exatamente a mesma tela de verificação
+       * de quem não apresentou nada — então "o passe está guardado" não prova nada:
+       * o backend precisa pedir a página de verdade. É o que este botão faz, e o
+       * retorno traz ainda o carimbo do valor (quando o passe nasceu) e o IP por
+       * onde o backend sai, que são as duas metades da comparação que sobra quando
+       * a resposta é a verificação.
+       */
+      const conferirControles = document.getElementById('passe-conferir-controles')
+      const conferirUrl = document.getElementById('passe-conferir-url')
+      const conferirEstado = document.getElementById('passe-conferir-estado')
+
+      function enderecoParaConferir() {
+        // Sem `cfv` de propósito: quem o acrescenta à consulta é o backend, que
+        // guarda o token junto do cookie.
+        return enderecoSuperflixEpisodio({
+          tipo: ler('tipo'),
+          tmdb: ler('tmdb'),
+          temporada: ler('temporada'),
+          episodio: ler('episodio'),
+          cfv: '',
+        })
+      }
+
+      conferirUrl.value = enderecoParaConferir() ?? ''
+
+      async function conferir() {
+        const url = conferirUrl.value.trim() || enderecoParaConferir()
+
+        if (! url) {
+          conferirEstado.classList.add('aviso')
+          conferirEstado.textContent = 'Sem endereço para conferir: preencha os campos do topo.'
+          return
+        }
+
+        conferirEstado.classList.remove('aviso')
+        conferirEstado.textContent = 'conferindo…'
+
+        let dados = {}
+
+        try {
+          const resposta = await fetch('/api/v1/passe-cloudflare/conferir', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+            body: JSON.stringify({ url }),
+          })
+
+          dados = await resposta.json()
+
+          if (! resposta.ok) {
+            conferirEstado.classList.add('aviso')
+            conferirEstado.textContent = dados.erro ?? dados.message ?? 'A conferência não completou.'
+            return
+          }
+        } catch (erro) {
+          conferirEstado.classList.add('aviso')
+          conferirEstado.textContent = `A conferência não completou: ${erro.message}`
+          return
+        }
+
+        const bom = dados.situacao === 'liberado'
+        const detalhes = [`HTTP ${dados.status ?? '—'}`, `${dados.tamanho ?? 0} bytes`]
+
+        if (dados.titulo) {
+          detalhes.push(`título “${dados.titulo}”`)
+        }
+
+        if (dados.captcha) {
+          detalhes.push(`x-cloudflare-captcha: ${dados.captcha}`)
+        }
+
+        /*
+         * O carimbo é formatado na hora desta aba, e não no fuso do backend (que é
+         * UTC): o que se tem em mãos para comparar é o relógio daqui.
+         */
+        if (dados.carimbo) {
+          const nascimento = new Date(dados.carimbo * 1000)
+          const minutos = Math.max(0, Math.round(Date.now() / 1000 - dados.carimbo))
+          detalhes.push(`passe nascido às ${nascimento.toLocaleTimeString('pt-BR')} (há ${minutos} s)`)
+        } else if (dados.passe) {
+          /*
+           * Aqui o campo está preenchido e não há carimbo: o que foi colado não
+           * tem `cf_clearance`. A lista de nomes é o que transforma essa suspeita
+           * em certeza — quem copiou os cookies pelo console traz os irmãos e não
+           * traz o `cf_clearance`, porque o host o marca como `HttpOnly`.
+           */
+          const nomes = Array.isArray(dados.cookies_do_passe) && dados.cookies_do_passe.length > 0
+            ? ` (traz: ${dados.cookies_do_passe.join(', ')})`
+            : ' (sem nome de cookie nenhum)'
+
+          detalhes.push(`o valor colado não traz carimbo de cf_clearance${nomes}`)
+        }
+
+        if (dados.ip_de_saida) {
+          const familia = dados.familia_de_saida ? ` (${dados.familia_de_saida})` : ''
+          detalhes.push(`backend sai por ${dados.ip_de_saida}${familia}`)
+        }
+
+        conferirEstado.classList.toggle('aviso', ! bom)
+        conferirEstado.textContent = `${dados.veredito} [${detalhes.join(' · ')}]`
+      }
+
+      conferirControles.addEventListener('submit', (evento) => {
+        evento.preventDefault()
+        conferir()
+      })
+
+      /*
+       * Fecha o ciclo: o passe guardado não prova nada sozinho. O que interessa é a
+       * busca real melhorar — e só a resposta do backend diz isso. Quando o passe
+       * não vale, o agregador devolve a tela de verificação e o provedor descarta a
+       * página em silêncio; o censo abaixo mostra em que degrau a cascata parou.
+       */
+      const passeTestar = document.getElementById('passe-testar')
+      const passeTestarEstado = document.getElementById('passe-testar-estado')
+      const passeTestarSaida = document.getElementById('passe-testar-saida')
+
+      // A mesma ficha da bancada. Os títulos vão junto porque o agregador procura por
+      // eles, e assim o teste não depende do TMDB responder.
+      const CONSULTA_DA_FICHA = {
+        titulo: 'Donas de Casa Desesperadas',
+        titulo_original: 'Desperate Housewives',
+        imdb_id: 'tt0410975',
+        ano: '2004',
+        temporada: '4',
+        episodio: '17',
+      }
+
+      const esc = (valor) => String(valor ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+
+      function montarFontes(fontes) {
+        if (fontes.length === 0) {
+          passeTestarSaida.insertAdjacentHTML('beforeend',
+            '<p class="estado aviso">nenhuma fonte voltou. Se o passe estiver em '
+            + 'mãos, veja no censo abaixo se o superflix chegou a ser consultado — '
+            + 'sem passe ele devolve a tela de verificação e a página é descartada.</p>')
+          return
+        }
+
+        const linhas = fontes.map((f) => `
+          <tr>
+            <td>${esc(f.tipo)}</td>
+            <td>${esc(f.provedor_rotulo ?? f.provedor)}</td>
+            <td>${esc(f.qualidade)}</td>
+            <td>${esc(f.idioma_rotulo)}</td>
+            <td>${esc(f.tamanho)}</td>
+            <td class="endereco">${esc(String(f.tipo === 'direto' ? f.stream : f.magnet).slice(0, 130))}</td>
+          </tr>`).join('')
+
+        passeTestarSaida.insertAdjacentHTML('beforeend', `
+          <table class="fontes">
+            <thead>
+              <tr><th>tipo</th><th>provedor</th><th>qualidade</th><th>idioma</th><th>tamanho</th><th>endereço</th></tr>
+            </thead>
+            <tbody>${linhas}</tbody>
+          </table>`)
+      }
+
+      /*
+       * O único provedor com um nível abaixo é o stream direto: ele não consulta um
+       * site, consulta uma lista de agregadores de vídeo. A linha dele sozinha não
+       * responde a pergunta que a bancada existe para fazer — "0 fontes com 1
+       * consulta" é indistinguível de "nem chegou a perguntar ao superflix". Por
+       * isso cada agregador entra aqui em situação, tempo, título casado e os
+       * endereços que devolveu.
+       */
+      const SITUACOES_BOAS = ['com_pagina']
+
+      function montarAgregadores(agregadores) {
+        if (! Array.isArray(agregadores) || agregadores.length === 0) {
+          return ''
+        }
+
+        const corpo = agregadores.map((a) => {
+          const classe = SITUACOES_BOAS.includes(a.situacao) ? 'bom' : 'ruim'
+          const enderecos = (a.encontradas ?? []).map(esc).join('<br>') || '—'
+
+          return `
+            <tr>
+              <td>${esc(a.agregador)}</td>
+              <td class="situacao ${classe}">${esc(a.situacao)}</td>
+              <td>${esc(a.consultas)}</td>
+              <td>${esc(a.ms)} ms</td>
+              <td>${esc(a.titulo) || '—'}</td>
+              <td class="endereco">${enderecos}</td>
+            </tr>`
+        }).join('')
+
+        return `
+          <tr class="detalhe">
+            <td colspan="7">
+              <table class="fontes">
+                <thead>
+                  <tr>
+                    <th>agregador</th><th>situação</th><th>consultas</th>
+                    <th>tempo</th><th>título casado</th><th>endereços devolvidos</th>
+                  </tr>
+                </thead>
+                <tbody>${corpo}</tbody>
+              </table>
+            </td>
+          </tr>`
+      }
+
+      function montarCobertura(linhas) {
+        if (linhas.length === 0) {
+          return
+        }
+
+        const corpo = linhas.map((c) => `
+          <tr>
+            <td>${esc(c.rotulo ?? c.provedor)}</td>
+            <td>${esc(c.situacao)}</td>
+            <td>${esc(c.consultas)}</td>
+            <td>${esc(c.fontes)}</td>
+            <td>${esc(c.aproveitadas)}</td>
+            <td>${esc(c.pt_br)}</td>
+            <td>${esc(c.ms)} ms</td>
+          </tr>${montarAgregadores(c.agregadores)}`).join('')
+
+        passeTestarSaida.insertAdjacentHTML('beforeend', `
+          <table class="fontes">
+            <thead>
+              <tr><th>provedor</th><th>situação</th><th>consultas</th><th>cruas</th><th>aproveitadas</th><th>pt-br</th><th>tempo</th></tr>
+            </thead>
+            <tbody>${corpo}</tbody>
+          </table>`)
+      }
+
+      passeTestar.addEventListener('click', async () => {
+        passeTestar.disabled = true
+        passeTestarEstado.classList.remove('aviso')
+        passeTestarEstado.textContent = 'consultando o backend — a cascata pode levar até um minuto.'
+        passeTestarSaida.innerHTML = ''
+
+        const inicio = Date.now()
+
+        try {
+          const resposta = await fetch(`/api/v1/movies/693/fontes?${new URLSearchParams(CONSULTA_DA_FICHA)}`, {
+            headers: { Accept: 'application/json' },
+          })
+          const dados = await resposta.json().catch(() => ({}))
+          const segundos = ((Date.now() - inicio) / 1000).toFixed(0)
+          const fontes = dados?.data?.fontes ?? []
+          const mensagem = dados?.data?.mensagem ?? dados?.message
+
+          passeTestarEstado.textContent = resposta.ok
+            ? `${fontes.length} fonte(s) em ${segundos}s${mensagem ? ' — ' + mensagem : ''}`
+            : `o backend respondeu ${resposta.status} em ${segundos}s${mensagem ? ' — ' + mensagem : ''}`
+          passeTestarEstado.classList.toggle('aviso', ! resposta.ok || fontes.length === 0)
+
+          montarFontes(fontes)
+          montarCobertura(dados?.data?.cobertura ?? [])
+        } catch (erro) {
+          passeTestarEstado.textContent = `a chamada falhou: ${erro.message}`
+          passeTestarEstado.classList.add('aviso')
+        } finally {
+          passeTestar.disabled = false
+        }
+      })
+
+      estadoDoPasse()
+
+      montar()
+    </script>
+  </body>
+</html>
+
+

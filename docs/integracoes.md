@@ -1189,6 +1189,11 @@ depois de `ordenar()`: ela zera `na_lista` e recontá-lo a partir da lista que
 realmente saiu. Assim o censo passa a refletir a lista, e não a cascata — um
 provedor só é `com_fonte` se a fonte dele sobreviveu até o fim.
 
+A linha do `stream_direto` carrega ainda a chave `agregadores`, com o censo de cada
+agregador de vídeo que ele consultou: é o único provedor com um nível abaixo dele.
+Os demais devolvem essa chave vazia. O desenho está em
+[O censo por agregador](#o-censo-por-agregador-quem-o-stream-direto-perguntou).
+
 #### O `👤 0` do Torrentio não significa "fonte morta"
 
 O Torrentio usa o mesmo `👤 0` para dois casos distintos: "não há peers" e "não
@@ -2823,6 +2828,151 @@ O que mudou depois deste registro foi o escopo do "aberto": o
 navegador nenhum**. Não foi a blindagem que cedeu — é que um dos quatro provedores
 nunca precisou dela.
 
+##### O passe do Cloudflare: o que colar, e qual dos dois portões
+
+O `superflixapi.quest` não tem uma parede só. Medido de dentro do container, o
+mesmo endereço (`/serie/693/4/17`) responde de duas formas diferentes, e confundir
+as duas custa uma investigação inteira:
+
+- **A verificação (Turnstile embutido).** `200` com
+  `x-cloudflare-captcha: required`, `<title>Verificação</title>` e um `POST` para a
+  própria URL carregando `cf_embed_challenge`, `cf_embed_hash`, `cf_client_mobile`
+  e `cf-turnstile-response`. A resposta **não emite cookie nenhum** e não
+  redireciona (medido com `allow_redirects: false`): o estado do desafio vive nos
+  campos do formulário. É esta a tela que o backend encontra.
+- **`Acesso Restrito · Visualização Externa`.** O anti-hotlink do site, com o
+  código de incorporação e um botão *Visualizar*. Ele aparece quando o pedido chega
+  com `Referer` de outro domínio — é o que uma aba aberta a partir de uma página
+  local vê, e era o que a bancada mostrava antes de o link "abrir em aba" passar a
+  ir com `referrerpolicy="no-referrer"`. O backend manda `Sec-Fetch-Site: none` e
+  **nenhum** `Referer`, então nunca esbarra neste portão.
+
+Sobrou o primeiro, e ele não tem atalho no servidor: o FlareSolverr 3.5.2
+(Chrome 152) foi testado **com o cookie do passe injetado** e devolveu a mesma tela
+em 14 s, com `Challenge not detected!` no log dele — o socorro não reconhece este
+desafio, que é um Turnstile de verdade, montado dentro da página. Quem vence é a
+aba do usuário, e o
+[`PasseCloudflare`](../backend/app/Services/Torrents/PasseCloudflare.php:1) é a
+ponte entre as duas.
+
+**O que colar.** O caminho curto é o *Copy as cURL* do DevTools, no pedido que
+carregou a página liberada (`Network` → a requisição do documento → *Copy as
+cURL*). A colagem é aceita em quatro formas:
+
+| Colado | Vira |
+| --- | --- |
+| `2jm9x...` (só o valor) | `cf_clearance=2jm9x...` |
+| `cf_clearance=...; __cf_bm=...` | a linha inteira, sem recorte |
+| `Cookie: cf_clearance=...` | a linha, sem o rótulo |
+| o bloco do *Copy as cURL* | o valor de `-H 'cookie: ...'` ou de `-b '...'` |
+
+Nada é recortado, e isso é decisão: o host pode estar esperando de volta
+**qualquer** cookie da sessão, inclusive um que venha *antes* do `cf_clearance` na
+linha (o `__cf_bm` do próprio Cloudflare, a sessão do site). Uma versão anterior
+recortava a partir de `cf_clearance=` e jogava os anteriores fora — e o descarte
+passava em silêncio, porque o que sobrava ainda *parecia* um cabeçalho válido.
+
+**O token no campo errado.** Colar no campo do cookie algo que não é cookie — o
+token do widget, o `cf_embed_hash` do desafio — não era recusado: o backend o
+prefixava como `cf_clearance`, e o host devolvia a mesma tela de verificação, igual
+a não ter passe nenhum. O
+[`pareceTokenSolto()`](../backend/app/Services/Torrents/PasseCloudflare.php:1)
+detecta essa forma — nem nome de cookie, nem a assinatura de um `cf_clearance`
+(`<aleatório>-<carimbo>-1.2.1.1-<hash>`) — e o aviso volta na resposta da colagem,
+para a bancada mostrar na hora, e não meia hora depois na tela de verificação.
+
+**O carimbo do valor é o nascimento do passe, não a validade.** O
+`cf_clearance` traz no próprio valor o instante em que foi emitido —
+`<aleatório>-<carimbo>-1.2.1.1-<hash>` —, e confundir esse carimbo com o
+vencimento leva a diagnóstico errado. A medição fechou a dúvida: um
+`cf_clearance` conquistado de verdade pelo FlareSolverr (num site de teste, mesmo
+Cloudflare) saiu num pedido feito às `15:21:41` (UTC) com o carimbo
+`1791213718` — o segundo da conquista —, enquanto o `expiry` do cookie, lido do
+navegador pelo CDP, era `1822749718`: exatamente um ano depois. São coisas
+distintas, e é o carimbo que diz **há quanto tempo o passe existe**. É a
+diferença que separa um passe recém-conquistado de um esquecido no campo desde
+ontem — os dois chegam ao host com a mesma cara, e o host recusa os dois
+devolvendo a mesma tela de verificação. Lido pelo
+[`carimboDoValor()`](../backend/app/Services/Torrents/PasseCloudflare.php:1), e
+devolvido na conferência para a bancada formatar no relógio de quem está olhando.
+
+**O que vem colado, ao pé da letra.** Quando o carimbo não existe, a pergunta que
+sobra é *o que está em mãos?* — e a resposta é uma lista de nomes. O
+[`nomesDeCookies()`](../backend/app/Services/Torrents/PasseCloudflare.php:1)
+devolve os nomes (nunca os valores) da colagem, e a conferência os publica em
+`cookies_do_passe`. Isso resolve o caso em que o campo está preenchido e o host
+recusa: se a lista traz `__cf_bm` e não traz `cf_clearance`, o backend está sem
+passe nenhum — e o motivo é que o host marca o `cf_clearance` como `HttpOnly`, de
+modo que ele aparece em *Application → Cookies* e no cabeçalho `cookie:` do
+pedido, mas **não** em `document.cookie`. Quem copia os cookies pelo console cola
+a lista sem ele, o campo fica com cara de preenchido, e o sintoma é idêntico ao de
+um passe vencido. O caminho que sempre funciona é o cabeçalho: *botão direito no
+pedido do episódio → Copy as cURL*.
+
+**A conferência.** Colar o passe não prova nada: o host recusa um passe de par
+**IP + agente** trocado devolvendo exatamente a mesma tela de verificação de quem
+não apresentou nada, sem uma linha explicando o motivo. Três causas se parecem
+por fora e são idênticas por dentro — o valor colado não é o que o host espera
+(faltou o `cfv`, faltaram os outros cookies), o agente guardado não é o da aba
+que venceu, ou a aba que venceu sai por outro IP. Por isso existe
+`POST /api/v1/passe-cloudflare/conferir`
+([`ConferenciaDoPasse`](../backend/app/Services/Torrents/ConferenciaDoPasse.php:1)):
+o backend pede a página na hora, com o passe anexado, e devolve
+`situacao: liberado | desafio | sem_resposta`, o `<title>` do que voltou, o
+`carimbo` do valor, os `cookies_do_passe` (os nomes, para saber se o
+`cf_clearance` está entre eles), o `ip_de_saida` do próprio backend com a
+`familia_de_saida` (o `cdn-cgi/trace` do Cloudflare) e o `veredito` — que separa
+passe ausente, colagem sem `cf_clearance` e par IP+agente trocado, as três causas
+que o host trata com a mesma resposta. Só endereços https dos hosts com portão são
+aceitos — o endereço é buscado de verdade, então aceitar qualquer URL faria do
+endpoint um proxy aberto para dentro da rede.
+
+**A causa-raiz medida (2026-10-05): navegador e backend saem por famílias
+diferentes.** Nesta máquina a comparação é direta, e é ela que explicava todas as
+tentativas frustradas de passe:
+
+| quem pede | o que o Cloudflare vê |
+| --- | --- |
+| a aba do usuário (a que vence o widget) | `2804:7f0:ba00:dfef:447e:a576:a669:d53b` — **IPv6** |
+| o backend (container) | `201.43.197.80` — **IPv4** |
+
+A aba prefere IPv6 porque o host tem endereço global (`wlp7s0`); a rede do Docker
+não tem IPv6 nenhum, então o container é IPv4 por falta de opção. Como o
+`cf_clearance` é vinculado ao IP que o conquistou — e a família faz parte dele —,
+nesse arranjo **o passe nunca vale para o backend**, por mais fresco e bem colado
+que esteja: o host devolve a mesma tela de verificação de quem não apresentou
+nada, e o sintoma se confunde com passe vencido, agente trocado ou colagem
+incompleta. O agente da aba (`Chrome/152.0.0.0`, Linux X11) foi testado contra o
+host e recebeu a verificação igual aos outros, o que descartou o UA — sobrou o IP.
+
+Os caminhos para casar os dois:
+
+1. **Fazer a aba sair por IPv4** (o mais curto): desligar o IPv6 da interface por
+   enquanto (`sudo sysctl -w net.ipv6.conf.wlp7s0.disable_ipv6=1`; `=0` desfaz) e
+   vencer o widget de novo; ou abrir o site num Chrome com
+   `--host-resolver-rules="MAP superflixapi.quest 104.21.34.165"`, que força o
+   IPv4 da Cloudflare; ou num Firefox com `network.dns.disableIPv6 = true`.
+2. **Dar IPv6 ao backend** (o estrutural): rede do Docker com `enable_ipv6` e
+   NAT66, para os dois saírem pela mesma família — custa IPv6 na rede do
+   container e depende do roteamento do host. Até lá, o passe vive do caminho 1, e
+   a conferência diz a família do IP de saída para que a divergência não passe
+   calada.
+
+**O desfecho, medido depois do conserto.** O caminho 1 foi executado nesta
+máquina, e a conferência confirma que os dois lados passaram a sair pelo **mesmo
+endereço** — `201.43.197.80`, IPv4:
+
+| quem pede | antes | depois de `disable_ipv6=1` |
+| --- | --- | --- |
+| a aba (notebook) | `2804:7f0:ba00:dfef:447e:a576:a669:d53b` (IPv6) | `201.43.197.80` |
+| o backend (container) | `201.43.197.80` (IPv4) | `201.43.197.80` |
+
+O alinhamento vale para os próximos pedidos, e **não** ressuscita o passe em
+mãos: um `cf_clearance` nascido por IPv6 continua sendo de outro IP, e é recusado
+do mesmo jeito. Depois de alinhar, é preciso vencer o widget **de novo** com o
+passe novo — e aí os dois suspeitos que sobram são o `HttpOnly` do `cf_clearance`
+(acima) e a idade do que foi colado, que a bancada mostra em segundos.
+
 ##### A travessia do embed — do iframe ao `master.m3u8`
 
 O caminho que faltava está descrito aqui inteiro, porque é curto e porque quem
@@ -3771,6 +3921,54 @@ relatório jurava que ele nunca foi perguntado. A correção preserva o registro
 stream direto em `reiniciarCenso()`: a cascata zera os demais, mas mantém o que o
 fallback direto já contou. Assim `nao_consultado` volta a significar "não foi
 perguntado" — e não "foi perguntado, mas a cascata passou por cima do registro".
+
+##### O censo por agregador: quem o stream direto perguntou
+
+A linha `stream_direto` da cobertura dizia *se* o provedor foi consultado, mas não
+**a quem**. Ele é o único provedor que não consulta um site: consulta uma lista de
+agregadores de vídeo (e, depois, o motor web). Quando o fallback voltava vazio, o
+relatório mostrava `1 consulta` e `0 fontes` — o mesmo retrato de um superflix que
+nunca chegou a ser procurado, ou que devolveu a tela de verificação no lugar da
+página do episódio. Era exatamente a dúvida que sobrava depois de o passe do
+Cloudflare entrar em cena.
+
+O nível abaixo mora no [`BuscaAgregadores`]: ele mantém um censo **por agregador**,
+preenchido em
+[`reiniciarCenso()`](../backend/app/Services/Torrents/BuscaAgregadores.php:153) —
+que o [`ProvedorStreamDireto`] chama no início de cada varredura, e não dentro do
+gerador de `candidatas()`, porque um gerador que ninguém consome não executa o
+próprio corpo. Como no censo de provedores, **todos** os agregadores declarados
+entram no relatório, inclusive os que nunca foram tocados: é o que faz o silêncio
+ter explicação.
+
+| Situação | Quando acontece |
+| --- | --- |
+| `com_pagina` | entregou endereços de conteúdo — a entrada guarda o título que casou e as páginas devolvidas |
+| `sem_resultado` | respondeu 200, mas nenhum link passou pela relevância do título (o "veja também" da busca) |
+| `sem_resposta` | erro HTTP ou estouro do tempo limite |
+| `erro` | a exceção subiu antes de haver resposta |
+| `nao_consultado` | o orçamento acabou ou um agregador anterior já tinha entregado |
+| `desligada` | `stream_direto_busca_direta` em `false` |
+
+Quem decide as situações de falha é o
+[`consultar()`](../backend/app/Services/Torrents/BuscaAgregadores.php:325) — é ele
+que sabe se a página respondeu ou se a conexão caiu —, e quem grava o sucesso é o
+[`anotar()`](../backend/app/Services/Torrents/BuscaAgregadores.php:288), porque só
+ele vê a lista já deduplicada e o título que casou. `nao_consultado` não é decisão
+de ninguém: é o valor com que cada agregador nasce e que ninguém sobrescreveu.
+
+O [`ProvedorStreamDireto::censoDosAgregadores()`] expõe o relatório e o
+[`CatalogoProvedores`] o guarda na linha do provedor ao fim do fallback, de modo que
+o `cobertura` da API traz `agregadores` dentro da linha `stream_direto`. Os demais
+provedores devolvem a chave **vazia**, e não ausente: a diferença entre "não tem
+agregadores" e "não foi consultado" não pode voltar a se esconder atrás da forma do
+payload.
+
+Na bancada ([`teste-embed-superflix.html`](../frontend/public/teste-embed-superflix.html:1)),
+esse nível aparece recuado dentro da linha do `stream_direto`, com situação, tempo,
+título casado e os endereços devolvidos. É por ali que se lê o efeito do passe:
+`sem_resposta` no superflix **com** o passe em mãos significa que o host devolveu a
+tela de verificação — o passe não valeu ou venceu no meio da busca.
 
 ##### Dois relógios nomeados: o stream direto tem orçamento próprio
 

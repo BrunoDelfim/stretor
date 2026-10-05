@@ -426,6 +426,32 @@ return [
         'stream_direto_max_fontes' => (int) env('TORRENTS_STREAM_DIRETO_MAX_FONTES', 2),
 
         /*
+         * Passe do Cloudflare para os hosts com **desafio embutido**.
+         *
+         * O `superflixapi.quest` fecha a página do episódio com um widget
+         * Turnstile que publica de volta na própria URL. Nenhum servidor vence
+         * esse widget: o FlareSolverr não o reconhece (registra
+         * `Challenge not detected!`) e o clique é humano. O passe é o que o
+         * navegador do usuário ganha ao vencer o desafio — o cookie
+         * `cf_clearance` e/ou o token `cfv` que a página liberada passa a
+         * carregar na query —, e vale para este backend porque os dois saem pelo
+         * **mesmo IP**. O host anuncia o prazo na própria resposta
+         * (`x-cloudflare-captcha-ttl-minutes: 45`).
+         *
+         * Sem passe, a página do episódio é a tela de verificação: o provedor
+         * descarta a candidata registrando o motivo, sem gastar o socorro do
+         * FlareSolverr numa porta que ele não abre. Vencido o prazo, volta a ser
+         * tela de verificação — basta colar um passe novo.
+         */
+        'passe_cloudflare_hosts' => array_values(array_filter(array_map(
+            'trim',
+            explode(',', (string) env('TORRENTS_PASSE_CLOUDFLARE_HOSTS', 'superflixapi.quest'))
+        ))),
+        'passe_cloudflare_clearance' => env('TORRENTS_PASSE_CLOUDFLARE_CLEARANCE', ''),
+        'passe_cloudflare_token' => env('TORRENTS_PASSE_CLOUDFLARE_TOKEN', ''),
+        'passe_cloudflare_agente' => env('TORRENTS_PASSE_CLOUDFLARE_AGENTE', ''),
+
+        /*
          * Teto, em segundos, de cada requisição do fallback (motor de busca ou
          * página de streaming). Curto de propósito: o fallback roda depois do
          * orçamento principal e não pode empurrar a resposta além dos 60 s que o
