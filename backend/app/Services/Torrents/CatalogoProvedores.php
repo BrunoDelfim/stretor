@@ -197,8 +197,9 @@ class CatalogoProvedores
         // A ordem do relatório é a ordem da cascata: os por identificador abrem, os
         // por nome seguem, o indexador com o YTS fecham os degraus e o stream direto
         // fica por último. Ele não é um degrau: é o outro método de indexação, que
-        // roda à parte — sempre, e antes da cascata — e por isso fecha o relatório,
-        // com o `agregadores` detalhando por baixo cada site consultado.
+        // roda à parte, antes da cascata — e, quando ele acha, a cascata nem roda —,
+        // e por isso fecha o relatório, com o `agregadores` detalhando por baixo
+        // cada site consultado.
         $this->registro = [
             ...$this->porIdentificador,
             ...$this->primarios,
@@ -479,9 +480,10 @@ class CatalogoProvedores
      * conhecem por ele.
      *
      * Roda com orçamento próprio: o canal `torrents` tem o dele e este tem o seu,
-     * dimensionado para o custo do FlareSolverr (10 a 15 s por página). Como os
-     * dois canais sempre rodam, a soma é contida pelo teto global da busca
-     * (`tempo_total_busca`), aplicado em [`OrcamentoBusca::abrir()`].
+     * dimensionado para o custo do FlareSolverr (10 a 15 s por página). Quando a
+     * cascata também roda — o caso em que este método volta vazio —, a soma dos
+     * dois orçamentos é contida pelo teto global da busca (`tempo_total_busca`),
+     * aplicado em [`OrcamentoBusca::abrir()`].
      *
      * O censo do provedor é preenchido à mão porque ele não passa pelo
      * `buscarGrupo()`: sem isto, o relatório o mostraria como `nao_consultado`
@@ -555,10 +557,11 @@ class CatalogoProvedores
          * A troca de canal é o que separa os dois relógios. A partir daqui, o
          * [`ClienteHttp`] e o trait [`ConsultaComOrcamento`] leem o prazo do canal
          * `stream_direto` — dimensionado para o custo real do FlareSolverr —, e
-         * não o da cascata. Como os dois métodos sempre rodam, estes orçamentos
-         * **somam** no tempo da resposta; quem impede a soma de estourar o que o
-         * frontend espera é o teto global da busca (`tempo_total_busca`), que
-         * corta os dois canais em [`OrcamentoBusca::abrir()`].
+         * não o da cascata. Quando os dois métodos rodam na mesma busca (este
+         * voltou vazio e a cascata entrou), estes orçamentos **somam** no tempo da
+         * resposta; quem impede a soma de estourar o que o frontend espera é o teto
+         * global da busca (`tempo_total_busca`), que corta os dois canais em
+         * [`OrcamentoBusca::abrir()`].
          *
          * O `abrirSeFechado()` continua idempotente dentro do canal: se o canal
          * `stream_direto` já estiver de pé (por uma chamada anterior da mesma
@@ -693,6 +696,27 @@ class CatalogoProvedores
         }
 
         return false;
+    }
+
+    /**
+     * Zera o censo dos provedores da cascata quando ela não chega a rodar.
+     *
+     * O stream direto roda antes e, quando acha, a cascata de torrents é
+     * dispensada — nenhum tracker chega a ser perguntado. O censo, porém, sobrevive
+     * à busca anterior (o de cada busca só é reiniciado dentro de [`buscar()`]), e
+     * o relatório mostraria os números de uma consulta antiga como se fossem
+     * desta: `com_fonte` de um provedor que nesta busca nem foi tocado, com as
+     * fontes dele aparecendo como se estivessem na lista. Zerar aqui é o que
+     * mantém a cobertura honesta — ela passa a dizer o que de fato aconteceu: só o
+     * acervo web foi consultado.
+     *
+     * A linha do stream direto **não** é tocada: [`reiniciarCenso()`] a preserva
+     * justamente por isso. Ela é o resultado desta busca e é o que explica a lista
+     * que o usuário recebeu.
+     */
+    public function dispensarCascata(): void
+    {
+        $this->reiniciarCenso();
     }
 
     /**
@@ -843,11 +867,12 @@ class CatalogoProvedores
      *
      * O stream direto é a exceção. Ele não passa pela cascata: é acionado à parte,
      * antes dela, e o seu censo é preenchido à mão em [`buscarFallbackDireto()`].
-     * Como ele sempre roda primeiro e a cascata sempre vem depois, `buscar()`
-     * zeraria o censo logo em seguida e apagaria o registro do stream direto — o
-     * relatório diria `nao_consultado` de um provedor que rodou, que é justamente
-     * a mentira que o censo existe para evitar. Preservar o registro dele aqui
-     * mantém a contagem da consulta que já aconteceu.
+     * Como ele roda primeiro e a cascata vem depois (quando vem), `buscar()` —
+     * ou [`dispensarCascata()`] — zeraria o censo logo em seguida e apagaria o
+     * registro do stream direto: o relatório diria `nao_consultado` de um provedor
+     * que rodou, que é justamente a mentira que o censo existe para evitar.
+     * Preservar o registro dele aqui mantém a contagem da consulta que já
+     * aconteceu.
      */
     private function reiniciarCenso(): void
     {
@@ -1097,8 +1122,7 @@ class CatalogoProvedores
      * provedor já consultado — o que importa é que o episódio tem resposta.
      *
      * O stream direto fica **fora** da conta, e a exclusão é a razão de o laço
-     * comparar o id. Desde que os dois métodos de indexação passaram a rodar
-     * sempre, o stream direto roda antes e o seu censo sobrevive ao
+     * comparar o id. O stream direto roda antes e o seu censo sobrevive ao
      * [`reiniciarCenso()`] da cascata — então uma única URL tocável achada no
      * acervo web faria o `aproveitadas` dele dispensar os termos de pack e de
      * série. O efeito seria o sintoma que o censo existe para evitar: "só veio do

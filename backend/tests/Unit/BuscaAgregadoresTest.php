@@ -253,17 +253,17 @@ class BuscaAgregadoresTest extends TestCase
      * O censo diz quem entregou e quem nem foi perguntado.
      *
      * É a pergunta que a linha única do stream direto na cobertura não responde: o
-     * fallback voltou vazio, mas o superflix chegou a ser consultado? Consumir só o
-     * primeiro resultado do gerador replica o comportamento do provedor, que para a
-     * varredura assim que junta fontes — e é por isso que o verpobreflix precisa
-     * aparecer como `nao_consultado`, e não como uma linha vazia sem explicação.
+     * provedor achou a página, mas em qual agregador? Consumir só o primeiro
+     * resultado do gerador replica o comportamento do provedor, que encerra a
+     * varredura no primeiro agregador que entrega — e é por isso que o superflix, que
+     * vem depois do verpobreflix na ordem, precisa aparecer como `nao_consultado`, e
+     * não como uma linha vazia sem explicação.
      */
     public function test_censo_registra_quem_entregou_e_quem_nao_foi_perguntado(): void
     {
         Http::fake([
-            'superflixapi.quest/*' => Http::response(
-                '<img alt="Donas de Casa Desesperadas" src="capa.jpg">'
-                .'<button data-copy="https://superflixapi.quest/serie/693" data-msg="Link copiado!">'
+            'www.verpobreflix.net/*' => Http::response(
+                '<a href="/series/donas-de-casa-desesperadas">Donas de Casa Desesperadas</a>'
             ),
         ]);
 
@@ -275,21 +275,21 @@ class BuscaAgregadoresTest extends TestCase
             break;
         }
 
-        $this->assertSame('superflixapi.quest', $primeiro[0]);
+        $this->assertSame('verpobreflix.net', $primeiro[0]);
+
+        $pobreflix = $this->linhaDoCenso($servico, 'verpobreflix.net');
+
+        $this->assertSame('com_pagina', $pobreflix['situacao']);
+        $this->assertSame(1, $pobreflix['consultas']);
+        $this->assertSame(1, $pobreflix['paginas']);
+        $this->assertSame(['https://www.verpobreflix.net/series/donas-de-casa-desesperadas'], $pobreflix['encontradas']);
+        $this->assertSame('Donas de Casa Desesperadas', $pobreflix['titulo']);
 
         $superflix = $this->linhaDoCenso($servico, 'superflixapi.quest');
 
-        $this->assertSame('com_pagina', $superflix['situacao']);
-        $this->assertSame(1, $superflix['consultas']);
-        $this->assertSame(1, $superflix['paginas']);
-        $this->assertSame(['https://superflixapi.quest/serie/693'], $superflix['encontradas']);
-        $this->assertSame('Donas de Casa Desesperadas', $superflix['titulo']);
-
-        $verpobreflix = $this->linhaDoCenso($servico, 'verpobreflix.net');
-
-        $this->assertSame('nao_consultado', $verpobreflix['situacao']);
-        $this->assertSame(0, $verpobreflix['consultas']);
-        $this->assertSame(0, $verpobreflix['ms']);
+        $this->assertSame('nao_consultado', $superflix['situacao']);
+        $this->assertSame(0, $superflix['consultas']);
+        $this->assertSame(0, $superflix['ms']);
     }
 
     /**

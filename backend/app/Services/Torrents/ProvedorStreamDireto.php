@@ -16,11 +16,18 @@ use Illuminate\Support\Facades\Log;
  * provedor troca a estratégia — em vez de procurar um torrent, ele **raspa a
  * web** atrás de um link de vídeo tocável (MP4 ou HLS).
  *
- * Ele **não** é um degrau da cascata: é acionado pelo [`CatalogoProvedores`]
- * apenas quando os torrents falharam, e por isso não paga custo nenhum no
- * caminho comum. A fonte que ele devolve sai com `tipo=direto` e o campo
- * `stream` preenchido; o `magnet` fica vazio de propósito, e é o `tipo` que diz
- * ao player para seguir pelo media-service (proxy/remux) em vez do WebTorrent.
+ * Ele **não** é um degrau da cascata: o [`CatalogoProvedores`] o aciona antes
+ * dela e, quando ele acha, a busca **acaba ali** — a fonte direta toca sem
+ * malha, e perguntar aos trackers só atrasaria a exibição. A cascata entra
+ * apenas quando a web não tem o título. A fonte que ele devolve sai com
+ * `tipo=direto` e o campo `stream` preenchido; o `magnet` fica vazio de
+ * propósito, e é o `tipo` que diz ao player para seguir pelo media-service
+ * (proxy/remux) em vez do WebTorrent.
+ *
+ * Por dentro, a varredura obedece à mesma ideia: o atalho por id do TMDB
+ * primeiro, os agregadores na ordem declarada em seguida e, por último, o motor
+ * de busca aberto — e a **primeira** fonte achada encerra o fluxo. Nenhuma
+ * origem depois dela é consultada.
  *
  * O fluxo tem quatro etapas, e cada uma tem um serviço próprio:
  *
@@ -155,6 +162,13 @@ class ProvedorStreamDireto implements ProvedorTorrents
      * provedor não tem o título), a varredura por motor e agregadores segue
      * normalmente.
      *
+     * A varredura para na **primeira fonte**. Cada origem da lista — o atalho por
+     * id, os agregadores na ordem declarada e, por fim, o motor de busca aberto —
+     * é tentada até que uma delas renda, e quem rende primeiro responde pela
+     * busca: as origens seguintes não são consultadas. É o que mantém a resposta
+     * curta, porque cada consulta pode custar uma renderização de navegador; com
+     * uma fonte tocável na mão, insistir só atrasaria a exibição.
+     *
      * @param  array<int, string>  $titulos
      * @return array<int, array<string, mixed>>
      */
@@ -198,15 +212,17 @@ class ProvedorStreamDireto implements ProvedorTorrents
         $termosComResultado = 0;
 
         /*
-         * O alvo de fontes é diferente do teto de páginas, e antes os dois eram a
-         * mesma variável — o que fazia o laço parar só depois de abrir seis
-         * páginas, mesmo com duas fontes já na mão. O stream direto é o primeiro
-         * método da busca, mas o papel dele aqui é socorro, não catálogo: assim que
-         * há fontes suficientes para o usuário escolher, parar é o certo — a
-         * cascata de torrents roda logo depois e traz volume. O alvo é configurável
-         * porque "suficiente" é uma decisão de operação, não uma verdade do código.
+         * O teto de fontes é o limite do que o direto entrega, e não a meta que
+         * ele persegue: quem encerra a varredura é o primeiro acerto, não uma
+         * contagem. Antes era o contrário — o laço seguia abrindo candidatas até
+         * juntar duas fontes, e essa segunda abertura era parte do tempo que o
+         * usuário sentia na resposta. Agora a primeira página que rende encerra o
+         * fluxo inteiro (ver `visitar()`), e o teto só corta o excesso de
+         * espelhos que uma mesma página pode trazer.
+         *
+         * Zero ou negativo desliga o corte.
          */
-        $alvoFontes = (int) config('services.torrents.stream_direto_max_fontes', 2);
+        $tetoFontes = (int) config('services.torrents.stream_direto_max_fontes', 2);
 
         /*
          * O teto de cada consulta ao motor e a margem de segurança que impede
@@ -263,12 +279,13 @@ class ProvedorStreamDireto implements ProvedorTorrents
          * motor. As páginas que voltam daqui entram no mesmo crivo das que vêm
          * do motor — a origem do link muda, o tratamento não.
          *
-         * A varredura é **degrau a degrau**: um agregador é consultado, suas
-         * páginas são abertas até o alvo de fontes e só então o próximo é
-         * perguntado. É a mesma cascata dos provedores de torrent, e a diferença
-         * é de custo, não de forma — abrir a página é a parte caríssima do
-         * fallback, e um agregador morto não pode consumir o orçamento que o
-         * seguinte precisava para achar o episódio.
+         * A varredura é **degrau a degrau**: um agregador é consultado e as suas
+         * candidatas são abertas em ordem até uma render. Se nenhuma render, o
+         * próximo agregador é perguntado; se alguma render, a busca inteira acaba
+         * ali e o motor web nem chega a rodar. É a mesma cascata dos provedores de
+         * torrent, e a diferença é de custo, não de forma — abrir a página é a
+         * parte caríssima do provedor, e um agregador morto não pode consumir o
+         * orçamento que o seguinte precisava para achar o episódio.
          */
         foreach ($this->agregadores->candidatas($titulos, $temporada, $episodio) as $dominio => $diretas) {
             Log::debug('Stream direto: candidatas da busca direta no agregador.', [
@@ -283,7 +300,7 @@ class ProvedorStreamDireto implements ProvedorTorrents
                 $episodio,
                 $paginasVisitadas,
                 $fontes,
-                $alvoFontes,
+                $tetoFontes,
                 $tetoConsulta,
             );
 
@@ -303,15 +320,6 @@ class ProvedorStreamDireto implements ProvedorTorrents
                     break;
                 }
 
-                /*
-                 * O laço para assim que junta fontes suficientes: o fallback é socorro,
-                 * não catálogo. Uma vez que há links tocáveis, gastar o orçamento
-                 * restante em mais termos só atrasaria a resposta.
-                 */
-                if ($this->alvoAtingido($fontes, $alvoFontes)) {
-                    break;
-                }
-
                 $candidatas = $this->motor->procurar($termo);
 
                 if ($candidatas === []) {
@@ -327,7 +335,7 @@ class ProvedorStreamDireto implements ProvedorTorrents
                     $episodio,
                     $paginasVisitadas,
                     $fontes,
-                    $alvoFontes,
+                    $tetoFontes,
                     $tetoConsulta,
                 )) {
                     break;
@@ -335,7 +343,7 @@ class ProvedorStreamDireto implements ProvedorTorrents
             }
         }
 
-        $unicas = $this->limitarPorOrigem($this->deduplicar($fontes), $this->tetoPorSite());
+        $unicas = $this->deduplicar($fontes);
 
         /*
          * O rastro dos domínios que passaram pelo filtro e foram abertos. Sem
@@ -374,69 +382,26 @@ class ProvedorStreamDireto implements ProvedorTorrents
     }
 
     /**
-     * Diz se já há fontes suficientes para encerrar a varredura.
+     * Corta a lista no teto de fontes do direto.
      *
-     * O alvo é o número de fontes distintas, não de páginas abertas — uma página
-     * pode render várias fontes, e o que o usuário escolhe é a fonte. Alvo zero ou
-     * negativo desliga o corte: aí o laço só para pelo teto de páginas ou pelo
-     * orçamento, que é o comportamento antigo.
+     * A ordem de chegada é preservada: os primeiros links que a página apresentou
+     * são os que ficam. O corte roda **durante** a varredura porque uma única
+     * página pode oferecer vários espelhos do mesmo vídeo — sem ele, a resposta
+     * do direto sairia com mirrors que o usuário não distingue, um por vez, sem
+     * acrescentar nada à escolha dele.
      *
-     * @param  array<int, array<string, mixed>>  $fontes
-     */
-    private function alvoAtingido(array $fontes, int $alvo): bool
-    {
-        return $alvo > 0 && count($fontes) >= $alvo;
-    }
-
-    /**
-     * Teto de fontes por site de origem, lido da configuração.
-     *
-     * Zero ou negativo desliga o corte — e aí uma única página pode ocupar a
-     * lista inteira, como era antes.
-     */
-    private function tetoPorSite(): int
-    {
-        return (int) config('services.torrents.stream_direto_max_fontes_por_site', 3);
-    }
-
-    /**
-     * Mantém, no máximo, `$teto` fontes de cada site de origem.
-     *
-     * A ordem de chegada é preservada: a primeira fonte de cada site é a que o
-     * site apresentou primeiro, e é a que fica. O corte roda **durante** a
-     * varredura, e não só no fim, porque o alvo de fontes olha a contagem total —
-     * se cinco espelhos de um agregador enchessem o alvo, os sites seguintes
-     * deixariam de ser consultados, que é exatamente o empobrecimento que o teto
-     * existe para evitar.
+     * Zero ou negativo desliga o corte: aí a lista vai inteira, como era antes.
      *
      * @param  array<int, array<string, mixed>>  $fontes
      * @return array<int, array<string, mixed>>
      */
-    private function limitarPorOrigem(array $fontes, int $teto): array
+    private function limitarFontes(array $fontes, int $teto): array
     {
-        if ($teto <= 0) {
-            return $fontes;
-        }
-
-        $contagem = [];
-        $mantidas = [];
-
-        foreach ($fontes as $fonte) {
-            $origem = (string) ($fonte['provedor'] ?? '');
-            $contagem[$origem] = ($contagem[$origem] ?? 0) + 1;
-
-            if ($contagem[$origem] > $teto) {
-                continue;
-            }
-
-            $mantidas[] = $fonte;
-        }
-
-        return $mantidas;
+        return $teto > 0 ? array_slice($fontes, 0, $teto) : $fontes;
     }
 
     /**
-     * Percorre uma lista de páginas candidatas e acumula as fontes que rendem.
+     * Percorre uma lista de páginas candidatas e devolve se a busca deve parar.
      *
      * As candidatas chegam de duas origens — a **busca direta nos agregadores**
      * e o **motor de busca web** — e as duas passam pelo mesmo crivo: barreira
@@ -444,15 +409,17 @@ class ProvedorStreamDireto implements ProvedorTorrents
      * laço aqui evita duas cópias da mesma regra e garante que um filtro novo
      * valha para as duas origens de uma vez.
      *
-     * A parada é dupla e mora no topo do laço: o orçamento (não começar uma
-     * consulta que já não cabe) e o alvo de fontes (o fallback é socorro, não
-     * catálogo). Quando um dos dois dispara, a função devolve `true` e quem
-     * chamou encerra o fluxo inteiro.
+     * A parada é a **primeira fonte**: assim que uma página rende, a função
+     * devolve `true` e quem chamou encerra o fluxo — o próximo agregador nem é
+     * perguntado e o motor web não chega a rodar. É o contrato de prioridade do
+     * provedor: cada origem é tentada na ordem declarada, e a primeira que
+     * entrega responde pela busca. O orçamento é a outra parada: sem tempo para
+     * começar a próxima consulta, insistir só gastaria a espera que falta.
      *
      * @param  array<int, string>  $candidatas
      * @param  array<string, bool>  $paginasVisitadas
      * @param  array<int, array<string, mixed>>  $fontes
-     * @return bool `true` quando o fluxo deve parar (orçamento ou alvo atingido)
+     * @return bool `true` quando o fluxo deve parar (achou fonte ou acabou o tempo)
      */
     private function visitar(
         array $candidatas,
@@ -461,11 +428,11 @@ class ProvedorStreamDireto implements ProvedorTorrents
         ?int $episodio,
         array &$paginasVisitadas,
         array &$fontes,
-        int $alvoFontes,
+        int $tetoFontes,
         int $tetoConsulta,
     ): bool {
         foreach ($candidatas as $pagina) {
-            if (! $this->temTempoParaConsulta($tetoConsulta) || $this->alvoAtingido($fontes, $alvoFontes)) {
+            if (! $this->temTempoParaConsulta($tetoConsulta)) {
                 return true;
             }
 
@@ -491,16 +458,25 @@ class ProvedorStreamDireto implements ProvedorTorrents
 
             $paginasVisitadas[$pagina] = true;
 
+            $novas = $this->rasparPagina($pagina, $titulo, $temporada, $episodio);
+
             /*
-             * O teto por site é aplicado a cada página, e não só no fim. O alvo de
-             * fontes olha a contagem total: sem o corte aqui, cinco espelhos de um
-             * agregador encheriam o alvo e os sites seguintes nem seriam
-             * consultados — a lista sairia toda de uma origem só.
+             * O teto é aplicado a cada página e a ordem de chegada é preservada —
+             * os primeiros links da página são os que ficam. Como o fluxo agora
+             * para na primeira página que rende, este corte é o que impede um
+             * agregador cheio de espelhos de encher a lista sozinho.
              */
-            $fontes = $this->limitarPorOrigem(
-                array_merge($fontes, $this->rasparPagina($pagina, $titulo, $temporada, $episodio)),
-                $this->tetoPorSite()
-            );
+            $fontes = $this->limitarFontes(array_merge($fontes, $novas), $tetoFontes);
+
+            /*
+             * A página rendeu: a varredura inteira acaba aqui. Seguir abrindo
+             * candidatas depois de ter uma fonte tocável era o custo que fazia a
+             * resposta demorar — e cada abertura pode custar uma renderização de
+             * navegador.
+             */
+            if ($novas !== []) {
+                return true;
+            }
         }
 
         return false;
@@ -804,14 +780,13 @@ class ProvedorStreamDireto implements ProvedorTorrents
     }
 
     /**
-     * Identifica o **site de origem** de uma página, para marcar a fonte e
-     * limitar quantas cada site contribui.
+     * Identifica o **site de origem** de uma página, para marcar a fonte.
      *
      * A fonte direta era rotulada só como `stream_direto`, o nome do método. Para
      * quem olha a lista isso não diz nada: dois links do mesmo agregador pareciam
-     * de provedores diferentes, e não havia como saber que a lista veio toda de um
-     * site só. A origem é o domínio da página onde o vídeo foi encontrado — é ela
-     * que o usuário reconhece e é por ela que o teto por site conta.
+     * de provedores diferentes, e não havia como saber de onde a lista veio. A
+     * origem é o domínio da página onde o vídeo foi encontrado — é ela que o
+     * usuário reconhece na etiqueta da fonte, ao lado de "Link direto".
      *
      * @return array{0: string, 1: string} Domínio e rótulo legível
      */
@@ -820,8 +795,7 @@ class ProvedorStreamDireto implements ProvedorTorrents
         $dominio = $this->dominiosDe([$pagina])[0] ?? '';
 
         // O `www.` cai antes de qualquer coisa: sem isso, `www.site.com` e
-        // `site.com` contariam como dois sites e o teto por origem seria burlado
-        // pela mesma página servida nos dois endereços.
+        // `site.com` apareceriam como dois sites diferentes na etiqueta da fonte.
         $dominio = preg_replace('/^www\./', '', $dominio) ?? $dominio;
 
         if ($dominio === '') {

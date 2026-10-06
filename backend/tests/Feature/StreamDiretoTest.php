@@ -14,12 +14,16 @@ use Tests\TestCase;
  * Trava o contrato da fonte direta (MP4/HLS) na montagem final.
  *
  * O stream direto é o primeiro método de indexação da busca: roda antes da
- * cascata de torrents e entra na frente dela na lista final, porque não depende
- * de malha. O risco desta expansão é silencioso — a fonte direta não tem `seeds`
- * nem `magnet`, então os filtros que sempre valeram para torrent a descartariam
- * sem que ninguém percebesse. Estes testes fixam os pontos que a salvam: o ramo
- * `tipo === 'direto'` em `ordenar()` (para as diretas que chegam pela cascata) e
- * a montagem que preenche `stream` com `magnet` vazio.
+ * cascata de torrents e, quando acha, **encerra a busca** — a fonte direta não
+ * depende de malha, então a cascata nem chega a ser consultada. É o corte que dá
+ * sentido ao posto de primeiro método: perguntar aos trackers depois de ter uma
+ * URL que toca na hora só atrasaria a exibição.
+ *
+ * O risco desta arquitetura é silencioso — a fonte direta não tem `seeds` nem
+ * `magnet`, então os filtros que sempre valeram para torrent a descartariam sem
+ * que ninguém percebesse. Estes testes fixam os dois pontos que a salvam: o ramo
+ * `tipo === 'direto'` em `ordenar()` (para as diretas que chegam pela cascata) e a
+ * montagem que preenche `stream` com `magnet` vazio.
  *
  * Como nos demais testes de montagem, o catálogo é substituído por um dublê e
  * nada aqui toca em rede ou banco.
@@ -86,10 +90,11 @@ class StreamDiretoTest extends TestCase
     /**
      * Substitui o catálogo por um dublê que devolve as fontes dadas.
      *
-     * Os dois métodos são dublados à parte porque os dois rodam e compõem a
-     * lista: `buscar()` devolve a cascata de torrents e `buscarFallbackDireto()`
-     * devolve o stream direto. Assim o teste controla cada método sem tocar o
-     * catálogo real nem em rede.
+     * `buscarFallbackDireto()` devolve o stream direto e `buscar()` devolve a
+     * cascata de torrents. Com fonte direta na mão, só o primeiro é chamado — a
+     * cascata é dispensada e `dispensarCascata()` entra no lugar dela, zerando o
+     * censo dos trackers que não foram consultados. O dublê declara os dois
+     * caminhos para o teste poder escolher qual deles aconteceu.
      *
      * @param  array<int, array<string, mixed>>  $fontes
      * @param  array<int, array<string, mixed>>  $diretas
@@ -99,8 +104,10 @@ class StreamDiretoTest extends TestCase
         $catalogo = Mockery::mock(CatalogoProvedores::class);
         $catalogo->shouldReceive('buscar')->andReturn($fontes);
         $catalogo->shouldReceive('buscarFallbackDireto')->andReturn($diretas);
+        $catalogo->shouldReceive('dispensarCascata')->andReturnNull();
         $catalogo->shouldReceive('reconciliarCenso')->andReturnNull();
         $catalogo->shouldReceive('fecharOrcamento')->andReturnNull();
+        $catalogo->shouldReceive('temDublado')->andReturn(true);
         $catalogo->shouldReceive('temDublado')->andReturnUsing(
             fn (array $lista): bool => collect($lista)->contains(
                 fn (array $f): bool => in_array($f['idioma'], [IdiomaFonte::DUBLADO->value, IdiomaFonte::DUAL_AUDIO->value], true)
@@ -147,53 +154,66 @@ class StreamDiretoTest extends TestCase
     }
 
     /**
-     * A fonte direta cobre o caso em que os torrents são todos descartados.
+     * Com fonte direta na mão, a cascata de torrents é dispensada.
      *
-     * O Torrentio devolveu uma fonte, mas ela é lixo: sem seeds, o filtro de
-     * `ordenar()` a descarta. Quando isso acontece, a lista final fica só com o
-     * que o stream direto trouxe — que é exatamente o papel dele: cobrir o
-     * conteúdo que os trackers não entregam vivo.
+     * O torrent vivo existe e está saudável, mas não é consultado: a fonte direta
+     * toca sem esperar malha, então perguntar aos trackers depois dela só somaria
+     * latência a uma exibição que já pode começar. O `never()` no `buscar()` é o
+     * que trava esse contrato — sem ele, uma futura "soma das duas origens" voltaria
+     * a arrastar a espera dos trackers para o caminho rápido.
      */
-    public function test_stream_direto_cobre_quando_os_torrents_sao_descartados(): void
+    public function test_stream_direto_dispensa_a_cascata_quando_ha_fonte_direta(): void
     {
-        $lixo = $this->fonteTorrent('lixo');
-        $lixo['seeds'] = 0;
+        $catalogo = Mockery::mock(CatalogoProvedores::class);
+        $catalogo->shouldReceive('buscarFallbackDireto')->andReturn([$this->fonteDireta('socorro')]);
+        $catalogo->shouldReceive('buscar')->never();
+        $catalogo->shouldReceive('dispensarCascata')->once()->andReturnNull();
+        $catalogo->shouldReceive('reconciliarCenso')->andReturnNull();
+        $catalogo->shouldReceive('fecharOrcamento')->andReturnNull();
+        $catalogo->shouldReceive('temDublado')->andReturn(true);
 
-        $servico = $this->servicoComFontes([$lixo], [$this->fonteDireta('socorro')]);
+        $servico = new TorrentService($catalogo, new OrcamentoBusca());
 
         $fontes = $servico->fontes('Filme Raro');
 
-        $this->assertCount(1, $fontes, 'O fallback precisa entrar quando o filtro esvazia a lista.');
+        $this->assertCount(1, $fontes, 'A lista é só a fonte direta: a cascata nem entrou.');
         $this->assertSame('direto', $fontes[0]['tipo']);
         $this->assertSame('https://exemplo.test/socorro.mp4', $fontes[0]['stream']);
     }
 
     /**
-     * Com torrent vivo, o stream direto entra mesmo assim — e na frente.
+     * O outro lado do corte: sem fonte direta, a cascata é a busca.
      *
-     * Este caso substitui o controle antigo ("com torrent vivo, o fallback não
-     * dispara"). Aquilo valia quando o stream direto era socorro, acionado só com
-     * a lista final vazia. Agora os dois métodos sempre rodam e a lista final é a
-     * soma, com o direto na frente: quando o acervo web tem o título, ele toca sem
-     * esperar o tracker. O torrent continua na lista, como alternativa.
+     * A dispensa da cascata não pode virar um caminho sem volta — quando o acervo
+     * web não tem o título, é ela que responde, e é ela que precisa ser consultada
+     * uma única vez e ter o censo preservado.
      */
-    public function test_stream_direto_convive_com_torrent_vivo_e_vem_primeiro(): void
+    public function test_cascata_roda_quando_o_direto_volta_vazio(): void
     {
-        $servico = $this->servicoComFontes([$this->fonteTorrent('viva')], [$this->fonteDireta('socorro')]);
+        $catalogo = Mockery::mock(CatalogoProvedores::class);
+        $catalogo->shouldReceive('buscarFallbackDireto')->andReturn([]);
+        $catalogo->shouldReceive('buscar')->once()->andReturn([$this->fonteTorrent('viva')]);
+        $catalogo->shouldReceive('dispensarCascata')->never();
+        $catalogo->shouldReceive('reconciliarCenso')->andReturnNull();
+        $catalogo->shouldReceive('fecharOrcamento')->andReturnNull();
+        $catalogo->shouldReceive('temDublado')->andReturn(true);
+
+        $servico = new TorrentService($catalogo, new OrcamentoBusca());
 
         $fontes = $servico->fontes('Filme Raro');
 
-        $this->assertCount(2, $fontes, 'Os dois métodos compõem a lista.');
-        $this->assertSame('direto', $fontes[0]['tipo'], 'O stream direto vem primeiro.');
-        $this->assertSame('torrent', $fontes[1]['tipo'], 'O torrent continua como alternativa.');
+        $this->assertCount(1, $fontes, 'Sem fonte direta, o torrent vivo responde pela busca.');
+        $this->assertSame('torrent', $fontes[0]['tipo']);
     }
 
     /**
      * O caso do conteúdo PT-BR raro: só veio original.
      *
      * Quando o Torrentio devolve apenas releases em inglês, o corte duro de
-     * idioma esvazia a lista de torrents — o original não é resposta para quem
-     * pediu português. A fonte direta, que já rodou, é a única da lista final.
+     * idioma esvaziaria a lista de torrents — o original não é resposta para quem
+     * pediu português. Com a fonte direta na mão, porém, a cascata nem é
+     * consultada: o stream direto responde sozinho, e a lista final tem uma única
+     * fonte, tocável, em PT-BR.
      */
     public function test_stream_direto_e_a_unica_fonte_quando_so_veio_original(): void
     {
@@ -201,13 +221,13 @@ class StreamDiretoTest extends TestCase
         $original['idioma'] = 'original';
         $original['pt_br'] = false;
 
-        $servico = $this->servicoComFontes([$original], [$this->fonteDireta('socorro')]);
+        $servico = $this->servicoComFontes([$original], [$this->fonteDireta('web')]);
 
         $fontes = $servico->fontes('Filme Raro');
 
-        $this->assertCount(1, $fontes, 'Sem PT-BR, o fallback precisa substituir a reserva em inglês.');
+        $this->assertCount(1, $fontes, 'O original em inglês não entra, e a cascata nem chega a ser ouvida.');
         $this->assertSame('direto', $fontes[0]['tipo']);
-        $this->assertSame('https://exemplo.test/socorro.mp4', $fontes[0]['stream']);
+        $this->assertSame('https://exemplo.test/web.mp4', $fontes[0]['stream']);
     }
 
     /**

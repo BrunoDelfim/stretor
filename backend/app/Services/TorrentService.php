@@ -47,11 +47,14 @@ class TorrentService
     /**
      * Fontes disponíveis para um título, já ordenadas por prioridade.
      *
-     * Roda os dois métodos de indexação — stream direto e torrents — e devolve a
-     * soma, com as fontes diretas na frente. Dentro de cada método, a ordenação
-     * coloca o dublado em PT-BR primeiro e, dentro do mesmo idioma, as fontes com
-     * mais seeds. Fontes de torrent sem seeds são descartadas: não têm como servir
-     * dados e só fariam o frontend perder tempo tentando.
+     * Tenta o stream direto primeiro. Quando ele acha, a busca **termina ali**:
+     * a fonte direta toca sem esperar malha e é devolvida sozinha. Sem fonte
+     * direta, roda a cascata de torrents e devolve o que ela juntar.
+     *
+     * Dentro de cada método a ordenação coloca o dublado em PT-BR primeiro e,
+     * dentro do mesmo idioma, as fontes com mais seeds. Fontes de torrent sem
+     * seeds são descartadas: não têm como servir dados e só fariam o frontend
+     * perder tempo tentando.
      *
      * @return array<int, array<string, mixed>>
      */
@@ -70,23 +73,23 @@ class TorrentService
         $episodioDeSerie = $temporada !== null && $episodio !== null;
 
         /*
-         * Os dois métodos de indexação rodam sempre, nesta ordem: primeiro o
-         * stream direto, depois os torrents. A ordem é a prioridade do player —
-         * ele tenta as fontes na ordem da lista —, então a fonte que não depende
-         * de malha vem antes: quando o acervo web tem o título, ele toca sem
-         * esperar o tracker.
+         * O stream direto roda primeiro e, quando acha, **encerra a busca**: a
+         * fonte que ele devolve toca sem esperar malha, então não há razão para
+         * gastar mais tempo perguntando aos trackers — a cascata de torrents só
+         * entra quando a web não tem o título. A ordem é a prioridade do player,
+         * que tenta as fontes na ordem da lista.
          *
          * Antes, a idade do título decidia por qual método começar e, às vezes,
          * qual único método rodar. Era uma aposta sobre onde o conteúdo estaria,
          * e errava nos dois sentidos: um título recente que só um agregador web
          * tinha esperava o orçamento inteiro dos torrents, e um título antigo com
-         * pack vivo nos trackers nunca via o indexador. Agora não há aposta: os
-         * dois são consultados e a lista final é a soma dos dois, direto primeiro.
+         * pack vivo nos trackers nunca via o indexador. Agora a ordem é fixa e o
+         * primeiro método que entrega responde pela busca.
          *
-         * O relógio é um só, com teto global: como os dois métodos sempre rodam,
-         * o tempo de um é o tempo que sobra para o outro. O teto garante que a
-         * soma não passe do que o frontend espera, mesmo no pior caso em que o
-         * stream direto gasta o orçamento dele em páginas que não resolvem.
+         * O relógio é um só, com teto global, e continua valendo nos dois
+         * cenários: quando a cascata é dispensada, ele apenas é fechado cedo;
+         * quando os dois métodos rodam (o direto voltou vazio), ele garante que a
+         * soma das esperas não passe do que o frontend tolera.
          */
         $this->orcamento->definirTetoGlobal(
             (int) config('services.torrents.tempo_total_busca', 55)
@@ -96,15 +99,20 @@ class TorrentService
 
         $diretas = $this->buscarPeloStreamDireto($titulo, $ano, $imdbId, $tituloOriginal, $temporada, $episodio, $tmdbId, $titulos);
 
-        $torrents = $this->buscarPelosTorrents($titulo, $ano, $imdbId, $tituloOriginal, $temporada, $episodio, $episodioDeSerie, $titulos);
-
         /*
-         * A lista final junta os dois métodos com o direto na frente. A mesma
-         * fonte não aparece duas vezes: as diretas são indexadas pelo md5 da URL
-         * e as de torrent pelo infohash, então o `id` já as separa — a mesclagem
-         * só protege contra a rara coincidência.
+         * Com a fonte direta na mão, a cascata é dispensada — e o censo dos
+         * provedores de torrent é zerado junto, pela mesma razão que o relatório
+         * existe: sem isso ele mostraria os números e as fontes da busca anterior
+         * como se fossem desta, e a cobertura diria que os trackers entregaram o
+         * que foi, na verdade, achado no acervo web.
          */
-        $fontes = $this->mesclarFontes($diretas, $torrents);
+        if ($diretas !== []) {
+            $this->catalogo->dispensarCascata();
+
+            $fontes = $diretas;
+        } else {
+            $fontes = $this->buscarPelosTorrents($titulo, $ano, $imdbId, $tituloOriginal, $temporada, $episodio, $episodioDeSerie, $titulos);
+        }
 
         /*
          * O censo é contado dentro de cada método, antes da montagem final. Aqui
@@ -197,8 +205,9 @@ class TorrentService
      *
      * Roda **primeiro** na busca, antes da cascata de torrents. Não é gatilho nem
      * fallback: a fonte direta tem prioridade para o player porque não depende de
-     * malha — quando o acervo web tem o título, ele toca na hora. A cascata de
-     * torrents, que roda depois, soma o que os trackers têm.
+     * malha — quando o acervo web tem o título, ele toca na hora e a busca acaba
+     * ali, sem consultar tracker nenhum. A cascata de torrents só roda quando ele
+     * volta vazio.
      *
      * O scraper recebe o título traduzido e o original. Como ele roda antes da
      * segunda fase da cascata, `$titulos` ainda costuma estar vazio, então a lista
@@ -206,9 +215,8 @@ class TorrentService
      * o que funciona para o conteúdo raro ("Desperate Housewives" acha o que
      * "Donas de Casa Desesperadas" não acha).
      *
-     * As fontes diretas entram já montadas e não voltam por `ordenar()`: elas são
-     * concatenadas à frente da lista de torrents, e passá-las pela ordenação que
-     * espera magnet só as descartaria.
+     * As fontes diretas entram já montadas e não voltam por `ordenar()`: passá-las
+     * pela ordenação, que espera magnet, só as descartaria.
      *
      * @param  array<int, string>  $titulos
      * @return array<int, array<string, mixed>>
@@ -242,6 +250,14 @@ class TorrentService
         ]);
 
         $fontes = $this->catalogo->buscarFallbackDireto($titulosDoFallback, $ano, $imdbId, $temporada, $episodio, $tmdbId);
+
+        /*
+         * Os termos consultados ficam registrados no acumulador da busca. Quando o
+         * direto acha, a cascata não roda e ninguém mais escreveria nele — e o log
+         * final sairia com a lista de termos vazia justamente no caminho em que a
+         * fonte veio.
+         */
+        $titulos = $titulosDoFallback;
 
         Log::debug('Busca de torrents: stream direto devolveu.', [
             'fontes' => count($fontes),

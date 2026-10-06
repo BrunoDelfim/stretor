@@ -64,8 +64,9 @@ class CensoStreamDiretoTest extends TestCase
      * O stream direto é um dublê que responde o que o teste pedir em
      * `$fontesDiretas` — vazio no caso comum, porque o que interessa ali é o
      * registro da consulta no censo, não as fontes que ele devolveria. O censo dos
-     * agregadores vem preenchido à mão — é o que ele devolveria de verdade depois
-     * de perguntar ao superflix —, para o teste provar que ele chega à cobertura.
+     * agregadores vem preenchido à mão — é o que ele devolveria de verdade quando o
+     * primeiro agregador da ordem acha a página —, para o teste provar que ele
+     * chega à cobertura.
      *
      * @param  array<int, array<string, mixed>>  $fontesDiretas
      */
@@ -78,16 +79,16 @@ class CensoStreamDiretoTest extends TestCase
         $streamDireto->shouldReceive('buscarComTitulos')->andReturn($fontesDiretas);
         $streamDireto->shouldReceive('censoDosAgregadores')->andReturn([
             [
-                'agregador' => 'superflixapi.quest',
+                'agregador' => 'verpobreflix.net',
                 'situacao' => 'com_pagina',
                 'consultas' => 1,
                 'paginas' => 1,
                 'ms' => 320,
                 'titulo' => 'Donas de Casa Desesperadas',
-                'encontradas' => ['https://superflixapi.quest/serie/693/1/1'],
+                'encontradas' => ['https://verpobreflix.net/serie/693/1/1'],
             ],
             [
-                'agregador' => 'verpobreflix.net',
+                'agregador' => 'superflixapi.quest',
                 'situacao' => 'nao_consultado',
                 'consultas' => 0,
                 'paginas' => 0,
@@ -204,9 +205,10 @@ class CensoStreamDiretoTest extends TestCase
      * A linha do stream direto carrega o censo dos agregadores dentro dela.
      *
      * É o que responde "0 fontes com 1 consulta" sem deixar dúvida: a consulta ao
-     * provedor aconteceu e ela de fato perguntou ao superflix — que devolveu a
-     * página do episódio. Sem esta chave, o relatório diria o mesmo de um fallback
-     * que nem chegou a tocar no agregador.
+     * provedor aconteceu e ele de fato perguntou ao verpobreflix — que devolveu a
+     * página do episódio —, e o superflix, que vem depois na ordem, nem foi
+     * acionado. Sem esta chave, o relatório diria o mesmo de uma varredura que nem
+     * chegou a tocar no agregador.
      */
     public function test_cobertura_do_stream_direto_traz_os_agregadores(): void
     {
@@ -216,10 +218,10 @@ class CensoStreamDiretoTest extends TestCase
 
         $linha = collect($catalogo->cobertura())->firstWhere('provedor', 'stream_direto');
 
-        $this->assertSame('superflixapi.quest', $linha['agregadores'][0]['agregador']);
+        $this->assertSame('verpobreflix.net', $linha['agregadores'][0]['agregador']);
         $this->assertSame('com_pagina', $linha['agregadores'][0]['situacao']);
         $this->assertSame(
-            ['https://superflixapi.quest/serie/693/1/1'],
+            ['https://verpobreflix.net/serie/693/1/1'],
             $linha['agregadores'][0]['encontradas'],
             'Os endereços entregues pelo agregador são o que prova onde a busca parou.'
         );

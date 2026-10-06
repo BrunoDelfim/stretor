@@ -73,10 +73,13 @@ class BuscaAgregadores
      * `temporada-N/episodio-N`, o que o [`ProvedorStreamDireto`] já faz.
      *
      * A **ordem** é a da cascata: os agregadores são percorridos um por vez, de
-     * cima para baixo, e o primeiro que entrega páginas já vira fonte antes de o
-     * seguinte ser perguntado. O superflix vem primeiro porque a busca dele
-     * responde sem desafio nenhum e o acervo é indexado pelo id do TMDB — é o
-     * caminho mais curto entre o título pedido e a página certa.
+     * cima para baixo, e o primeiro que render uma fonte encerra a busca — o
+     * seguinte nem chega a ser perguntado. O `verpobreflix.net` vem primeiro
+     * porque é o acervo cuja página carrega o vídeo de verdade (o embed do
+     * `plenoflu.com`), que a extração resolve sem passe nenhum. O superflix vem
+     * logo depois: a busca dele é a mais direta, indexada por id do TMDB, mas a
+     * página do episódio é fechada pelo Cloudflare e só abre com o passe
+     * configurado — é o mesmo acervo por outro caminho, com um degrau a mais.
      *
      * O `tokyvideo.com` chegou a estar aqui e saiu: a busca dele é montada por
      * JavaScript, então o HTML estático de `/search?q=` só traz a lista de vídeos
@@ -87,12 +90,19 @@ class BuscaAgregadores
      * @var array<string, array{busca: string, conteudo: string, episodio?: string, atributos?: array<int, string>}>
      */
     private const AGREGADORES = [
+        'verpobreflix.net' => [
+            'busca' => 'https://www.verpobreflix.net/search?q={termo}',
+            'conteudo' => '#^/series/#',
+        ],
         /*
          * O superflix entra pela **busca**, e não pelo embed: o portão do
          * Cloudflare fecha a página do episódio (a `/serie/693/4/17` responde com
          * a tela de verificação), mas `/pesquisar?s=` responde 200 sem desafio
          * nenhum e devolve a ficha com o id. A página do episódio, essa, só abre
          * com o passe configurado — ver `services.torrents.passe_cloudflare_*`.
+         *
+         * Ele vem depois do `verpobreflix.net` de propósito: é o segundo caminho
+         * para o mesmo acervo, e só é pago quando o primeiro não rendeu fonte.
          */
         'superflixapi.quest' => [
             'busca' => 'https://superflixapi.quest/pesquisar?s={termo}',
@@ -106,10 +116,6 @@ class BuscaAgregadores
              */
             'atributos' => ['data-copy'],
             'episodio' => 'https://superflixapi.quest/serie/{id}/{temporada}/{episodio}',
-        ],
-        'verpobreflix.net' => [
-            'busca' => 'https://www.verpobreflix.net/search?q={termo}',
-            'conteudo' => '#^/series/#',
         ],
     ];
 
@@ -196,7 +202,7 @@ class BuscaAgregadores
      * Procura, em cada agregador, a página do título e devolve a lista inteira.
      *
      * É o atalho para quem consome todas as candidatas de uma vez — a cascata de
-     * verdade, que para assim que junta o suficiente, é o [`candidatas()`].
+     * verdade, que para na primeira fonte que rende, é o [`candidatas()`].
      *
      * @param  array<int, string>  $titulos
      * @return array<int, string>

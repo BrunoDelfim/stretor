@@ -238,8 +238,8 @@ return [
          * chamado à mão, mas o provedor desistia antes de chamá-lo, porque
          * `restante()` já devolvia zero.
          *
-         * Como os dois métodos sempre rodam, este orçamento **soma** ao da cascata
-         * — quem impede a soma de estourar o tempo do frontend é o
+         * Quando a cascata entra — o stream direto voltou vazio —, este orçamento
+         * **soma** ao dela; quem impede a soma de estourar o tempo do frontend é o
          * `tempo_total_busca`: cada canal é aberto com o menor prazo entre o seu e
          * o teto global. O valor padrão cobre a descida (série → episódio) com
          * folga para o FlareSolverr de cada página.
@@ -248,12 +248,13 @@ return [
 
         /*
          * Teto, em segundos, da busca inteira — os dois métodos de indexação
-         * somados.
+         * somados, quando os dois chegam a rodar.
          *
-         * Como o stream direto e a cascata de torrents sempre rodam, os seus
-         * orçamentos somariam e o pior caso passaria dos ~60 s que o frontend
-         * espera (`TIMEOUT_REQUISICAO_MS`). Este é o freio que vale para a busca
-         * toda: nenhum canal é aberto com prazo além dele, então o método que roda
+         * O stream direto roda primeiro e, quando acha, a cascata de torrents é
+         * dispensada; mas quando ele volta vazio os dois orçamentos somariam e o
+         * pior caso passaria dos ~60 s que o frontend espera
+         * (`TIMEOUT_REQUISICAO_MS`). Este é o freio que vale para a busca toda:
+         * nenhum canal é aberto com prazo além dele, então o método que roda
          * depois só enxerga o tempo que sobrou. O primeiro pode gastar o seu
          * orçamento à vontade; a soma dos dois nunca passa daqui.
          *
@@ -431,30 +432,16 @@ return [
         'stream_direto_max_paginas' => (int) env('TORRENTS_STREAM_DIRETO_MAX_PAGINAS', 6),
 
         /*
-         * Alvo de fontes distintas que encerra a varredura. É diferente do teto de
-         * páginas: uma página pode render várias fontes, e o que o usuário escolhe
-         * é a fonte. Assim que há este número de fontes na mão, o laço para — não
-         * vale gastar o orçamento restante atrás de mais opções quando já há o
-         * suficiente para escolher.
+         * Teto de fontes que o direto entrega. É diferente do teto de páginas: o
+         * que encerra a varredura é a **primeira página que rende**, não uma
+         * contagem, então este número só corta o excesso de espelhos que uma
+         * mesma página pode trazer. Sem ele, um agregador que devolve cinco
+         * mirrors do mesmo episódio encheria a lista com o que o usuário não
+         * distingue.
          *
-         * Zero ou negativo desliga o corte: aí o laço só para pelo teto de páginas
-         * ou pelo orçamento.
+         * Zero ou negativo desliga o corte: aí a lista vai inteira.
          */
         'stream_direto_max_fontes' => (int) env('TORRENTS_STREAM_DIRETO_MAX_FONTES', 2),
-
-        /*
-         * Teto de fontes **por site de origem**.
-         *
-         * O alvo acima conta fontes de qualquer origem, e isso deixava uma única
-         * página encher a lista: um agregador que entrega cinco espelhos do mesmo
-         * episódio ocupava as cinco posições, e o site seguinte — que poderia ter
-         * o arquivo que toca — nunca era colocado à prova. O teto por origem
-         * garante diversidade: cada site contribui com o que tem, até este
-         * limite, e o restante da lista vem dos outros.
-         *
-         * Zero ou negativo desliga o corte.
-         */
-        'stream_direto_max_fontes_por_site' => (int) env('TORRENTS_STREAM_DIRETO_MAX_FONTES_POR_SITE', 3),
 
         /*
          * Passe do Cloudflare para os hosts com **desafio embutido**.

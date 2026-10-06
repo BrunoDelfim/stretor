@@ -28,9 +28,10 @@ namespace App\Services\Torrents;
  * orçamento, dimensionado para o custo real do método.
  *
  * O canal `torrents` mantém o orçamento global; o canal `stream_direto` tem um
- * orçamento maior, dimensionado para o FlareSolverr. Desde que os dois métodos
- * passaram a rodar sempre, os dois orçamentos **somam** para o usuário — e é por
- * isso que existe o teto global descrito abaixo.
+ * orçamento maior, dimensionado para o FlareSolverr. Quando os dois métodos rodam
+ * na mesma busca — o stream direto voltou vazio e a cascata entrou —, os dois
+ * orçamentos **somam** para o usuário, e é por isso que existe o teto global
+ * descrito abaixo.
  *
  * O canal ativo é uma propriedade do objeto, e não um parâmetro espalhado por
  * toda a assinatura. O [`ClienteHttp`] e o trait [`ConsultaComOrcamento`] leem o
@@ -39,13 +40,13 @@ namespace App\Services\Torrents;
  *
  * ## O teto global
  *
- * Como os dois métodos sempre rodam, os prazos dos canais deixariam de ser um
- * limite e virariam uma soma: dois orçamentos de 45 s dariam 90 s de pior caso,
- * acima dos ~60 s que o frontend espera. O teto global é o prazo absoluto que
- * **nenhum** canal pode ultrapassar: o [`TorrentService`] o define no início da
- * busca e `abrir()` corta cada prazo nele. Assim o primeiro método pode gastar o
- * seu orçamento à vontade, mas o segundo só enxerga o que sobrou do teto — e a
- * soma nunca passa do que o frontend tolera.
+ * Como os dois métodos podem rodar na mesma busca, os prazos dos canais
+ * deixariam de ser um limite e virariam uma soma: dois orçamentos de 45 s dariam
+ * 90 s de pior caso, acima dos ~60 s que o frontend espera. O teto global é o
+ * prazo absoluto que **nenhum** canal pode ultrapassar: o [`TorrentService`] o
+ * define no início da busca e `abrir()` corta cada prazo nele. Assim o primeiro
+ * método pode gastar o seu orçamento à vontade, mas o segundo só enxerga o que
+ * sobrou do teto — e a soma nunca passa do que o frontend tolera.
  */
 class OrcamentoBusca
 {
@@ -84,8 +85,8 @@ class OrcamentoBusca
      *
      * Enquanto ele estiver de pé, todo `abrir()` corta o prazo do canal no teto —
      * um canal jamais é esticado para além dele. Sem o teto, dois métodos que
-     * sempre rodam somariam os seus orçamentos; com ele, o segundo método só
-     * enxerga o tempo que sobrou da busca.
+     * rodam na mesma busca somariam os seus orçamentos; com ele, o segundo método
+     * só enxerga o tempo que sobrou da busca.
      */
     public function definirTetoGlobal(int $segundos): void
     {

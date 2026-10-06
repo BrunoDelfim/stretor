@@ -157,23 +157,36 @@ class ProvedorStreamDiretoTest extends TestCase
         $this->assertFalse($this->invocar('filtroAdultoAtivo'));
     }
 
-    public function test_alvo_de_fontes_encerra_ao_atingir_o_numero(): void
+    /**
+     * O teto de fontes corta o excesso **da página**, e não a varredura.
+     *
+     * Quem encerra o fluxo é o primeiro acerto, não uma contagem: o teto existe
+     * para uma página que oferece vários espelhos do mesmo vídeo não encher a
+     * resposta com mirrors que o usuário não distingue. A ordem de chegada é
+     * preservada — os primeiros links da página são os que ficam.
+     */
+    public function test_teto_de_fontes_corta_o_excesso_da_pagina(): void
     {
-        // O alvo conta fontes, não páginas: com duas fontes na mão, o laço para.
-        $this->assertFalse($this->invocar('alvoAtingido', [], 2));
-        $this->assertFalse($this->invocar('alvoAtingido', [['id' => 'a']], 2));
-        $this->assertTrue($this->invocar('alvoAtingido', [['id' => 'a'], ['id' => 'b']], 2));
-        $this->assertTrue($this->invocar('alvoAtingido', [['id' => 'a'], ['id' => 'b'], ['id' => 'c']], 2));
-    }
-
-    public function test_alvo_zero_desliga_o_corte(): void
-    {
-        // Zero ou negativo devolve o comportamento antigo: só o teto de páginas e
-        // o orçamento encerram a varredura.
         $fontes = [['id' => 'a'], ['id' => 'b'], ['id' => 'c']];
 
-        $this->assertFalse($this->invocar('alvoAtingido', $fontes, 0));
-        $this->assertFalse($this->invocar('alvoAtingido', $fontes, -1));
+        $this->assertSame(
+            ['a', 'b'],
+            array_column($this->invocar('limitarFontes', $fontes, 2), 'id'),
+            'Cada página entrega até o teto, na ordem em que os links apareceram.'
+        );
+        $this->assertSame(['a'], array_column($this->invocar('limitarFontes', $fontes, 1), 'id'));
+    }
+
+    /**
+     * Teto desligado (zero ou negativo) devolve tudo: é o comportamento antigo,
+     * em que uma página podia ocupar a lista inteira.
+     */
+    public function test_teto_de_fontes_zerado_nao_corta_nada(): void
+    {
+        $fontes = [['id' => 'a'], ['id' => 'b'], ['id' => 'c']];
+
+        $this->assertCount(3, $this->invocar('limitarFontes', $fontes, 0));
+        $this->assertCount(3, $this->invocar('limitarFontes', $fontes, -1));
     }
 
     /**
@@ -357,7 +370,7 @@ class ProvedorStreamDiretoTest extends TestCase
         $censo = app(ProvedorStreamDireto::class)->censoDosAgregadores();
 
         $this->assertSame(
-            ['superflixapi.quest', 'verpobreflix.net'],
+            ['verpobreflix.net', 'superflixapi.quest'],
             array_column($censo, 'agregador'),
             'O censo precisa listar todos os agregadores declarados, na ordem da declaração.'
         );
@@ -395,7 +408,7 @@ class ProvedorStreamDiretoTest extends TestCase
     /**
      * Sem host reconhecível, a fonte volta a ser rotulada pelo método. É o caso
      * de uma página que chegou sem endereço válido: melhor o rótulo genérico do
-     * que um campo de origem vazio, que quebraria o agrupamento do teto.
+     * que um campo de origem vazio, que apagaria a proveniência da fonte.
      */
     public function test_origem_sem_host_cai_no_nome_do_metodo(): void
     {
@@ -403,53 +416,5 @@ class ProvedorStreamDiretoTest extends TestCase
 
         $this->assertSame('stream_direto', $id);
         $this->assertSame('Stream direto', $rotulo);
-    }
-
-    /**
-     * O teto por site corta o excesso **daquela** origem, não a lista inteira.
-     */
-    public function test_teto_por_site_corta_o_excesso_de_cada_origem(): void
-    {
-        $fontes = [
-            ['id' => 'a1', 'provedor' => 'site-a.com'],
-            ['id' => 'b1', 'provedor' => 'site-b.com'],
-            ['id' => 'a2', 'provedor' => 'site-a.com'],
-            ['id' => 'a3', 'provedor' => 'site-a.com'],
-            ['id' => 'a4', 'provedor' => 'site-a.com'],
-            ['id' => 'b2', 'provedor' => 'site-b.com'],
-        ];
-
-        $mantidas = $this->invocar('limitarPorOrigem', $fontes, 2);
-
-        $this->assertSame(
-            ['a1', 'b1', 'a2', 'b2'],
-            array_column($mantidas, 'id'),
-            'Cada origem entrega até o teto, e a ordem de chegada é preservada.'
-        );
-    }
-
-    /**
-     * Teto desligado (zero ou negativo) devolve tudo: é o comportamento antigo,
-     * em que uma página podia ocupar a lista inteira.
-     */
-    public function test_teto_zerado_nao_corta_nada(): void
-    {
-        $fontes = [
-            ['id' => 'a1', 'provedor' => 'site-a.com'],
-            ['id' => 'a2', 'provedor' => 'site-a.com'],
-            ['id' => 'a3', 'provedor' => 'site-a.com'],
-        ];
-
-        $this->assertCount(3, $this->invocar('limitarPorOrigem', $fontes, 0));
-    }
-
-    /**
-     * O teto lido da configuração é o que a varredura aplica.
-     */
-    public function test_teto_por_site_vem_da_configuracao(): void
-    {
-        config()->set('services.torrents.stream_direto_max_fontes_por_site', 1);
-
-        $this->assertSame(1, $this->invocar('tetoPorSite'));
     }
 }

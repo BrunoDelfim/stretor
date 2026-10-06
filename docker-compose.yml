@@ -183,12 +183,22 @@ services:
       - TORRENTS_STREAM_DIRETO_INTERVALO_MIN=${TORRENTS_STREAM_DIRETO_INTERVALO_MIN:-800}
       - TORRENTS_STREAM_DIRETO_INTERVALO_MAX=${TORRENTS_STREAM_DIRETO_INTERVALO_MAX:-2200}
       - TORRENTS_STREAM_DIRETO_MAX_PAGINAS=${TORRENTS_STREAM_DIRETO_MAX_PAGINAS:-6}
+      # Teto de fontes que uma mesma página pode entregar (padrão 2). Quem encerra
+      # a varredura é a primeira página que rende fonte, então este número só
+      # evita que os espelhos de um vídeo só encham a lista.
+      - TORRENTS_STREAM_DIRETO_MAX_FONTES=${TORRENTS_STREAM_DIRETO_MAX_FONTES:-2}
       - TORRENTS_STREAM_DIRETO_TEMPO_LIMITE=${TORRENTS_STREAM_DIRETO_TEMPO_LIMITE:-10}
       - TORRENTS_STREAM_DIRETO_ORCAMENTO=${TORRENTS_STREAM_DIRETO_ORCAMENTO:-45}
+      # Teto da busca inteira, em segundos (padrão 55). O direto roda primeiro e,
+      # quando acha, dispensa a cascata; quando ele volta vazio, é este teto que
+      # impede os dois canais de somarem além do que o frontend espera.
+      - TORRENTS_TEMPO_TOTAL_BUSCA=${TORRENTS_TEMPO_TOTAL_BUSCA:-55}
       # Busca direta nos agregadores, antes do motor web. O atalho contorna a
       # suspensão dos buscadores comerciais que o SearXNG agrega: em vez de
       # perguntar ao motor onde o episódio mora, o provedor pergunta à busca
-      # interna do próprio agregador (verpobreflix, tokyvideo).
+      # interna do próprio agregador (verpobreflix e, na falta dele, superflixapi).
+      # A primeira página que rende fonte encerra a varredura: o motor web só roda
+      # quando nenhuma delas rendeu.
       - TORRENTS_STREAM_DIRETO_BUSCA_DIRETA=${TORRENTS_STREAM_DIRETO_BUSCA_DIRETA:-true}
       # Travessia de players de embed: quando o agregador só embute um iframe de
       # terceiro (plenoflu.com), o provedor percorre a cadeia até o master.m3u8

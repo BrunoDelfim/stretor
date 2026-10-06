@@ -71,7 +71,7 @@ contexto, e o resultado se divide em dois grupos:
   Esses provedores dependem do `imdb_id`, e aí mora uma pegadinha do TMDB: o
   endpoint `/movie/{id}` devolve `imdb_id` no corpo principal, mas o `/tv/{id}`
   **não** — o identificador da série só aparece dentro de `external_ids`. Como o
-  [`TmdbService::detalhesSerie()`](../backend/app/Services/TmdbService.php:241) não
+  [`TmdbService::detalhesSerie()`](../backend/app/Services/TmdbService.php:255) não
   pedia esse bloco, toda série saía com `imdb_id` nulo; o Torrentio então abstinha-se
   em silêncio (ele exige um id começando com `tt`) e sobrava só o APIBay, que busca
   por nome. Era exatamente o sintoma de "só o APIBay acha *American Horror Story*".
@@ -80,7 +80,7 @@ contexto, e o resultado se divide em dois grupos:
 - **Provedores por nome** — TrackersBr, BT4G, APIBay e Torznab. Aqui o termo já
   chega pronto do [`TorrentService`](../backend/app/Services/TorrentService.php:120)
   no formato `Título S01E01` (via
-  [`TermosBusca::episodio()`](../backend/app/Services/Torrents/TermosBusca.php:56)).
+  [`TermosBusca::episodio()`](../backend/app/Services/Torrents/TermosBusca.php:117)).
   Duas particularidades: o **ano sai do termo** (o release do episódio carrega o
   ano de exibição, não o da série) e o APIBay passa a **aceitar a categoria 205
   (TV)**, que normalmente é ignorada por ser conteúdo de série.
@@ -101,10 +101,10 @@ contexto, e o resultado se divide em dois grupos:
 
 A busca de **filme** sempre montou as variações dubladas
 (`Título 2011 dublado`, `... dual áudio`) via
-[`TermosBusca::paraDublado()`](../backend/app/Services/Torrents/TermosBusca.php:93).
+[`TermosBusca::paraDublado()`](../backend/app/Services/Torrents/TermosBusca.php:307).
 A busca de **episódio**, porém, montava só o termo puro `Título S01E01` — as
 variações existiam em
-[`TermosBusca::episodioDublado()`](../backend/app/Services/Torrents/TermosBusca.php:72),
+[`TermosBusca::episodioDublado()`](../backend/app/Services/Torrents/TermosBusca.php:133),
 mas **nunca eram chamadas**. O efeito era o sintoma de "só vem fonte em idioma
 original": os provedores por nome recebiam apenas o termo puro, devolviam dezenas
 de lançamentos em inglês e o release nacional ficava fora da primeira página. O
@@ -112,7 +112,7 @@ Torrentio, que responde por identificador, também só devolve releases
 internacionais — então a lista inteira saía como `Idioma original`.
 
 A correção foi fazer o
-[`TorrentService::titulosDeEpisodio()`](../backend/app/Services/TorrentService.php:120)
+[`TorrentService::titulosDeEpisodio()`](../backend/app/Services/TorrentService.php:398)
 acrescentar as variações dubladas de cada título, na ordem: termo puro primeiro
 (base para os provedores por nome e para o Torrentio) e as variações dubladas em
 seguida. Com isso o `temDublado()` da cascata volta a funcionar e o dublado
@@ -121,7 +121,7 @@ aparece antes do legendado.
 Como o termo agora **já chega com a tag**, os provedores por nome não podem
 reanexá-la — senão gerariam `... S01E01 dublado dublado`, que não casa com
 release nenhum. Por isso
-[`TermosBusca::jaEDublado()`](../backend/app/Services/Torrents/TermosBusca.php:132)
+[`TermosBusca::jaEDublado()`](../backend/app/Services/Torrents/TermosBusca.php:348)
 detecta a tag e cada provedor (APIBay, BT4G, TrackersBr, Torznab) só completa o
 termo quando ele ainda não a traz.
 
@@ -137,23 +137,23 @@ vindo, gastando orçamento e enchendo a lista de releases em inglês.
 A correção foi separar a busca em **duas fases**. A primeira pergunta só pelo
 título traduzido; a segunda, só pelo original, e apenas quando a primeira ficou
 abaixo da meta PT-BR. Quem decide é
-[`TorrentService::valeSegundaTentativa()`](../backend/app/Services/TorrentService.php:152),
+[`TorrentService::valeSegundaTentativa()`](../backend/app/Services/TorrentService.php:308),
 que fecha a passagem em três casos: a chave
 `TORRENTS_TITULO_ORIGINAL_SEGUNDA_TENTATIVA` desligada, a ausência de um título
 original distinto do traduzido e a coleta já suficiente. A leitura da
 suficiência é pública no catálogo
-([`CatalogoProvedores::ptBrSuficiente()`](../backend/app/Services/Torrents/CatalogoProvedores.php:733)),
+([`CatalogoProvedores::ptBrSuficiente()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1059)),
 que é quem conhece a meta.
 
 As fontes das duas fases são fundidas por
-[`TorrentService::mesclarFontes()`](../backend/app/Services/TorrentService.php:180),
+[`TorrentService::mesclarFontes()`](../backend/app/Services/TorrentService.php:336),
 sem repetir: a mesma fonte pode voltar nas duas buscas (um release nacional que
 casa os dois nomes), e a chave é o `id` (infohash), que identifica o torrent de
 verdade. A primeira fase fica na frente, porque é a aposta PT-BR.
 
 Como cada fase pergunta por um título só,
-[`titulosDeBusca()`](../backend/app/Services/TorrentService.php:213) e
-[`titulosDeEpisodio()`](../backend/app/Services/TorrentService.php:241) deixaram
+[`titulosDeBusca()`](../backend/app/Services/TorrentService.php:369) e
+[`titulosDeEpisodio()`](../backend/app/Services/TorrentService.php:398) deixaram
 de receber o par traduzido/original e passaram a receber um título.
 
 #### Provedores por identificador são consultados uma única vez
@@ -180,9 +180,9 @@ pelo player** — e só depois de ela falhar o fluxo chegava à original correta
 sintoma era exatamente "tentou uma fonte dublada e depois foi para a original".
 
 A correção é uma peneira em cada provedor, apoiada em
-[`TermosBusca::correspondeAoEpisodio()`](../backend/app/Services/Torrents/TermosBusca.php:147):
+[`TermosBusca::correspondeAoEpisodio()`](../backend/app/Services/Torrents/TermosBusca.php:379):
 o título do release é lido por
-[`TermosBusca::numeracaoDoTitulo()`](../backend/app/Services/Torrents/TermosBusca.php:180)
+[`TermosBusca::numeracaoDoTitulo()`](../backend/app/Services/Torrents/TermosBusca.php:579)
 e, se ele **declarar** uma numeração diferente da pedida, a fonte é descartada.
 
 A regra é conservadora de propósito: releases **sem numeração nenhuma** (packs,
@@ -295,9 +295,9 @@ repassava o rótulo completo (`$nome.' '.$rotulo`) para a classificação, e a
 bandeira fazia **todas** as fontes saírem como `Dublado` — inclusive um release
 americano do EZTV (`lanterns.2026.s01e01.1080p.web.h264-cakes[EZTVx.to].mkv`) e
 um WEB-DL `ENG/ITA`. Como o idioma do provedor tem precedência dentro do
-[`NormalizaFonte::montarFonte()`](../backend/app/Services/Torrents/NormalizaFonte.php:47),
+[`NormalizaFonte::montarFonte()`](../backend/app/Services/Torrents/NormalizaFonte.php:37),
 a tag do próprio nome do arquivo nunca era consultada. O resultado: o `usort` de
-[`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:202)
+[`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:503)
 empatava tudo na mesma prioridade e o desempate caía para os **seeds** — logo, o
 release com mais seeds (o EZTV) subia ao topo e tocava em inglês sob o rótulo
 "Dublado".
@@ -313,10 +313,10 @@ A correção tem duas camadas, porque uma só não fecha o buraco:
    `original` e saem no corte de `TORRENTS_APENAS_PT_BR`.
 2. **Porteiro de idioma em tempo real.** Mesmo com a ordenação corrigida, um
    release ambíguo pode chegar ao player. A sondagem do arquivo
-   ([`temFaixaPortuguesa()`](../media-service/src/services/hls.js:563)) vira o
+   ([`temFaixaPortuguesa()`](../media-service/src/services/hls.js:596)) vira o
    fato `tem_audio_pt` no status da sessão
    ([`obterSessao()`](../media-service/src/services/sessoes.js:2255)). O frontend
-   ([`aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:1451))
+   ([`aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:1745))
    compara a promessa da fonte (`idioma` = `pt-BR`/`dual`) com esse fato: se a
    fonte prometia português e o arquivo só tem áudio original, a sessão é
    descartada e o laço segue para a próxima — em vez de tocar em inglês. Quando
@@ -339,7 +339,7 @@ mantido por terceiros, é o caminho mais estável para o dublado.
 Por isso [`trackers_br_urls`](../backend/config/services.php:57) nasce **vazia**:
 manter um endereço morto só gasta duas requisições fadadas ao erro por termo
 perguntado — são quatro por episódio. Com a lista vazia o provedor se declara
-indisponível por [`disponivel()`](../backend/app/Services/Torrents/ProvedorTrackersBr.php:63)
+indisponível por [`disponivel()`](../backend/app/Services/Torrents/ProvedorTrackersBr.php:67)
 e é pulado de forma limpa; o degrau 1 segue com APIBay, Torrentio e BT4G. Para
 reativar, basta preencher `TORRENTS_TRACKERS_BR_URLS` com um domínio vivo.
 
@@ -423,9 +423,9 @@ YTS é o degrau 3 — a reserva do Prowlarr.
   com o release aparecendo normalmente no painel do Prowlarr. Foi assim que um
   episódio dublado passou a devolver zero mesmo com o indexador saudável. Por
   isso o
-  [`TorznabService::consultarIndexador()`](../backend/app/Services/TorznabService.php:166)
+  [`TorznabService::consultarIndexador()`](../backend/app/Services/TorznabService.php:281)
   tenta as rotas em ordem e memoriza a que respondeu
-  ([`rotas()`](../backend/app/Services/TorznabService.php:214)); as que respondem
+  ([`rotas()`](../backend/app/Services/TorznabService.php:337)); as que respondem
   erro saem da lista pelo resto da requisição, para não custar uma ida e volta
   por termo.
 - **A rota memorizada é por indexador.** O caminho carrega o id dentro dele
@@ -446,18 +446,18 @@ YTS é o degrau 3 — a reserva do Prowlarr.
 - **O formato do corpo decide o leitor**, não a rota: XML é lido como Torznab e
   JSON como o `ReleaseResource` do Prowlarr
   (`seeders`/`leechers`/`magnetUrl`/`infoHash`), em
-  [`itensDoCorpo()`](../backend/app/Services/TorznabService.php:316). Item que
+  [`itensDoCorpo()`](../backend/app/Services/TorznabService.php:439). Item que
   chega só com infohash ganha magnet montado com os anunciadores do projeto por
-  [`magnetDoInfohash()`](../backend/app/Services/TorznabService.php:383).
+  [`magnetDoInfohash()`](../backend/app/Services/TorznabService.php:506).
 - **Erro do protocolo vem com HTTP 200.** O Newznab devolve um `<error>` no corpo
   (chave recusada, indexador bloqueado); como o status engana, o
-  [`pedir()`](../backend/app/Services/TorznabService.php:245) lê o corpo e marca a
+  [`pedir()`](../backend/app/Services/TorznabService.php:368) lê o corpo e marca a
   rota como ruim, liberando as demais — sem isso a recusa encerraria a busca
   por aquele indexador. O registro do código e da descrição fica em
-  [`interpretarXml()`](../backend/app/Services/TorznabService.php:481). E quando
+  [`interpretarXml()`](../backend/app/Services/TorznabService.php:620). E quando
   **nenhuma** rota responde com sucesso sai um `Log::warning` com as rotas
   tentadas
-  ([`avisarRotasEsgotadas()`](../backend/app/Services/TorznabService.php:401));
+  ([`avisarRotasEsgotadas()`](../backend/app/Services/TorznabService.php:524));
   rota viva com lista vazia é resposta legítima do indexador e não gera aviso —
   só um `Log::debug` com o começo do corpo, para distinguir corpo vazio, XML sem
   itens e formato inesperado.
@@ -478,14 +478,14 @@ YTS é o degrau 3 — a reserva do Prowlarr.
   `TORRENTS_TORZNAB_CATEGORIA_SERIE` (padrão `5000`). Era por isso que uma série
   vinha vazia mesmo com o indexador saudável: a busca de episódio batia na
   categoria de filme. A escolha fica em
-  [`ProvedorTorznab::buscar()`](../backend/app/Services/Torrents/ProvedorTorznab.php:75)
+  [`ProvedorTorznab::buscar()`](../backend/app/Services/Torrents/ProvedorTorznab.php:54)
   e o parâmetro é repassado por
-  [`TorznabService::consultar()`](../backend/app/Services/TorznabService.php:76).
+  [`TorznabService::consultar()`](../backend/app/Services/TorznabService.php:240).
 - São **duas consultas por filme**: uma com o termo normal (`título ano`) e outra
   com `título ano dublado`, montada por
-  [`buscarDublado()`](../backend/app/Services/TorznabService.php:101). O termo base
-  fica em [`termoBase()`](../backend/app/Services/TorznabService.php:112) e o
-  pedido HTTP em [`consultar()`](../backend/app/Services/TorznabService.php:126).
+  [`buscarDublado()`](../backend/app/Services/TorznabService.php:215). O termo base
+  fica em [`termoBase()`](../backend/app/Services/TorznabService.php:226) e o
+  pedido HTTP em [`consultar()`](../backend/app/Services/TorznabService.php:240).
   Sem esse segundo termo, o nome do filme sozinho quase nunca devolvia o release
   nacional.
 - Quem marca cada resultado com a origem (`provedor`/`provedor_rotulo`) é o
@@ -541,12 +541,12 @@ por dois motivos independentes, ambos silenciosos:
    repassadas explicitamente ao backend.
 
 2. **O corpo do POST levava campos somente-leitura.** O
-   [`modelosDoSchema()`](../backend/app/Services/ProwlarrService.php:363)
+   [`modelosDoSchema()`](../backend/app/Services/ProwlarrService.php:368)
    devolve o modelo do `/api/v1/indexer/schema`, que inclui campos que o
    Prowlarr calcula sozinho (`infoLink`, `capabilities`, `indexerUrls`,
    `description`, `language`, `encoding`, `protocol`, `privacy`,
    `supportsRss`, `supportsSearch`, `definitionFile`…). Reenviá-los faz a API
-   responder **400**. O [`cadastrarIndexador()`](../backend/app/Services/ProwlarrService.php:464)
+   responder **400**. O [`cadastrarIndexador()`](../backend/app/Services/ProwlarrService.php:469)
    agora remove esses campos antes do POST e guarda o corpo da resposta de erro
    em `ultimoErro`, que aparece na mensagem do comando — sem isso, um 400 virava
    só "falha ao cadastrar", sem pista do campo recusado.
@@ -565,11 +565,11 @@ como *query string* (`?forceSave=true`) é ignorado em silêncio — o Prowlarr 
 validação do mesmo jeito. O campo precisa ir no corpo.
 
 Como nem todo tracker honra o `forceSave`, o
-[`cadastrarIndexador()`](../backend/app/Services/ProwlarrService.php:464) tem uma
+[`cadastrarIndexador()`](../backend/app/Services/ProwlarrService.php:469) tem uma
 segunda tentativa: grava o indexador **desabilitado** (`enable: false`). Sem
 `enable`, o Prowlarr não dispara o teste de busca e aceita a definição mesmo com o
 site fora do ar. Em seguida o
-[`habilitarIndexador()`](../backend/app/Services/ProwlarrService.php:542) faz um
+[`habilitarIndexador()`](../backend/app/Services/ProwlarrService.php:547) faz um
 `PUT` com o objeto atual (buscado antes para não perder os campos que o Prowlarr
 preencheu sozinho) marcando `enable: true`. Se a habilitação falhar, o indexador
 continua cadastrado — só inativo —, o que ainda é melhor do que perder a
@@ -600,7 +600,7 @@ O arranjo é automático, como o resto do provisionamento:
   `flaresolverr` na rede interna, sem porta publicada no host: só o Prowlarr fala
   com ele;
 - antes de cadastrar os indexadores, o
-  [`provisionarProxy()`](../backend/app/Services/ProwlarrService.php:616) cria a
+  [`provisionarProxy()`](../backend/app/Services/ProwlarrService.php:618) cria a
   tag, lê o modelo do proxy em `/api/v1/indexerproxy/schema` e o registra
   apontando para `FLARESOLVERR_URL`;
 - o Prowlarr **testa a conexão toda vez que grava o proxy**, inclusive num `PUT`.
@@ -619,7 +619,7 @@ O arranjo é automático, como o resto do provisionamento:
   passa dentro do `forceSave`, com o indexador **nascendo ativo**;
 - quem já tem o 1337x gravado desabilitado (stack subido antes desta mudança) é
   resgatado pelo
-  [`ajustarIndexadorComProxy()`](../backend/app/Services/ProwlarrService.php:885),
+  [`ajustarIndexadorComProxy()`](../backend/app/Services/ProwlarrService.php:887),
   que reaplica a tag e religa o indexador. O provisionamento pula o que já existe
   por definição, então sem esse passo ele nunca seria testado de novo. Já quando o
   indexador carrega a tag do proxy e está habilitado, ele sai sem gravar: o `PUT`
@@ -767,7 +767,7 @@ Antes, cada canto do código tinha a sua própria noção de "dublado", e isso p
 divergências: o backend reconhecia `dual`, o detector do pack não; o detector do
 media-service reconhecia a bandeira 🇧🇷, o do backend não. A lista agora mora num
 lugar só — [`IndiciosPtBr`](../backend/app/Support/IndiciosPtBr.php:1) no backend e
-[`contemIndicioPtBr()`](../media-service/src/utils/idiomas.js:184) no media-service —
+[`contemIndicioPtBr()`](../media-service/src/utils/idiomas.js:189) no media-service —
 e é a mesma em toda parte.
 
 Basta **um** indício para provar áudio PT-BR; não precisa ter todos:
@@ -825,14 +825,14 @@ A diferença entre as duas chaves é de natureza, não de grau:
 - `apenas_pt_br` é sobre **quanto** de reserva entra. Ele não descarta nada: só
   decide se a reserva completa a lista quando a pilha boa não alcança o piso.
 - `somente_pt_br_ou_legendado` é sobre **se** a reserva entra. Ele é um corte
-  duro, aplicado no [`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:271)
+  duro, aplicado no [`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:503)
   depois da separação das pilhas e antes da exceção de pack — um pack em inglês não
   escapa pela porta do `packs_qualquer_idioma`, que existe para o pack nacional sem
   marca de dublagem, não para ressuscitar o original.
 
 O corte é por **prova de áudio PT-BR**: dublado e dual passam; o que não prova —
 original, legendado, idioma vazio ou desconhecido — cai. A leitura é pelo
-[`ePtBr()`](../backend/app/Services/TorrentService.php:410). Desligue a chave para
+[`ePtBr()`](../backend/app/Services/TorrentService.php:673). Desligue a chave para
 trazer a reserva de volta ao fim da lista mesmo quando há fonte PT-BR.
 
 #### A cascata coleta com orçamento, não para no primeiro acerto
@@ -841,11 +841,11 @@ O critério de parada antigo (`temDublado()`) encerrava a busca assim que o prim
 resultado PT-BR aparecia e completava o resto com idioma original — o usuário pedia
 dublado e recebia uma dublada em 1º e originais em 2º a 20º. A cascata agora
 **acumula** até juntar um orçamento de fontes PT-BR
-([`coletaSuficiente()`](../backend/app/Services/Torrents/CatalogoProvedores.php:298),
+([`coletaSuficiente()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1160),
 contra `TORRENTS_META_PT_BR`, padrão `6`) ou esgotar termos e degraus.
 
 Cada fonte que passa pelo filtro de numeração é **etiquetada**, não descartada, em
-[`aproveitaveis()`](../backend/app/Services/Torrents/CatalogoProvedores.php:571):
+[`aproveitaveis()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1631):
 ganha `pt_br` (entra na pilha boa) ou vira reserva. Nada de aproveitável some por
 idioma; a decisão de ordem fica para o fim.
 
@@ -876,19 +876,22 @@ tem o seu orçamento porque os custos são de ordens diferentes: um provedor de
 torrent responde em milissegundos, enquanto o stream direto paga uma renderização
 do FlareSolverr por página. Quem aponta o canal ativo é o `CatalogoProvedores`,
 antes de acionar cada método. Sobre os dois prazos existe um **teto global**
-(`tempo_total_busca`, 55 s), definido pelo [`TorrentService`](../backend/app/Services/TorrentService.php:91)
-no início da busca: `abrir()` nunca estica um prazo além dele. É o que permite os
-dois métodos rodarem sempre — o segundo só enxerga o que sobrou — sem que a soma
-passe do tempo que o frontend espera.
+(`tempo_total_busca`, 55 s), definido pelo
+[`TorrentService::fontes()`](../backend/app/Services/TorrentService.php:61)
+no início da busca: `abrir()` nunca estica um prazo além dele. É ele que mantém a
+resposta dentro do que o frontend espera no caso em que os dois canais rodam na
+mesma busca — o stream direto voltou vazio e a cascata entrou: o segundo canal só
+enxerga o que sobrou do teto. Quando o direto acha, o relógio é fechado cedo e a
+cascata nem chega a abrir.
 
 O ciclo é curto:
 
-1. [`CatalogoProvedores::buscar()`](../backend/app/Services/Torrents/CatalogoProvedores.php:196)
+1. [`CatalogoProvedores::buscar()`](../backend/app/Services/Torrents/CatalogoProvedores.php:223)
    fixa o canal em `torrents` e abre o orçamento com `TORRENTS_ORCAMENTO_BUSCA`
    (padrão `45`), cortado pelo teto global que o `TorrentService` já definiu.
 2. Antes de cada termo, antes de cada degrau **e antes de cada provedor dentro de
    uma rodada**, a cascata consulta
-   [`orcamentoEsgotado()`](../backend/app/Services/Torrents/CatalogoProvedores.php:365);
+   [`orcamentoEsgotado()`](../backend/app/Services/Torrents/CatalogoProvedores.php:657);
    ao estourar, para onde está e devolve o que já recolheu. A checagem dentro da
    rodada é o que fecha a última brecha: sem ela, uma rodada iniciada a segundos do
    fim ainda percorria todos os provedores restantes, e a soma deles estourava o
@@ -896,18 +899,19 @@ O ciclo é curto:
 3. O [`ClienteHttp`](../backend/app/Services/Torrents/ClienteHttp.php:285) limita o
    socorro pelo FlareSolverr ao que resta do orçamento — um `maxTimeout` de 70 s
    não pode começar quando faltam 3 s. O mesmo corte vale para a **tentativa
-   direta**: [`tempoDisponivel()`](../backend/app/Services/Torrents/ClienteHttp.php:200)
+   direta**: [`tempoDisponivel()`](../backend/app/Services/Torrents/ClienteHttp.php:368)
    encolhe o `tempo_limite` de cada requisição ao que sobra, e uma requisição que
    já nasce fora do prazo nem começa.
 4. O [`TorznabService`](../backend/app/Services/TorznabService.php:116) também
    enxerga o relógio: o prazo do degrau passa a ser o menor entre o próprio
    (`TORRENTS_TORZNAB_ORCAMENTO`) e o que resta da busca inteira.
-5. [`encerrar()`](../backend/app/Services/Torrents/CatalogoProvedores.php:940)
+5. [`encerrar()`](../backend/app/Services/Torrents/CatalogoProvedores.php:993)
    **não** fecha mais o orçamento: ele é compartilhado entre os dois métodos e
    precisa continuar de pé quando a cascata é só a segunda metade da busca. Quem
-   fecha os dois canais — e descarta o teto global — é o
-   [`TorrentService`](../backend/app/Services/TorrentService.php:129), uma única
-   vez, no fim da busca inteira, via `fecharOrcamento()`. Deixá-lo de pé faria a
+   fecha os dois canais — e descarta o teto global — é o `TorrentService::fontes()`,
+   uma única vez, no fim da busca inteira, via
+   [`fecharOrcamento()`](../backend/app/Services/Torrents/CatalogoProvedores.php:733).
+   Deixá-lo de pé faria a
    próxima busca herdar um relógio já vencido.
 
 ##### O orçamento precisa alcançar também os provedores de pool
@@ -928,11 +932,11 @@ por termo — o tempo gasto não voltava e a lista saía curta.
 A ponte é a trait [`ConsultaComOrcamento`](../backend/app/Services/Torrents/ConsultaComOrcamento.php:1),
 que dá a esses provedores duas leituras do mesmo relógio:
 
-- [`tempoDeConsulta()`](../backend/app/Services/Torrents/ConsultaComOrcamento.php:22)
+- [`tempoDeConsulta()`](../backend/app/Services/Torrents/ConsultaComOrcamento.php:37)
   devolve o **menor** entre o teto do provedor e o que resta do orçamento. É esse
   número que vira o `timeout` do pool. Um provedor que já nasce fora do prazo
   devolve `0` e nem abre a conexão.
-- [`temOrcamento()`](../backend/app/Services/Torrents/ConsultaComOrcamento.php:40)
+- [`temOrcamento()`](../backend/app/Services/Torrents/ConsultaComOrcamento.php:56)
   responde se ainda cabe tentar — usado no socorro termo a termo do Knaben pelo
   FlareSolverr, que é caro e não pode começar a segundos do fim.
 
@@ -951,16 +955,16 @@ exato: "achou 3 fontes, dubladas, mas todas do Torrentio; antes vinha do Knaben
 também".
 
 A correção tem duas partes, em
-[`buscar()`](../backend/app/Services/Torrents/CatalogoProvedores.php:196):
+[`buscar()`](../backend/app/Services/Torrents/CatalogoProvedores.php:223):
 
 1. O primeiro termo virou uma **rodada de abertura** que consulta os dois grupos
    antes de qualquer corte. Os primários por nome vêm **primeiro**, e não por
-   acaso: o [`jaTemEpisodioAproveitado()`](../backend/app/Services/Torrents/CatalogoProvedores.php:690)
+   acaso: o [`jaTemEpisodioAproveitado()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1132)
    lê o censo **inteiro**, então se o Torrentio rodasse antes e marcasse uma
    fonte, os termos de pack/série dos primários seriam pulados na mesma rodada.
    Rodando os primários primeiro, o Knaben recebe o degrau completo antes de
    qualquer contagem.
-2. O [`buscarGrupo()`](../backend/app/Services/Torrents/CatalogoProvedores.php:789)
+2. O [`buscarGrupo()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1242)
    ganhou o parâmetro `$dispensarSocorro`. Na abertura ele vai `true` para os
    primários: mesmo que um deles já tenha achado episódio, os demais ainda
    recebem os termos de pack/série, porque é a **única** chance que têm de achar
@@ -981,8 +985,9 @@ Orçamento da busca de torrents esgotado; devolvendo o que foi recolhido. {"degr
 Os valores são freios por camada: os orçamentos por degrau
 (`TORRENTS_TORZNAB_ORCAMENTO`, por exemplo) só apertam **dentro** do orçamento do
 canal, que por sua vez nunca passa do teto global (`TORRENTS_TEMPO_TOTAL_BUSCA`).
-Como os dois métodos rodam sempre e o teto é de uma busca só, ajustar o canal para
-baixo encurta o espaço de que o outro método dispõe. Mantenha o teto abaixo de
+Como o teto é de uma busca só, ajustar o canal de torrents para baixo só encurta o
+espaço de que ele próprio dispõe quando o stream direto voltou vazio — os dois nunca
+rodam lado a lado. Mantenha o teto abaixo de
 `TIMEOUT_REQUISICAO_MS` (`60000` no frontend), senão o corte acontece do lado de lá
 e a lista se perde.
 
@@ -1042,13 +1047,13 @@ nunca chegou a ser consultado.
 O comportamento padrão passou a ser o de **percorrer o registro inteiro**. A
 chave é [`buscar_todos`](../backend/config/services.php:366)
 (`TORRENTS_BUSCAR_TODOS`, ligada por padrão), lida pelo helper
-[`buscarTodos()`](../backend/app/Services/Torrents/CatalogoProvedores.php:700).
+[`buscarTodos()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1111).
 Com ela ligada, a meta PT-BR deixa de encerrar a busca: ela só marca o ponto em
 que não vale mais insistir nos termos restantes do degrau atual. Quem decide
 quando parar é o orçamento.
 
 O que faz a busca **avançar** de um provedor para o outro é o
-[`suficientePorProvedor()`](../backend/app/Services/Torrents/CatalogoProvedores.php:753):
+[`suficientePorProvedor()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1188):
 um provedor que já rendeu `fontes_suficientes_por_provedor` fontes (padrão 4) é
 deixado de lado — não por ter falhado, mas por já ter dado o que tinha —, e a vez
 passa ao próximo. Quem não tem fonte ou está indisponível é pulado na hora, sem
@@ -1075,7 +1080,7 @@ resposta rápida com o primeiro acerto, basta desligar `TORRENTS_BUSCAR_TODOS`.
 #### A montagem final: idioma manda, pack desempata dentro do idioma
 
 A lista final sai de
-[`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:271), que
+[`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:503), que
 separa as fontes em duas pilhas — **pilha boa** e **reserva** — e ordena as duas
 pela mesma chave de mérito.
 
@@ -1094,11 +1099,11 @@ Esse corte é o que faz o censo bater com a realidade. Antes, o APIBay aparecia 
 `com_fonte` porque a cascata contava as fontes *antes* da montagem; a montagem
 descartava todas (só original, sem PT-BR) e o relatório mentia. Agora o censo é
 reconciliado com a lista que de fato saiu — ver
-[`reconciliarCenso()`](../backend/app/Services/Torrents/CatalogoProvedores.php:544)
+[`reconciliarCenso()`](../backend/app/Services/Torrents/CatalogoProvedores.php:818)
 e a situação `descartado_na_montagem` mais abaixo.
 
 A ordem dentro de cada pilha vem de uma chave única,
-[`chaveDeOrdem()`](../backend/app/Services/TorrentService.php:389):
+[`chaveDeOrdem()`](../backend/app/Services/TorrentService.php:643):
 **`[idioma, pack, provedor, -seeds]`**. Ela diz a regra em uma linha:
 
 1. **Idioma manda.** Dublado (0), dual (1), legendado (2) e original (3) saem nessa
@@ -1110,7 +1115,7 @@ A ordem dentro de cada pilha vem de uma chave única,
    episódios do Knaben, do TPB+ e do APIBay.
 3. **Provedor em bloco.** Dentro de `(idioma, pack)`, cada provedor fica junto, na
    ordem em que a cascata o consulta
-   ([`ordemDeProvedores()`](../backend/app/Services/TorrentService.php:366)):
+   ([`ordemDeProvedores()`](../backend/app/Services/TorrentService.php:612)):
    Torrentio, addon Stremio, nativos, Torznab e YTS.
 4. **Seeds fecham.** Dentro do bloco, mais seeds primeiro.
 
@@ -1129,7 +1134,7 @@ Com `TORRENTS_APENAS_PT_BR=false`, a reserva inteira também pode entrar — sem
 em código.
 
 Cada etapa deixa uma linha em
-[`CatalogoProvedores::registrarEtapa()`](../backend/app/Services/Torrents/CatalogoProvedores.php:315):
+[`CatalogoProvedores::registrarEtapa()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1205):
 
 ```text
 Etapa da cascata de torrents concluída. {"degrau":"indexador","titulo":"American Horror Story S01E01 dublado","fontes":2,"pt_br":2,"reserva":0,"encerra":true}
@@ -1170,7 +1175,7 @@ responde, de relance, se a lista veio do indexador onde as tags PT-BR foram
 configuradas ou da reserva em inglês.
 
 Pelo lado do servidor, os logs do
-[`registrar()`](../backend/app/Services/TorrentService.php:733) registram a
+[`registrar()`](../backend/app/Services/TorrentService.php:764) registram a
 transição:
 
 - `Nenhuma fonte de torrent encontrada para o título.` — a montagem terminou sem
@@ -1180,7 +1185,7 @@ transição:
   marcada como dublada, nem pela tag do título nem pelo atributo do indexador.
   É o log que separa "não existe fonte em PT-BR" de "a ordenação falhou".
 - `Provedor de torrents pulado por falta de configuração.`
-  ([`consultarProvedor()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1737))
+  ([`consultarProvedor()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1831))
   — falta a chave do provedor no `.env` (o Torznab depende da
   `TORRENTS_TORZNAB_KEY`).
 
@@ -1189,7 +1194,7 @@ transição:
 A cobertura de provedores (`GET /api/filmes/{id}/fontes/cobertura`) conta, por
 provedor, quantas fontes passaram pelo gate da cascata (`aproveitadas`) e quantas
 de fato chegaram à lista final (`na_lista`). A situação de cada provedor sai de
-[`situacaoDoCenso()`](../backend/app/Services/Torrents/CatalogoProvedores.php:637):
+[`situacaoDoCenso()`](../backend/app/Services/Torrents/CatalogoProvedores.php:954):
 
 | Situação | Quando acontece |
 | --- | --- |
@@ -1206,8 +1211,8 @@ reais — e o censo antigo o marcava como `com_fonte`, porque contava as fontes
 todas, e o relatório dizia que havia fonte onde a lista estava vazia.
 
 A correção é
-[`reconciliarCenso()`](../backend/app/Services/Torrents/CatalogoProvedores.php:544),
-chamada por [`TorrentService::fontes()`](../backend/app/Services/TorrentService.php:45)
+[`reconciliarCenso()`](../backend/app/Services/Torrents/CatalogoProvedores.php:818),
+chamada por [`TorrentService::fontes()`](../backend/app/Services/TorrentService.php:61)
 depois de `ordenar()`: ela zera `na_lista` e recontá-lo a partir da lista que
 realmente saiu. Assim o censo passa a refletir a lista, e não a cascata — um
 provedor só é `com_fonte` se a fonte dele sobreviveu até o fim.
@@ -1373,9 +1378,9 @@ grava por cima. É o que libera a lista presa sem esperar o TTL vencer nem limpa
 Redis à mão — ligue só pontualmente, desaloje o resultado e volte para `false`.
 
 O caminho vale para os dois formatos de consulta do catálogo — termo a termo
-([`buscarComCache()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1371))
+([`buscarComCache()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1753))
 e em lote
-([`buscarLoteComCache()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1460)) —
+([`buscarLoteComCache()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1873)) —
 porque o Knaben responde o degrau inteiro numa rodada e tem a sua própria chave,
 que cobre o **conjunto** de termos. Com o bypass ligado, o `do_cache` do censo não
 incrementa: a leitura não aconteceu, então a consulta conta como real.
@@ -1392,21 +1397,21 @@ temporada** segue vivo porque interessa a muita gente de uma vez. Por isso a bus
 passou a procurar o pacote quando os termos de episódio não acham fonte dublada.
 
 - Os termos são montados por
-  [`TermosBusca::packTemporada()`](../backend/app/Services/Torrents/TermosBusca.php:94)
-  e [`TermosBusca::packTemporadaDublado()`](../backend/app/Services/Torrents/TermosBusca.php:115):
+  [`TermosBusca::packTemporada()`](../backend/app/Services/Torrents/TermosBusca.php:155)
+  e [`TermosBusca::packTemporadaDublado()`](../backend/app/Services/Torrents/TermosBusca.php:176):
   `<título> S01 completa`, `<título> Temporada 1 completa`,
   `<título> Season 1 complete` e as versões `... completa dublada`.
 - Eles entram **no fim** da lista de termos de episódio em
-  [`TorrentService::titulosDeEpisodio()`](../backend/app/Services/TorrentService.php:131),
+  [`TorrentService::titulosDeEpisodio()`](../backend/app/Services/TorrentService.php:398),
   depois dos termos de episódio e dos dublados. A cascata para no primeiro termo
   que rende dublado, então uma série que já funciona continua resolvendo nos
   termos de episódio: o pack só é consultado quando os anteriores se esgotam.
 - A frente é só de episódio. O fluxo de filme não passa por `titulosDeEpisodio()`,
   então não vê termo de pack nenhum.
 - Um pack da temporada errada tem seeds de sobra — e abriria o episódio errado.
-  [`TermosBusca::correspondeAoEpisodio()`](../backend/app/Services/Torrents/TermosBusca.php:240)
+  [`TermosBusca::correspondeAoEpisodio()`](../backend/app/Services/Torrents/TermosBusca.php:379)
   ganhou um crivo conservador: quando o título **declara** uma temporada (lida em
-  [`TermosBusca::temporadaDoTitulo()`](../backend/app/Services/Torrents/TermosBusca.php:279))
+  [`TermosBusca::temporadaDoTitulo()`](../backend/app/Services/Torrents/TermosBusca.php:436))
   diferente da pedida, a fonte é descartada. Sem marcador de pack, o título passa
   como sempre passou.
 - Como o pack muda o resultado de entradas já cacheadas no Redis, a
@@ -1449,10 +1454,10 @@ S01E01 — continuaram sem aparecer: a busca achava o pacote e o **descartava**
 depois. Naquele momento o idioma **desclassificava** a fonte em **dois** pontos, e
 os dois reprovavam o pack:
 
-1. [`CatalogoProvedores::aproveitaveis()`](../backend/app/Services/Torrents/CatalogoProvedores.php:571),
+1. [`CatalogoProvedores::aproveitaveis()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1631),
    ainda dentro da cascata, para o `temDublado()` julgar cada degrau sobre fontes
    que de fato atendem ao pedido;
-2. [`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:241),
+2. [`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:503),
    antes de devolver a lista ao frontend.
 
 Como o pack de série antiga quase nunca vem marcado como dublado, os dois o
@@ -1463,28 +1468,28 @@ entra na lista é decisão da montagem final. Sobrou **um** ponto de filtro, e �
 que a exceção do pack vive hoje. A correção continua cirúrgica:
 
 - A fonte é **marcada como pack ainda na cascata**, em
-  [`CatalogoProvedores::marcarPacks()`](../backend/app/Services/Torrents/CatalogoProvedores.php:361),
+  [`CatalogoProvedores::marcarPacks()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1441),
   chamado por `buscarGrupo()`. A marca nasce ali, e não no chamador, porque é este
   método que entrega a lista já filtrada: ela precisa sobreviver ao filtro de
   `aproveitaveis()` e à ordenação posterior. O chamador só informa se o termo
   corrente é de pack, por
-  [`eTermoDePack()`](../backend/app/Services/Torrents/CatalogoProvedores.php:334),
+  [`eTermoDePack()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1389),
   que devolve `false` sempre que não há temporada **e** episódio — um filme jamais
   é tratado como pack. A marca saiu do termo e passou a sair do **conteúdo** da
   fonte; o porquê está em
   [O pack se prova pelo nome do torrent](#o-pack-se-prova-pelo-nome-do-torrent-não-pelo-termo-consultado).
-- [`TermosBusca::eTermoDePack()`](../backend/app/Services/Torrents/TermosBusca.php:135)
+- [`TermosBusca::eTermoDePack()`](../backend/app/Services/Torrents/TermosBusca.php:283)
   reconhece o termo exigindo **os dois** sinais: um marcador de pacote
   (`completa`/`completo`/`complete`/`superpack`) e uma numeração de temporada. Um
   filme de título *The Complete ...* que passe por aqui não é confundido.
 - A isenção vale **apenas** para a fonte marcada como pack, e num único ponto: o
-  filtro de [`ordenar()`](../backend/app/Services/TorrentService.php:256). Episódio
+  filtro de [`ordenar()`](../backend/app/Services/TorrentService.php:503). Episódio
   comum e filme seguem a regra normal.
 - O pack de idioma não provado **não** entra na pilha boa: ele vai para a reserva e
   aparece **depois dos episódios de qualquer idioma**. Dublado e dual continuam na
   frente por [`IdiomaFonte::prioridade()`](../backend/app/Enums/IdiomaFonte.php:41);
   dentro de cada idioma, a chave
-  [`chaveDeOrdem()`](../backend/app/Services/TorrentService.php:330) põe o episódio
+  [`chaveDeOrdem()`](../backend/app/Services/TorrentService.php:643) põe o episódio
   antes do pack. É o que impede o pack do Torrentio de encobrir os episódios do
   Knaben, do TPB+ e do APIBay.
 - A exceção é reversível por configuração: `TORRENTS_PACKS_QUALQUER_IDIOMA`
@@ -1517,14 +1522,14 @@ como se vê em
 
 A marcação então deixou de olhar para o termo:
 
-- [`CatalogoProvedores::marcarPacks()`](../backend/app/Services/Torrents/CatalogoProvedores.php:361)
+- [`CatalogoProvedores::marcarPacks()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1441)
   decide por fonte, lendo `release ?? titulo`.
 - Um título que **declara episódio** nunca é pack —
-  [`TermosBusca::numeracaoDoTitulo()`](../backend/app/Services/Torrents/TermosBusca.php:383)
+  [`TermosBusca::numeracaoDoTitulo()`](../backend/app/Services/Torrents/TermosBusca.php:579)
   corta de saída. É o que impede o próprio filho do pacote
   (`Season 1 - Episode 1 - Pilot.mkv`) de ser tratado como pacote.
 - Sem numeração de episódio, é pack quem **cobre a temporada pedida**, segundo
-  [`TermosBusca::temporadaNoRelease()`](../backend/app/Services/Torrents/TermosBusca.php:327).
+  [`TermosBusca::temporadaNoRelease()`](../backend/app/Services/Torrents/TermosBusca.php:478).
   Ele é mais tolerante que o `temporadaDoTitulo()` do corte de numeração — aceita
   `S01`, `Temporada 1`, `Season 1`, `1ª Temporada` e as **faixas** (`S1-S5`,
   `Seasons 1 to 8`) —, porque o socorro da série antiga costuma vir em pacotes
@@ -1556,14 +1561,14 @@ busca **abre o pack** e olha os nomes dos arquivos lá dentro.
 A inspeção só entra quando o nome **não** provou PT-BR, e é a última cartada,
 porque custa uma sessão no media-service:
 
-1. [`CatalogoProvedores::marcarPacks()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1347)
+1. [`CatalogoProvedores::marcarPacks()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1441)
    intercepta a fonte já marcada como pack que ainda não é PT-BR.
 2. [`InspecaoPack::apurar()`](../backend/app/Services/Torrents/InspecaoPack.php:47)
    chama `POST /api/media/metadados` com o magnet e o infohash.
 3. O media-service
    ([`inspecionarTorrent()`](../media-service/src/services/sessoes.js:2729)) abre o
    torrent, lê a lista de arquivos e aplica
-   [`contemIndicioPtBr()`](../media-service/src/utils/idiomas.js:184) sobre cada
+   [`contemIndicioPtBr()`](../media-service/src/utils/idiomas.js:189) sobre cada
    caminho. Se **qualquer** arquivo (ou a pasta do pack) provar PT-BR, a resposta
    traz `indicio_pt_br: true` e a `prova` que o sustenta.
 4. Com `true`, a fonte é promovida a **Dublado** e ganha
@@ -1611,7 +1616,7 @@ exemplos usa — a API **ignora a `query`** e devolve os torrents mais semeados 
 acervo inteiro: perguntar por *American Horror Story* devolvia Adobe Photoshop. Só com
 `"100%"` a API trata a `query` como busca de verdade, exigindo que todos os termos
 casem. Está fixo e comentado em
-[`ProvedorKnaben::buscar()`](../backend/app/Services/Torrents/ProvedorKnaben.php:58) —
+[`ProvedorKnaben::buscar()`](../backend/app/Services/Torrents/ProvedorKnaben.php:66) —
 trocar de volta por `"score"` ressuscita o bug em silêncio.
 
 Outras decisões vieram dos testes:
@@ -1620,7 +1625,7 @@ Outras decisões vieram dos testes:
   existe e responde HTTP 400; ordenamos por `seeders` para os packs vivos subirem.
 - **Piso de seeds**: o Knaben informa a contagem, mas ela vem de indexadores em cache
   e os packs antigos aparecem com `0` mesmo vivos — foi o caso do próprio pack PT-BR.
-  Como [`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:211)
+  Como [`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:503)
   descarta quem tem zero seeds, tratar esse `0` como definitivo repetiria o descarte
   que a Fase 2 veio resolver. O provedor aplica o mesmo piso `SEEDS_NAO_MEDIDOS` de
   [`NormalizaFonte`](../backend/app/Services/Torrents/NormalizaFonte.php:1); quem
@@ -1693,12 +1698,12 @@ palavras casem (`search_type: "100%"`), e os demais casam por relevância com o 
 efeito prático, o termo com essas palavras praticamente não encontra o nome real do
 pacote — *"American Horror Story 1ª 2ª 3ª Temporadas Dublado e Legendado"*.
 
-[`TermosBusca::serieDublado()`](../backend/app/Services/Torrents/TermosBusca.php:139)
+[`TermosBusca::serieDublado()`](../backend/app/Services/Torrents/TermosBusca.php:200)
 acrescenta termos que **não** têm numeração nem "completa" — `"... dublado"`,
 `"... dual áudio"`, `"... temporada N"` e `"... SN"` — para perguntar pela série **pelo
 nome**, que é como o pack aparece. Eles entram **por último**, depois até dos termos de
 pack, dentro de
-[`TorrentService::titulosDeEpisodio()`](../backend/app/Services/TorrentService.php:131).
+[`TorrentService::titulosDeEpisodio()`](../backend/app/Services/TorrentService.php:398).
 A posição é a proteção: a cascata para no primeiro termo que devolve dublado, então uma
 série recente se resolve muito antes de chegar aqui — a frente existe para o caso
 extremo, quando nem o episódio nem o `S01 completa` acham nada.
@@ -1706,15 +1711,15 @@ extremo, quando nem o episódio nem o `S01 completa` acham nada.
 O preço da largueza é o falso positivo. Um termo sem `S01E01` também casa *"Freak
 Show"* — que é a 4ª temporada de American Horror Story e não declara número nenhum. Por
 isso as fontes passam por um **gate de temporada** em
-[`CatalogoProvedores::aproveitaveis()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1162):
+[`CatalogoProvedores::aproveitaveis()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1631):
 se o release **não** declara episódio e **não** prova a temporada pedida, é descartado.
 É a inversão da regra dos outros cortes — aqui o silêncio não é inocente. O
 reconhecimento sobe pela mesma tubulação do termo de pack: de
-[`CatalogoProvedores::buscar()`](../backend/app/Services/Torrents/CatalogoProvedores.php:196)
+[`CatalogoProvedores::buscar()`](../backend/app/Services/Torrents/CatalogoProvedores.php:223)
 para `buscarGrupo()` e daí para `aproveitaveis()`.
 
 Para o gate reconhecer o pacote multi-temporada,
-[`TermosBusca::temporadaNoRelease()`](../backend/app/Services/Torrents/TermosBusca.php:393)
+[`TermosBusca::temporadaNoRelease()`](../backend/app/Services/Torrents/TermosBusca.php:478)
 passou a ler a **lista** de temporadas: `1ª 2ª 3ª Temporada(s)`, `Temporadas 1, 2 e 3` e
 faixas (`S01-S03`, já cobertas antes). Ficou de fora, de propósito, a faixa crua `1-3`:
 sem palavra-chave, o risco de casar ano, resolução ou tamanho é maior que o ganho.
@@ -1737,7 +1742,7 @@ S01"`, `"{nome} temporada 1"`, `"{nome} season 1"` e o nome puro como última re
 recall —, sem numeração de episódio e sem tag de áudio. A pontuação do título sai pelo
 `limpar()` (dois-pontos e hífen atrapalham a busca por palavra-chave). Os termos são
 montados, por título candidato, dentro de
-[`TorrentService::titulosDeEpisodio()`](../backend/app/Services/TorrentService.php:158),
+[`TorrentService::titulosDeEpisodio()`](../backend/app/Services/TorrentService.php:398),
 logo depois dos termos de pack, e entram no lote que a rodada de abertura entrega ao
 Knaben.
 
@@ -1748,7 +1753,7 @@ lê o nome do release. O termo amplo só amplia o alcance; ele não decide nada.
 #### O furo do gate: ele só valia para o termo de série
 
 O gate nasceu amarrado ao termo de série — só as fontes reconhecidas por
-[`TermosBusca::eTermoDeSerie()`](../backend/app/Services/Torrents/TermosBusca.php:160)
+[`TermosBusca::eTermoDeSerie()`](../backend/app/Services/Torrents/TermosBusca.php:254)
 eram confrontadas com a temporada pedida. O termo de **pack** (`S01 completa`) ficava de
 fora, e era justamente por ali que o pack da temporada errada entrava. O caso que expôs
 o furo: uma busca por `S01E01` de *American Horror Story* voltava com três fontes, e uma
@@ -1761,7 +1766,7 @@ Eram dois defeitos somados:
 1. **O gate não cobria o termo de pack.** `aproveitaveis()` só rodava a confrontação
    quando o termo era de série. O pack da 2ª entrou por um termo de pack e passou.
 2. **A leitura da temporada não enxergava o ordinal com ponto.**
-   [`TermosBusca::temporadaDoTitulo()`](../backend/app/Services/Torrents/TermosBusca.php:351)
+   [`TermosBusca::temporadaDoTitulo()`](../backend/app/Services/Torrents/TermosBusca.php:436)
    exigia um marcador de pack e usava `\s*` como separador, que não casa o `.` de
    `2ª.Temporada`. O release declarava a temporada de forma explícita e a leitura
    devolvia `null` — o gate não tinha o que confrontar.
@@ -1780,8 +1785,8 @@ A correção tem três partes:
   (`2011`) nunca é lido como temporada.
 - **A montagem final confronta o pack.** Mesmo com PT-BR provado, um pack cuja
   temporada declarada difere da pedida é descartado em
-  [`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:260), por
-  [`TorrentService::packDaTemporadaErrada()`](../backend/app/Services/TorrentService.php:439).
+  [`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:503), por
+  [`TorrentService::packDaTemporadaErrada()`](../backend/app/Services/TorrentService.php:710).
   A exceção `TORRENTS_PACKS_QUALQUER_IDIOMA` continua valendo para o pack de idioma
   **não** provado — o que muda é que a temporada dele também é conferida.
 
@@ -1808,13 +1813,13 @@ A Série Completa Dublado 1080p"*. Ele é exatamente o socorro que a busca quer 
 de sobra e áudio dublado —, mas era ele o `na_lista: 0` que sobrava das séries antigas.
 O caminho do descarte era sutil e duplo:
 
-1. [`CatalogoProvedores::marcarPacks()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1096)
+1. [`CatalogoProvedores::marcarPacks()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1441)
    só etiquetava o pacote quando o **termo corrente** era de pack
    (`$termoDePack && $temporadaDeclarada === null`) ou quando o nome provava a
    temporada. Um pacote que chegava por um termo de série (*"... dublado"*) ou de
    episódio, e cujo nome não traz número nenhum, escapava da etiqueta.
 2. Sem a etiqueta, o gate de
-   [`aproveitaveis()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1271)
+   [`aproveitaveis()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1631)
    o via como "fonte que nada declara" e o descartava — o censo registrava
    `descartado_na_montagem`.
 
@@ -1837,9 +1842,9 @@ A correção tem duas partes, uma em cada ponta do mesmo fio:
 
 A defesa contra a temporada errada fica intacta: um pack que **declara** outra
 temporada é barrado antes de o gate ser consultado, por
-[`TermosBusca::correspondeAoEpisodio()`](../backend/app/Services/Torrents/TermosBusca.php:346),
+[`TermosBusca::correspondeAoEpisodio()`](../backend/app/Services/Torrents/TermosBusca.php:379),
 e a última linha de defesa continua sendo
-[`TorrentService::packDaTemporadaErrada()`](../backend/app/Services/TorrentService.php:440).
+[`TorrentService::packDaTemporadaErrada()`](../backend/app/Services/TorrentService.php:710).
 A etiqueta não é passe livre — é a permissão que o gate dava só a quem provava a
 temporada, estendida a quem já foi reconhecido como pacote.
 
@@ -1856,13 +1861,13 @@ com `"na_lista": 0` persistia quando o Torrentio e o Knaben encontravam dezenas 
 descartavam o pack **antes** de ele chegar à montagem final:
 
 1. **A numeração de episódio do arquivo interno desqualificava o pack.**
-   [`marcarPacks()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1096) fazia
+   [`marcarPacks()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1441) fazia
    `continue` quando algum nome declarava `SxxExx` — mas o `release` de um provedor por
    identificador é o nome do **arquivo interno** (`2x13 - Madness Ends`), não o do
    torrent. O pack da temporada chegava por um termo de pack, o arquivo interno escondia
    a temporada e a fonte nunca recebia a etiqueta. Sem etiqueta, o gate a barrava.
 2. **O gate exigia a temporada no nome mesmo em termo de pack.**
-   [`aproveitaveis()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1271) só
+   [`aproveitaveis()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1631) só
    perdoava a fonte com a etiqueta `pack`. O pack cujo nome nacional não numera nada
    (*"A Série Completa Dublado"*) e que veio de um termo de pack não tinha como provar a
    temporada pelo nome — e era descartado.
@@ -1875,7 +1880,7 @@ A correção faz o pack de temporada **chegar à montagem**:
 - **O gate perdoa o termo de pack.** `aproveitaveis()` passou a receber `$termoDePack` e
   a quarta via de prova é o próprio termo: se a busca veio de `"... S01 completa"`, o
   termo já declara a temporada pedida. A defesa contra a temporada errada continua em
-  [`packDaTemporadaErrada()`](../backend/app/Services/TorrentService.php:453).
+  [`packDaTemporadaErrada()`](../backend/app/Services/TorrentService.php:710).
 
 O pack que **declara** a temporada errada continua barrado — a exceção não abre espaço
 para o pack da 2ª numa busca da 1ª. O teste que trava o comportamento está em
@@ -1885,7 +1890,7 @@ temporada errada é descartado na montagem.
 ##### O corte duro de idioma continua valendo na montagem final
 
 Chegar à montagem **não** é entrar na lista. O corte duro de idioma em
-[`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:284) continua
+[`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:503) continua
 sendo a última palavra: com `somente_pt_br_ou_legendado` ligado e havendo alguma fonte
 PT-BR, a lista final é **só** o áudio PT-BR provado — dublado e dual. O original em
 inglês e o legendado saem de vez.
@@ -2120,11 +2125,11 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   vídeo" — exatamente o sintoma relatado nas fontes dubladas. A conversão agora
   mapeia só o vídeo e a faixa escolhida (`-map 0:v:0 -map 0:a:N?`; o `?` deixa o
   mapeamento opcional, para não abortar quando a faixa some). A escolha fica em
-  [`escolherFaixaAudio()`](../media-service/src/services/hls.js:508), que prefere
+  [`escolherFaixaAudio()`](../media-service/src/services/hls.js:541), que prefere
   o áudio em português (`por`/`pt`/`pt-*` via
   [`normalizarIdioma`](../media-service/src/utils/idiomas.js:87)) e, na falta
   dele, cai na faixa marcada como padrão ou na primeira. O índice escolhido sai
-  de [`analisarArquivo()`](../media-service/src/services/hls.js:342) em
+  de [`analisarArquivo()`](../media-service/src/services/hls.js:371) em
   `indiceAudio`, é guardado em `sessao.indiceAudio` e reaproveitado no
   reposicionamento — sem isso um *seek* remontaria a conversão com o mapeamento
   errado. O modo (`remux`/`audio`) também passou a olhar o codec **da faixa
@@ -2219,7 +2224,7 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   [`Transform`](https://nodejs.org/api/stream.html#class-streamtransform) conta os
   bytes que passam a caminho do FFmpeg. No caminho de disco, a posição é o que a
   playlist **já publicou** — a soma dos `#EXTINF` por
-  [`somarDuracaoDaPlaylist()`](../media-service/src/services/hls.js:1098), lida por
+  [`somarDuracaoDaPlaylist()`](../media-service/src/services/hls.js:1131), lida por
   [`tempoPublicado()`](../media-service/src/services/sessoes.js:757). Usar o
   `progress` do FFmpeg direto não serve: ele é reportado com atraso e deixa a
   leitura disparar à frente dos dados.
@@ -2232,7 +2237,7 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   FFmpeg é **congelado** com `SIGSTOP` e descongelado com `SIGCONT` ao recuperar,
   via [`pausar`/`retomar`](../media-service/src/services/hls.js:849). Congelar
   preserva o estado do processo; reiniciá-lo recomeçaria a conversão do zero.
-- **VOD só com o filme inteiro**: [`finalizarPlaylist()`](../media-service/src/services/hls.js:1043)
+- **VOD só com o filme inteiro**: [`finalizarPlaylist()`](../media-service/src/services/hls.js:1076)
   troca `EVENT`→`VOD` e acrescenta `#EXT-X-ENDLIST` **apenas** se a duração
   publicada chegar perto da duração real (tolerância de `max(60s, 10%)`). Uma
   conversão interrompida por falta de dados continua `EVENT`, então o player
@@ -2282,7 +2287,7 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   sessão a linha `[hls] ffmpeg: Stream #0:1: Audio: aac (LC), 48000 Hz, stereo,
   fltp, 192 kb/s` confirma o cabeçalho canônico.
 - **Diagnóstico do FFmpeg no log**: o `stderr` do processo é filtrado por
-  [`iniciarConversao()`](../media-service/src/services/hls.js:771) — só as linhas
+  [`iniciarConversao()`](../media-service/src/services/hls.js:804) — só as linhas
   de `Input`/`Output`/`Duration`/`start`/`Stream` e os avisos de
   `error`/`invalid`/`corrupt`/`missing` viram log. É isso que permite comparar o
   `start` do input com o `inicioFonte` e ver de onde a conversão realmente
@@ -2339,7 +2344,7 @@ caso o watcher chega com o valor anterior `null`, a limpeza era pulada, e o
 episódio 1.
 
 Agora a limpeza é incondicional e vive no começo de
-[`iniciar()`](../frontend/src/components/PlayerOverlay.vue:1903): ele chama
+[`iniciar()`](../frontend/src/components/PlayerOverlay.vue:2008): ele chama
 `destruirPlayer()` e `await limparSessao()` antes de qualquer outra coisa. Os dois
 caminhos — troca direta e reabertura após fechar — passam pelo mesmo ponto, sem
 assimetria.
@@ -2418,9 +2423,9 @@ temporada=2, episódio=13, o código tratava a fonte como "episódio mal marcado
 que só julga packs, nem era acionada. O pack dual da 2ª, com mais seeds, subia ao
 topo de uma busca da 1ª.
 
-A correção lê **os dois nomes** em três pontos — [`marcarPacks()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1118),
-o gate de [`aproveitaveis()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1241)
-e a defesa final [`packDaTemporadaErrada()`](../backend/app/Services/TorrentService.php:440).
+A correção lê **os dois nomes** em três pontos — [`marcarPacks()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1441),
+o gate de [`aproveitaveis()`](../backend/app/Services/Torrents/CatalogoProvedores.php:1631)
+e a defesa final [`packDaTemporadaErrada()`](../backend/app/Services/TorrentService.php:710).
 Dois helpers novos em [`TermosBusca`](../backend/app/Services/Torrents/TermosBusca.php:505)
 concentram a leitura:
 
@@ -2496,7 +2501,7 @@ na mensagem, de um arquivo corrompido. Três guardas resolvem o caso:
 2. [`analisarComEspera()`](../media-service/src/services/sessoes.js:2134) confere
    o tamanho físico do arquivo a cada volta e só chama o ffprobe quando ele
    passa de `TAMANHO_MINIMO_SONDAGEM` (1 MB).
-3. [`analisarArquivo()`](../media-service/src/services/hls.js:342) valida a
+3. [`analisarArquivo()`](../media-service/src/services/hls.js:371) valida a
    existência do arquivo e lança um erro rotulado com `code = 'ENOENT'`, para o
    laço distinguir "ainda não existe" de "existe mas o ffprobe recusou". A
    guarda vale só para caminho local: numa fonte direta o "arquivo" é uma URL,
@@ -2531,7 +2536,7 @@ sequência ([`PlayerOverlay.vue`](../frontend/src/components/PlayerOverlay.vue:2
 o erro se repetia uma vez por fonte — daí a rajada de requisições com o mesmo
 404.
 
-### Stream direto (MP4/HLS) — o socorro do conteúdo raro
+### Stream direto (MP4/HLS) — o primeiro método da busca
 
 A cascata de torrents resolve bem o conteúdo com seeders, mas falha justamente
 onde o acervo PT-BR é mais frágil: lançamentos antigos, novelas, filmes de
@@ -2540,52 +2545,58 @@ o ressuscita. O **stream direto** cobre esse cenário — o equivalente ao
 comportamento de apps como Lumigo/Stremio, que buscam um link de vídeo pronto
 (MP4 ou HLS) em vez de uma malha P2P.
 
-Hoje ele é um **método de indexação**, não um socorro de última hora: roda sempre,
-e roda **primeiro** na busca. A cascata de torrents entra em seguida, na mesma
-requisição, e a lista final é a soma das duas.
+Hoje ele é um **método de indexação**, e o **primeiro** deles: abre a busca e,
+quando acha, a encerra. A cascata de torrents só roda se o stream direto voltar
+vazio — perguntar aos trackers depois de ter uma URL que toca na hora só atrasaria
+a exibição, que é justamente o que o método existe para evitar.
 
 #### O provedor direto é um método, não um degrau da cascata
 
 [`ProvedorStreamDireto`](../backend/app/Services/Torrents/ProvedorStreamDireto.php:1)
 implementa o mesmo contrato `ProvedorTorrents` dos demais, mas **não** entra na
 cascata normal: quem o aciona é o
-[`TorrentService::fontes()`](../backend/app/Services/TorrentService.php:58), e não o
-catálogo. Ele roda **sempre**, e roda **primeiro** — antes da cascata de torrents,
-na mesma busca.
+[`TorrentService::fontes()`](../backend/app/Services/TorrentService.php:61), e não o
+catálogo. Ele roda **primeiro** — antes da cascata de torrents, na mesma busca.
 
 A ordem é a prioridade do player. O frontend tenta as fontes na ordem da lista, e a
 fonte direta é a única que não depende de malha: quando o acervo web tem o título,
-ele toca sem esperar tracker. A cascata vem depois e soma o que os indexadores têm,
-com o tempo que sobrar do teto global.
+ele toca sem esperar tracker. Como ela não depende de malha, também não faz sentido
+somar: com fonte direta na mão, o `TorrentService` chama
+[`CatalogoProvedores::dispensarCascata()`](../backend/app/Services/Torrents/CatalogoProvedores.php:717)
+e devolve a lista direta — a cascata de torrents não é consultada e o censo dos
+trackers é zerado, para o relatório não exibir números da busca anterior como se
+fossem desta.
 
 Rodar por último, como antes, custava lista: o antigo gatilho só disparava com a
 lista final **vazia**, então um episódio que tinha uma fonte fraca de torrent e uma
 fonte direta boa ficava só com a primeira — e o usuário nunca sabia que existia uma
 opção melhor. O gatilho por lista vazia também era cego para o filtro de idioma: a
 cascata podia devolver dezenas de fontes, o filtro descartar todas e, mesmo assim,
-a consulta direta não acontecer.
+a consulta direta não acontecer. E havia o custo escondido do tempo: quando o
+scraper era o canal certo, a cascata rodava **primeiro** e gastava o orçamento
+inteiro procurando um release inexistente.
 
-O corte duro de idioma (`somente_pt_br_ou_legendado`) continua sem abrir exceção
-para a reserva: quando só veio release em inglês, o `ordenar()` devolve **lista
+O corte duro de idioma (`somente_pt_br_ou_legendado`) continua valendo para o que a
+cascata devolve: quando só veio release em inglês, o `ordenar()` entrega **lista
 vazia**, e não o original como consolação. A reserva em inglês não é resposta para
-quem pediu português — quem resolve o conteúdo raro é o stream direto. A reserva só
-volta quando o corte está desligado (`somente_pt_br_ou_legendado = false`), aí sim o
-usuário aceita qualquer idioma. Se o provedor direto não achar nada, a lista
+quem pediu português. A reserva só volta quando o corte está desligado
+(`somente_pt_br_ou_legendado = false`), aí sim o usuário aceita qualquer idioma. Se
+o provedor direto não achar nada e a cascata também não trouxer PT-BR, a lista
 permanece vazia — o cliente mostra "sem fontes" em vez de oferecer um release que o
 usuário não pediu.
 
 O acionamento passa por
-[`CatalogoProvedores::buscarFallbackDireto()`](../backend/app/Services/Torrents/CatalogoProvedores.php:493),
+[`CatalogoProvedores::buscarFallbackDireto()`](../backend/app/Services/Torrents/CatalogoProvedores.php:495),
 que é público justamente para ser chamado de fora da cascata. As fontes diretas
-entram já montadas e **não** voltam por `ordenar()`: elas são concatenadas à frente
-da lista de torrents, e passá-las pela ordenação que espera magnet só as descartaria.
+entram já montadas e **não** passam por `ordenar()`: elas são devolvidas como estão,
+sem passar pela ordenação que espera magnet.
 
 O stream direto abre o **próprio orçamento** (`TORRENTS_STREAM_DIRETO_ORCAMENTO`,
 padrão 45 s) porque o custo dele é de outra ordem: uma renderização de navegador por
-página, de 10 a 15 s, e são necessárias duas no mínimo. Como os dois métodos sempre
-rodam, esses orçamentos somam no tempo da resposta — quem impede a soma de estourar
-o que o frontend espera é o teto global (`TORRENTS_TEMPO_TOTAL_BUSCA`), que corta
-cada canal em `abrir()`.
+página, de 10 a 15 s, e são necessárias duas no mínimo (a listagem e a página do
+episódio). Quando a cascata também roda — o caso em que o direto voltou vazio —, o
+que impede os dois prazos de somarem além do que o frontend espera é o teto global
+(`TORRENTS_TEMPO_TOTAL_BUSCA`), que corta cada canal em `abrir()`.
 
 ##### A fonte direta é marcada pelo site de origem
 
@@ -2599,22 +2610,25 @@ para toda fonte direta (`PlayerOverlay.vue`), passa a começar pelo nome do agre
 torrent continua; o que entrou foi a procedência.
 
 A origem é lida em
-[`ProvedorStreamDireto::origemDa()`](../backend/app/Services/Torrents/ProvedorStreamDireto.php:762),
+[`ProvedorStreamDireto::origemDa()`](../backend/app/Services/Torrents/ProvedorStreamDireto.php:793),
 que usa o host da página e descarta o `www.` — sem isso, `www.site.com` e
 `site.com` contariam como dois sites. Quando a página não tem host reconhecível, a
-fonte volta a ser rotulada pelo método (`stream_direto` / "Stream direto"), para o
-agrupamento do teto por origem não receber uma chave vazia.
+fonte volta a ser rotulada pelo método (`stream_direto` / "Stream direto"), para a
+procedência não virar uma chave vazia.
 
-Esse rótulo é o que sustenta o **teto por site**
-(`TORRENTS_STREAM_DIRETO_MAX_FONTES_POR_SITE`, padrão `3`): o alvo de fontes conta
-fontes de qualquer origem, e sem o teto um agregador que devolve cinco espelhos do
-mesmo episódio ocupava as cinco posições do alvo — e os sites seguintes nem eram
-consultados, porque a varredura encerrava ali. O corte é aplicado a **cada página**
-em [`limitarPorOrigem()`](../backend/app/Services/Torrents/ProvedorStreamDireto.php:415),
-e não só no fim, justamente por causa da conta do alvo.
+O rótulo agora serve só à procedência: com o corte por primeira página que rende, o
+que limita a quantidade é o **teto por página**
+(`TORRENTS_STREAM_DIRETO_MAX_FONTES`, padrão `2`), aplicado em
+[`limitarFontes()`](../backend/app/Services/Torrents/ProvedorStreamDireto.php:398)
+sobre o que cada página entrega. Sem ele, uma página com cinco espelhos do mesmo
+episódio encheria a lista com mirrors que o usuário não distingue. Antes havia
+também um teto **por site de origem** (`stream_direto_max_fontes_por_site`), que
+existia só porque o corte da varredura era uma contagem de fontes — e o primeiro
+site podia consumi-la inteira. Com um teto por página e a parada no primeiro acerto,
+esse segundo teto perdeu a função e foi removido do `config` e dos `.env.example`.
 
 Quem casa a fonte direta com a **linha do censo** é
-[`CatalogoProvedores::linhaDoCenso()`](../backend/app/Services/Torrents/CatalogoProvedores.php:835),
+[`CatalogoProvedores::linhaDoCenso()`](../backend/app/Services/Torrents/CatalogoProvedores.php:852),
 pelo `tipo`. Sem esse desvio, o `provedor` que agora traz o agregador não casaria
 com a linha `stream_direto` e as duas contas do relatório — as `aproveitadas` do
 gate e o `na_lista` da montagem — ficariam zeradas, dizendo `barrado_no_filtro` de
@@ -2623,8 +2637,8 @@ uma busca que achou o episódio.
 ##### A cascata não aborta com a lista de títulos vazia
 
 Havia em `fontes()` um `return []` preventivo: quando
-[`titulosDeBusca()`](../backend/app/Services/TorrentService.php:238) ou
-[`titulosDeEpisodio()`](../backend/app/Services/TorrentService.php:267) devolviam
+[`titulosDeBusca()`](../backend/app/Services/TorrentService.php:369) ou
+[`titulosDeEpisodio()`](../backend/app/Services/TorrentService.php:398) devolviam
 lista vazia (título em branco vindo do catálogo), a busca era encerrada **antes**
 de qualquer provedor ser consultado. O usuário recebia "nenhuma fonte encontrada"
 sem que o Torrentio ou os indexadores tivessem sido ouvidos.
@@ -2634,7 +2648,7 @@ Isso estava errado por dois motivos. Primeiro, os provedores por identificador
 de termos vazia não é motivo para não perguntar. Segundo, o método direto ainda tem
 o título original para trabalhar; abortar cedo matava essa última chance. A lista
 vazia é um caso legítimo, não um erro que justifique desistir da busca inteira. O
-[`CatalogoProvedores::buscar()`](../backend/app/Services/Torrents/CatalogoProvedores.php:222)
+[`CatalogoProvedores::buscar()`](../backend/app/Services/Torrents/CatalogoProvedores.php:223)
 já trata o caso com segurança: a rodada de abertura só roda se houver um primeiro
 título, os laços sobre lista vazia não iteram e o YTS recebe string vazia e se
 abstém.
@@ -2642,7 +2656,7 @@ abstém.
 ##### O fallback recebe o título traduzido e o original
 
 A cascata só consulta o título original quando
-[`valeSegundaTentativa()`](../backend/app/Services/TorrentService.php:177) manda —
+[`valeSegundaTentativa()`](../backend/app/Services/TorrentService.php:308) manda —
 é uma segunda fase que custa orçamento. O scraper web não tem esse custo: ele
 pergunta pelo nome mais provável, e o título original é justamente o que funciona
 para o conteúdo raro ("Desperate Housewives" acha o que "Donas de Casa
@@ -2731,13 +2745,20 @@ o episódio mora, pergunta direto à **busca interna** dos agregadores de vídeo
 cujo resultado já é a página do título. É o mesmo caminho do usuário — em vez de
 googlar "assistir X", digita X na busca do próprio site.
 
-A lista é curta e por conhecimento de causa — hoje, só o `verpobreflix.net`. Cada
-agregador declara duas coisas: onde a busca mora (`/search?q=`) e qual prefixo de
-caminho identifica o conteúdo na página de resultado (`/series/`). O domínio
-serve de âncora — só links do próprio site entram, o que descarta menu, rodapé e
-link patrocinado sem precisar de lista negra. O resultado do verpobreflix é a
-ficha da série, e o provedor desce dali para a página do episódio pelo caminho que
-já existia.
+A lista é curta e por conhecimento de causa — hoje, o `verpobreflix.net` e o
+`superflixapi.quest`, nesta ordem. Cada agregador declara onde a busca mora
+(`/search?q=`, `/pesquisar?s=`) e qual padrão de caminho identifica o conteúdo na
+página de resultado (`/series/`, `/(serie|filme)/<id>`). O domínio serve de âncora —
+só links do próprio site entram, o que descarta menu, rodapé e link patrocinado sem
+precisar de lista negra. O resultado do verpobreflix é a ficha da série, e o provedor
+desce dali para a página do episódio pelo caminho que já existia.
+
+O `verpobreflix.net` vem primeiro porque entrega o embed de onde o `plenoflu` resolve
+o `master.m3u8` sem depender do passe do Cloudflare. O `superflixapi.quest` é o
+segundo caminho para o mesmo acervo — indexa pelo id do TMDB, o que dispensa a busca
+por nome —, mas a página do episódio dele só abre com o passe configurado
+(`services.torrents.passe_cloudflare_*`). Como o provedor para no primeiro agregador
+que rende, o segundo só custa quando o primeiro não rendeu nada.
 
 A relevância pelo título é conferida **na hora da busca**, sobre o slug do link —
 e não só lá na frente, sobre a página aberta. A página de resultado costuma vir
@@ -2748,8 +2769,10 @@ final (título da página e URL do vídeo) exatamente onde estava.
 O contrato não muda: a saída é uma lista de URLs de página, do mesmo tipo que o
 `MotorBuscaWeb::procurar()` devolveria. O provedor processa as duas origens pelo
 mesmo caminho — relevância pelo título, prova de mídia e extração —, no laço
-`visitar()`. O motor continua rodando **em seguida**, como redundância: se a busca
-direta não der em nada, a varredura web acontece igual. Desligar o atalho é só
+`visitar()`. O atalho é **curto-circuitante**: a primeira página que entrega uma
+fonte renderizada encerra a varredura, e o motor web nem chega a ser consultado —
+era ele, afinal, a peça que falhava. Só quando nenhuma página rende o motor web roda,
+como redundância. Desligar o atalho é só
 `TORRENTS_STREAM_DIRETO_BUSCA_DIRETA=false`.
 
 ##### O `tokyvideo.com` saiu da lista: busca montada por JavaScript
@@ -2936,7 +2959,7 @@ passava em silêncio, porque o que sobrava ainda *parecia* um cabeçalho válido
 token do widget, o `cf_embed_hash` do desafio — não era recusado: o backend o
 prefixava como `cf_clearance`, e o host devolvia a mesma tela de verificação, igual
 a não ter passe nenhum. O
-[`pareceTokenSolto()`](../backend/app/Services/Torrents/PasseCloudflare.php:1)
+[`pareceTokenSolto()`](../backend/app/Services/Torrents/PasseCloudflare.php:368)
 detecta essa forma — nem nome de cookie, nem a assinatura de um `cf_clearance`
 (`<aleatório>-<carimbo>-1.2.1.1-<hash>`) — e o aviso volta na resposta da colagem,
 para a bancada mostrar na hora, e não meia hora depois na tela de verificação.
@@ -2953,12 +2976,12 @@ distintas, e é o carimbo que diz **há quanto tempo o passe existe**. É a
 diferença que separa um passe recém-conquistado de um esquecido no campo desde
 ontem — os dois chegam ao host com a mesma cara, e o host recusa os dois
 devolvendo a mesma tela de verificação. Lido pelo
-[`carimboDoValor()`](../backend/app/Services/Torrents/PasseCloudflare.php:1), e
+[`carimboDoValor()`](../backend/app/Services/Torrents/PasseCloudflare.php:396), e
 devolvido na conferência para a bancada formatar no relógio de quem está olhando.
 
 **O que vem colado, ao pé da letra.** Quando o carimbo não existe, a pergunta que
 sobra é *o que está em mãos?* — e a resposta é uma lista de nomes. O
-[`nomesDeCookies()`](../backend/app/Services/Torrents/PasseCloudflare.php:1)
+[`nomesDeCookies()`](../backend/app/Services/Torrents/PasseCloudflare.php:427)
 devolve os nomes (nunca os valores) da colagem, e a conferência os publica em
 `cookies_do_passe`. Isso resolve o caso em que o campo está preenchido e o host
 recusa: se a lista traz `__cf_bm` e não traz `cf_clearance`, o backend está sem
@@ -3301,7 +3324,7 @@ T4E17 de "Donas de Casa Desesperadas" (tmdb `693`), que antes morria no
      `.torrent`, `.epub`). O extrator já as recusaria, mas descartá-las aqui evita
      gastar uma requisição para descobrir isso.
 
-   [`MotorBuscaWeb::motivoDoDescarte()`](../backend/app/Services/Torrents/MotorBuscaWeb.php:558)
+   [`MotorBuscaWeb::motivoDoDescarte()`](../backend/app/Services/Torrents/MotorBuscaWeb.php:1054)
    classifica a URL em `adulto`, `extensao`, `dominio`, `tld` ou `null` (serve). A
    ordem das checagens vai do mais barato ao mais caro — host vazio, conteúdo
    impróprio, extensão, domínio e, por fim, TLD. O log de `debug` **"resultados
@@ -3340,10 +3363,10 @@ T4E17 de "Donas de Casa Desesperadas" (tmdb `693`), que antes morria no
    A barreira é aplicada em **três pontos** do fluxo, para que nenhuma porta fique
    aberta:
 
-   1. **Na origem** — [`MotorBuscaWeb::motivoDoDescarte()`](../backend/app/Services/Torrents/MotorBuscaWeb.php:558)
+   1. **Na origem** — [`MotorBuscaWeb::motivoDoDescarte()`](../backend/app/Services/Torrents/MotorBuscaWeb.php:1054)
       classifica a URL como `adulto` e a descarta antes de ela virar candidata a
       página. É a checagem mais barata e a que evita gastar orçamento.
-   2. **Na página** — [`ProvedorStreamDireto::rasparPagina()`](../backend/app/Services/Torrents/ProvedorStreamDireto.php:224)
+   2. **Na página** — [`ProvedorStreamDireto::rasparPagina()`](../backend/app/Services/Torrents/ProvedorStreamDireto.php:494)
       revalida a URL da página e lê o `<title>` do HTML antes de extrair qualquer
       vídeo. Um agregador legítimo que hospeda uma página adulta no meio do acervo
       familiar cai aqui.
@@ -3395,7 +3418,7 @@ T4E17 de "Donas de Casa Desesperadas" (tmdb `693`), que antes morria no
    O fallback não recebe o título cru do usuário: ele recebe o título **já
    numerado** por [`TermosBusca::episodio()`](../backend/app/Services/Torrents/TermosBusca.php:117),
    que devolve algo como `Donas de Casa Desesperadas S01E01`. O problema é que
-   [`TermosStreamDireto::termosDeStreaming()`](../backend/app/Services/Torrents/TermosStreamDireto.php:181)
+   [`TermosStreamDireto::termosDeStreaming()`](../backend/app/Services/Torrents/TermosStreamDireto.php:183)
    monta a numeração por conta própria — e, sem perceber que ela já estava lá,
    colava a sua própria em cima. O termo saía como
    `Donas de Casa Desesperadas S01E01 1x01 assistir online dublado`: uma
@@ -3438,7 +3461,7 @@ T4E17 de "Donas de Casa Desesperadas" (tmdb `693`), que antes morria no
    orçamento estourava no meio da requisição, a requisição era cancelada e o
    trabalho já feito era jogado fora.
 
-   [`ConsultaComOrcamento::temTempoParaConsulta()`](../backend/app/Services/Torrents/ConsultaComOrcamento.php:79)
+   [`ConsultaComOrcamento::temTempoParaConsulta()`](../backend/app/Services/Torrents/ConsultaComOrcamento.php:86)
    troca a pergunta: em vez de "resta algum tempo?", pergunta "resta tempo
    **suficiente** para esta consulta?". O critério é **proporcional**: o
    restante precisa cobrir uma fração mínima do teto (`$fracaoMinima`, padrão
@@ -3475,7 +3498,7 @@ T4E17 de "Donas de Casa Desesperadas" (tmdb `693`), que antes morria no
    motor de busca, e disparar todas em sequência é o caminho mais curto para o
    rate limit — o buscador responde com bloqueio e a busca volta com zero links.
 
-   [`TermosStreamDireto::limitarTermos()`](../backend/app/Services/Torrents/TermosStreamDireto.php:173)
+   [`TermosStreamDireto::limitarTermos()`](../backend/app/Services/Torrents/TermosStreamDireto.php:289)
    corta a cauda da lista em `stream_direto_max_termos` (padrão 8). O corte é
    seguro porque a lista **já vem ordenada do mais preciso ao mais amplo**: o
    que sobra são os termos que casam com a página certa, e o que cai são os
@@ -3484,7 +3507,7 @@ T4E17 de "Donas de Casa Desesperadas" (tmdb `693`), que antes morria no
    ##### O intervalo entre consultas: cadência de gente, não de robô
 
    Mesmo com menos termos, consultas em rajada ainda denunciam o bot. Entre uma
-   consulta e a seguinte, [`MotorBuscaWeb::aguardarIntervalo()`](../backend/app/Services/Torrents/MotorBuscaWeb.php:227)
+   consulta e a seguinte, [`MotorBuscaWeb::aguardarIntervalo()`](../backend/app/Services/Torrents/MotorBuscaWeb.php:964)
    dorme um tempo **sorteado** entre `stream_direto_intervalo_min` e
    `stream_direto_intervalo_max` (padrão 800–2200 ms). O sorteio é de propósito:
    um intervalo fixo também é padrão de robô.
@@ -3524,7 +3547,7 @@ T4E17 de "Donas de Casa Desesperadas" (tmdb `693`), que antes morria no
    Com a âncora de domínio fora da query, a página pode vir de qualquer lugar da
    web — e é a **extração** que decide se ela serve. Antes de varrer o HTML inteiro
    atrás de links, o provedor chama
-   [`ExtratorVideo::temMidia()`](../backend/app/Services/Torrents/ExtratorVideo.php:181),
+   [`ExtratorVideo::temMidia()`](../backend/app/Services/Torrents/ExtratorVideo.php:372),
    que responde uma pergunta só: **esta página tem um player ou um link direto de
    vídeo?** A checagem aceita tanto um arquivo de vídeo (`.mp4`, `.m3u8`, ...)
    quanto um iframe de embed de plataforma conhecida.
@@ -3623,12 +3646,12 @@ antes: a consulta direta não chegou a ser acionada. Para esse caso há um segun
 rastro, no acionamento e na entrada do provedor:
 
 - `debug` **"Busca de torrents: acionando o stream direto."** — em
-  [`TorrentService::buscarPeloStreamDireto()`](../backend/app/Services/TorrentService.php:238),
+  [`TorrentService::buscarPeloStreamDireto()`](../backend/app/Services/TorrentService.php:224),
   com os títulos que serão passados. É a prova de que o método entrou em cena.
 - `debug` **"Busca de torrents: stream direto devolveu."** — quantas fontes
   voltaram.
 - `debug` **"Stream direto: fallback acionado."** — em
-  [`CatalogoProvedores::buscarFallbackDireto()`](../backend/app/Services/Torrents/CatalogoProvedores.php:510),
+  [`CatalogoProvedores::buscarFallbackDireto()`](../backend/app/Services/Torrents/CatalogoProvedores.php:495),
   com títulos, ano, `imdb_id` e temporada/episódio.
 - `info` **"Stream direto: fallback desligado, provedor não consultado."** — a chave
   `TORRENTS_STREAM_DIRETO_HABILITADO` está `false`. **Este é o log que explica o
@@ -3664,7 +3687,7 @@ domínio do agregador onde o vídeo foi achado. A linha do censo continua sendo 
 A montagem fica em
 [`NormalizaFonte::montarFonteDireta()`](../backend/app/Services/Torrents/NormalizaFonte.php:96).
 Como não há malha, a fonte usa `SEEDS_NAO_MEDIDOS` (1) para sobreviver ao filtro
-de `seeds <= 0` em [`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:347),
+de `seeds <= 0` em [`TorrentService::ordenar()`](../backend/app/Services/TorrentService.php:503),
 que ganhou um ramo próprio para `tipo === 'direto'` — sem ele, o filtro
 `magnet === ''` descartaria toda fonte direta.
 
@@ -3681,7 +3704,7 @@ torrent.
 
 A sondagem (`ffprobe`) também aceita URL — e, desde o ajuste do HLS remoto
 descrito abaixo, recebe as mesmas opções de entrada do FFmpeg. A guarda de
-existência em disco ([`analisarArquivo()`](../media-service/src/services/hls.js:342))
+existência em disco ([`analisarArquivo()`](../media-service/src/services/hls.js:371))
 vale só para arquivo local: aplicada a uma URL, ela derrubava a sondagem antes
 de a primeira requisição sair. Com o cabeçalho lido, a sessão decide o modo pelo
 **codec** (`h264` + áudio copiável → `remux`) em vez de cair sempre no transcode
@@ -3710,7 +3733,7 @@ linha de vídeo publicada:
 | `allowed_segment_extensions` | lista fixa do demuxer (`html` está nela; `js`, `css` e `woff` não) | invalida o playlist ao topar com um `#EXTINF` cujo URI traz extensão fora da lista |
 | `extension_picky` | ligada | recusa o segmento quando a extensão da URL não casa com o formato detectado — `mismatches allowed extensions in url .../audio_por_1.js` |
 
-[`opcoesEntradaHlsRemota()`](../media-service/src/services/hls.js:169) desarma
+[`opcoesEntradaHlsRemota()`](../media-service/src/services/hls.js:186) desarma
 as duas de uma vez, com `-extension_picky 0` e uma `-allowed_segment_extensions`
 que **preserva a lista de fábrica** (`aac`, `vtt`, `fmp4`, ...) e acrescenta a
 família falsa. Preservar é o ponto: passar a opção **substitui** o padrão, então
@@ -3719,12 +3742,12 @@ uma lista enxuta só com as extensões do embed quebraria playlists legítimas.
 O ajuste é condicionado à origem, porque as duas são opções do *demuxer* HLS e
 num MP4 o FFmpeg aborta com `Option not found` em vez de ignorá-las:
 
-- [`ehPlaylistHlsRemota()`](../media-service/src/services/hls.js:142) reconhece
+- [`ehPlaylistHlsRemota()`](../media-service/src/services/hls.js:159) reconhece
   o caso: origem `http(s)` **e** `.m3u8` (a extensão que veio com a fonte ou a do
   próprio endereço);
-- [`analisarArquivo()`](../media-service/src/services/hls.js:342) passa as
+- [`analisarArquivo()`](../media-service/src/services/hls.js:371) passa as
   opções ao `ffprobe`;
-- [`iniciarConversao()`](../media-service/src/services/hls.js:771) passa as
+- [`iniciarConversao()`](../media-service/src/services/hls.js:804) passa as
   mesmas opções como opções de entrada do comando.
 
 Com a sondagem funcionando, o modo deixa de ser o transcode conservador: a
@@ -3816,7 +3839,7 @@ quebrado era o forwarder, e o preço dele só aparecia no container de musl.
   própria, para o playlist e para cada segmento — ganhou mais de uma chance
   dentro da mesma chamada.
 - **A espera é em segundos, não em minutos.**
-  [`aguardarBufferInicial()`](../media-service/src/services/hls.js:1223) passou a
+  [`aguardarBufferInicial()`](../media-service/src/services/hls.js:1256) passou a
   aceitar um `estaVivo`: quando o processo já encerrou, a espera termina na hora
   com a causa real em vez de exibir "convertendo" até o prazo. Foi a diferença
   entre três minutos e quatro segundos.
@@ -3824,11 +3847,11 @@ quebrado era o forwarder, e o preço dele só aparecia no container de musl.
   [`conferirNomeDaFonte()`](../media-service/src/services/sessoes.js:471) resolve
   o nome antes de chamar o FFmpeg, com algumas voltas — uma falha de resolução
   medida custa cerca de um segundo, então a paciência é contada em tempo.
-  [`analisarArquivo()`](../media-service/src/services/hls.js:342) repete a
+  [`analisarArquivo()`](../media-service/src/services/hls.js:371) repete a
   sondagem quando a falha é transitória, a conversão é reaberta até três vezes
   (cada abertura é uma conexão nova, com resolução nova) e, no meio do filme, o
   `-reconnect` do protocolo HTTP cobre a queda de um segmento isolado.
-  [`ehFalhaTransitoria()`](../media-service/src/services/hls.js:259) é quem
+  [`ehFalhaTransitoria()`](../media-service/src/services/hls.js:288) é quem
   decide o que merece nova tentativa: `EAI_AGAIN`, `ETIMEDOUT`, `ECONNRESET`, o
   `I/O error` do HTTP e as recusas do CDN (`429`, `5xx`).
 
@@ -3857,14 +3880,14 @@ nenhum.
 
 Olhar só "dublado" deixava esses casos caírem em `original`, e o overlay marcava
 como idioma original um vídeo que toca dublado. A correção está em
-[`ProvedorStreamDireto::idiomaDaPagina()`](../backend/app/Services/Torrents/ProvedorStreamDireto.php:310),
+[`ProvedorStreamDireto::idiomaDaPagina()`](../backend/app/Services/Torrents/ProvedorStreamDireto.php:1049),
 que agora checa, nesta ordem:
 
 1. **"legendado"** primeiro, porque é a única tag que **nega** o áudio PT-BR: um
    endereço "legendado pt br" carrega o `pt` da legenda, não da dublagem. Se
    viesse depois, o código `pt` o classificaria como dublado.
 2. **"dublado"/"dublada"**, a prova explícita.
-3. **Indícios de PT-BR no caminho** ([`enderecoIndicaPortugues()`](../backend/app/Services/Torrents/ProvedorStreamDireto.php:343)):
+3. **Indícios de PT-BR no caminho** ([`enderecoIndicaPortugues()`](../backend/app/Services/Torrents/ProvedorStreamDireto.php:1082)):
    o segmento de país (`/br/`, `/pt/`, `/pt-br/`, `/brasil/`, `/brazil/`) e o
    código `pt` como palavra no slug, via
    [`IndiciosPtBr::temCodigoPt()`](../backend/app/Support/IndiciosPtBr.php:151).
@@ -3884,7 +3907,7 @@ conversão**. O resultado era um link HTTP saudável rotulado como "sem peers" e
 abandonado no meio da conversão.
 
 O fluxo direto ganhou tratamento próprio em
-[`PlayerOverlay::aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:1714):
+[`PlayerOverlay::aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:1745):
 
 - O teto de espera é `TIMEOUT_DIRETO_MS` (5 min), não o `TIMEOUT_FONTE_MS` (90 s)
   pensado para torrent.
@@ -3894,7 +3917,7 @@ O fluxo direto ganhou tratamento próprio em
 - A mensagem do overlay mostra o percentual (`Convertendo o vídeo... 42%`) em vez
   de "sem peers".
 
-Do lado do media-service, [`aguardarBufferInicial()`](../media-service/src/services/hls.js:1223)
+Do lado do media-service, [`aguardarBufferInicial()`](../media-service/src/services/hls.js:1256)
 deixou de ser um veredito de morte por relógio: ele aceita um callback
 `aoProgredir` e, quando a conversão avançou desde a última checagem, **reinicia o
 prazo**. Assim o `timeoutMs` mede estagnação real, e não a duração total da
@@ -3922,11 +3945,11 @@ TORRENTS_STREAM_DIRETO_RESOLVER_EMBEDS=true
 TORRENTS_TEMPO_TOTAL_BUSCA=55
 ```
 
-`TORRENTS_TEMPO_TOTAL_BUSCA` é o **teto global** de uma busca. Como os dois métodos
-rodam sempre — o stream direto primeiro, a cascata de torrents depois —, os
-orçamentos de canal somam no tempo da resposta; o teto é quem impede essa soma de
-passar do que o frontend espera. Cada canal abre com o menor prazo entre o seu
-orçamento e o que sobrou do teto.
+`TORRENTS_TEMPO_TOTAL_BUSCA` é o **teto global** de uma busca. O stream direto roda
+primeiro; só quando ele volta vazio é que a cascata de torrents entra, com o que
+sobrou do teto — então os dois nunca correm juntos e a soma das esperas não passa
+disso. Cada canal abre com o menor prazo entre o seu orçamento e o que sobrou do
+teto.
 
 `TORRENTS_STREAM_DIRETO_MOTORES` é a lista de motores de busca (separada por
 vírgula). O padrão é o **SearXNG interno** do compose
@@ -3996,7 +4019,7 @@ scraper depende de páginas de terceiros, então a taxa de acerto varia com o
 acervo — conteúdo muito raro pode não ter página nenhuma, e a lista continua
 vazia.
 
-### Os dois métodos rodam sempre, na mesma busca
+### O stream direto vence no primeiro acerto e dispensa a cascata
 
 O stream direto nasceu como fallback: só entrava depois de a cascata de torrents
 terminar vazia. O desenho tinha um custo escondido — quando ele era o canal certo
@@ -4010,44 +4033,57 @@ pelo scraper, série recente pelos torrents. O roteador funcionou, mas pagou um
 preço alto: **o usuário de cada metade perdia a outra**. Numa série antiga não
 havia cruzamento para os torrents, e numa recente o scraper só entrava se a lista
 já filtrada viesse vazia. Pior: uma série de 2004 podia ter o release fresco na
-temporada nova, e o ano da **série** mandava a busca pelo canal errado.
+temporada nova, e o ano da **série** mandava a busca pelo canal errado. Depois o
+roteamento saiu, mas os dois métodos passaram a rodar **sempre**, somando a lista
+dos dois em toda busca — e aí o custo do acerto era pagar o canal que não tinha
+nada a oferecer.
 
-A correção tirou o roteamento. Hoje os dois métodos rodam sempre, na mesma busca e
-nesta ordem:
+Hoje a ordem é fixa e a busca **para no primeiro acerto**:
 
 1. **Stream direto** — a fonte direta toca sem malha e resolve pelo id do TMDB
    quando o agregador indexou o título. É o primeiro passo porque a resposta dele
    é a única que não depende de descobrir página nem de baixar nada.
-2. **Cascata de torrents** — logo em seguida, com o volume que os indexadores dão
-   e a qualidade que só um release tem.
+2. **Cascata de torrents** — só quando o direto volta **vazio**, com o volume que
+   os indexadores dão e a qualidade que só um release tem.
 
-O resultado é uma lista única com as duas origens, e a montagem final ordena: a
-fonte direta vem primeiro (não depende de peers), os torrents depois. Quem não
-achar nada num método tem o outro garantido — sem depender de idade, de limiar ou
-de acerto de catálogo.
+Quem faz o corte é o [`TorrentService::fontes()`](../backend/app/Services/TorrentService.php:61):
+com a lista direta na mão, ele chama
+[`dispensarCascata()`](../backend/app/Services/Torrents/CatalogoProvedores.php:717)
+e devolve a fonte direta sozinha. A cascata de torrents não é consultada — não faz
+sentido perguntar aos trackers depois de ter uma URL que toca na hora, e essa
+pergunta custaria os segundos que o método existe justamente para economizar. Com o
+direto vazio, o `buscar()` da cascata roda como sempre e o que limita o tempo é o
+teto global da busca. O desfecho é binário: ou a busca termina no acervo web, ou
+passa a vez para os trackers — nunca as duas coisas na mesma resposta.
 
 #### O teto global: como a soma dos dois caberia no que o frontend espera
 
-Rodar os dois sempre tem uma consequência aritmética: os prazos deixariam de ser
-um limite e virariam soma. Dois orçamentos de 45 s dariam 90 s de pior caso — acima
+Quando os dois canais rodam na mesma busca — e agora isso só acontece quando o
+direto voltou vazio —, há uma consequência aritmética: os prazos deixariam de ser
+um limite e virariam soma. Dois orçamentos de 45 s dariam 90 s de pior caso, acima
 dos ~60 s que o frontend espera, e a requisição seria cancelada antes de a lista
 chegar.
 
 O [`OrcamentoBusca`] ganhou então um **teto global** (`tempo_total_busca`, padrão
 55 s), definido pelo [`TorrentService`] no início da busca. `abrir()` corta cada
-prazo nele: o primeiro método gasta o seu orçamento à vontade, mas o segundo só
-enxerga o que **sobrou** do teto. Se o stream direto consumiu 40 s, a cascata abre
-com os 15 s restantes; se consumiu tudo, ela abre esgotada e o catálogo encerra sem
-perguntar. Assim os dois métodos sempre rodam, mas a resposta nunca passa do teto.
+prazo nele: quando o stream direto gasta os 40 s dele e volta vazio, a cascata abre
+com os 15 s restantes; se ele consumiu o teto inteiro, ela abre esgotada e o
+catálogo encerra sem perguntar. Quando o direto acha, o teto não tem o que cortar —
+a busca acaba ali e o relógio é fechado por
+[`fecharOrcamento()`](../backend/app/Services/Torrents/CatalogoProvedores.php:733).
+De um jeito ou de outro, a resposta nunca passa do teto.
 
 ##### O censo do stream direto não pode ser apagado pela cascata
 
 O stream direto é o único provedor que não passa pela cascata: ele é acionado à
-parte e o seu censo é preenchido à mão em `buscarFallbackDireto()`. Como os dois
-métodos rodam sempre, a cascata — que chama `buscar()` logo depois — **zera o
-censo** no início, e o registro da consulta ao stream direto era apagado junto: a
-cobertura final dizia `nao_consultado` de um provedor que tinha acabado de ser
-consultado.
+parte e o seu censo é preenchido à mão em `buscarFallbackDireto()`. Como ele roda
+antes, tanto o `buscar()` da cascata quanto o
+[`dispensarCascata()`](../backend/app/Services/Torrents/CatalogoProvedores.php:717)
+**zeram o censo** logo depois, e o registro da consulta ao stream direto era
+apagado junto: a cobertura final dizia `nao_consultado` de um provedor que tinha
+acabado de ser consultado. No caminho dispensado o efeito era pior: sem o
+`buscar()`, o censo dos trackers ficaria com os números da **busca anterior** e o
+relatório mostraria `com_fonte` de um indexador que nesta busca nem foi tocado.
 
 O sintoma era confuso: o log mostrava o stream direto sendo acionado, mas o
 relatório jurava que ele nunca foi perguntado. A correção preserva o registro do
@@ -4067,7 +4103,7 @@ Cloudflare entrar em cena.
 
 O nível abaixo mora no [`BuscaAgregadores`]: ele mantém um censo **por agregador**,
 preenchido em
-[`reiniciarCenso()`](../backend/app/Services/Torrents/BuscaAgregadores.php:153) —
+[`reiniciarCenso()`](../backend/app/Services/Torrents/BuscaAgregadores.php:159) —
 que o [`ProvedorStreamDireto`] chama no início de cada varredura, e não dentro do
 gerador de `candidatas()`, porque um gerador que ninguém consome não executa o
 próprio corpo. Como no censo de provedores, **todos** os agregadores declarados
@@ -4084,9 +4120,9 @@ ter explicação.
 | `desligada` | `stream_direto_busca_direta` em `false` |
 
 Quem decide as situações de falha é o
-[`consultar()`](../backend/app/Services/Torrents/BuscaAgregadores.php:325) — é ele
+[`consultar()`](../backend/app/Services/Torrents/BuscaAgregadores.php:324) — é ele
 que sabe se a página respondeu ou se a conexão caiu —, e quem grava o sucesso é o
-[`anotar()`](../backend/app/Services/Torrents/BuscaAgregadores.php:288), porque só
+[`anotar()`](../backend/app/Services/Torrents/BuscaAgregadores.php:295), porque só
 ele vê a lista já deduplicada e o título que casou. `nao_consultado` não é decisão
 de ninguém: é o valor com que cada agregador nasce e que ninguém sobrescreveu.
 
@@ -4128,12 +4164,13 @@ espalhado: o [`ClienteHttp`] e o trait [`ConsultaComOrcamento`] leem o relógio 
 saber de qual canal se trata, e quem troca o canal é o [`CatalogoProvedores`], no
 ponto exato em que aciona cada metade da busca.
 
-Os dois orçamentos **somam** no tempo da resposta: os dois métodos sempre rodam, e
-o canal que roda depois herda o que sobrou. Quem impede a soma de estourar o que o
-frontend espera é o teto global (`tempo_total_busca`), que `abrir()` aplica sobre
-qualquer prazo de canal. O `abrirSeFechado()` continua idempotente **dentro** de
-cada canal: se o canal `stream_direto` já estiver de pé (por uma chamada anterior da
-mesma busca), o relógio não é reiniciado.
+Quando os dois canais chegam a rodar na mesma busca — o direto voltou vazio e a
+cascata entrou —, os dois orçamentos **somam** no tempo da resposta, e o canal que
+roda depois herda o que sobrou. Quem impede a soma de estourar o que o frontend
+espera é o teto global (`tempo_total_busca`), que `abrir()` aplica sobre qualquer
+prazo de canal. O `abrirSeFechado()` continua idempotente **dentro** de cada canal:
+se o canal `stream_direto` já estiver de pé (por uma chamada anterior da mesma
+busca), o relógio não é reiniciado.
 
 O valor do orçamento do stream direto precisa cobrir a descida inteira. Com os
 12 s herdados do desenho antigo, a primeira página consumia o orçamento todo e a
@@ -4213,7 +4250,7 @@ CloudFlare — como o `assistaonline.tv`, que tem o episódio — morriam com er
 tipo em vez de serem lidas. O bug não tinha relação com o conteúdo da página; era
 o estado global do cliente HTTP vazando para dentro do método.
 
-A correção em [`ClienteHttp::chamarFlareSolverr()`](../backend/app/Services/Torrents/ClienteHttp.php:472)
+A correção em [`ClienteHttp::chamarFlareSolverr()`](../backend/app/Services/Torrents/ClienteHttp.php:577)
 constrói a resposta **direto sobre o PSR-7**:
 
 ```php
@@ -4289,7 +4326,7 @@ colheita de URLs.
 
 Nem todo player entrega o arquivo. Alguns entregam só a URL de embed, que o
 media-service resolve depois. Para não perder esses casos, o
-[`ProvedorStreamDireto::rasparPagina()`](../backend/app/Services/Torrents/ProvedorStreamDireto.php:283)
+[`ProvedorStreamDireto::rasparPagina()`](../backend/app/Services/Torrents/ProvedorStreamDireto.php:494)
 passou a fazer **duas colheitas** e combiná-las:
 
 ```php
@@ -4441,10 +4478,11 @@ O ano de lançamento não decide mais nada na busca. Ele foi útil enquanto o ca
 partida era escolhido por idade, mas a decisão escondia dois erros: uma série
 antiga com temporada nova tinha o release fresco ignorado, e o usuário de cada
 metade perdia o outro método (ver
-["Os dois métodos rodam sempre"](#os-dois-métodos-rodam-sempre-na-mesma-busca)).
+["O stream direto vence no primeiro acerto"](#o-stream-direto-vence-no-primeiro-acerto-e-dispensa-a-cascata)).
 
-Hoje não há chave nem limiar a configurar: os dois métodos sempre rodam, e o que
-limita o tempo é o teto global da busca.
+Hoje não há chave nem limiar a configurar: a ordem dos métodos é fixa, o stream
+direto vence no primeiro acerto e a cascata de torrents só roda quando ele volta
+vazio. O que limita o tempo é o teto global da busca.
 
 `TORRENTS_BUSCA_IDADE_LIMITE_ANOS` e `TORRENTS_BUSCA_POR_IDADE_HABILITADA` foram
 removidas do `config/services.php` e dos `.env.example`. Se elas continuarem no seu
