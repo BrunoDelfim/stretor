@@ -482,7 +482,7 @@ o indexador que não trouxe dublado. Ver
 
 A fonte é considerada **vencedora assim que a playlist fica pronta no servidor**
 (`status === 'pronto'` com `playlist` preenchido), em
-[`aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:1745). Montar o
+[`aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:1781). Montar o
 player é um passo separado: [`iniciarPlayer()`](../frontend/src/components/PlayerOverlay.vue:348)
 não devolve mais booleano e não decide mais o destino da fonte.
 
@@ -494,7 +494,7 @@ Há ainda um caso que nem o timeout nem o `erro` cobriam: a fonte com **poucos
 peers que conecta mas não entrega bytes**. Ela não gera erro — o torrent fica
 vivo, só que a 0 MB/s — e prendia o usuário pelos 90 s inteiros. Para isso o
 overlay acompanha a telemetria de `download` em
-[`aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:1745): se nada
+[`aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:1781): se nada
 foi baixado **e** a velocidade segue zerada por `ESTAGNACAO_FONTE_MS` (20 s), a
 fonte é abandonada e o laço segue para a próxima.
 
@@ -549,7 +549,7 @@ Agora [`statusSessao()`](../frontend/src/services/streaming.js:125) traduz o 404
 num estado próprio, `inexistente`, e os dois laços de espera o tratam como
 terminal:
 
-- [`aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:1745) chama
+- [`aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:1781) chama
   `limparSessaoAtual()` e devolve `'falhou'`, liberando a fila para a próxima
   fonte.
 - [`aguardarReposicionamento()`](../frontend/src/components/PlayerOverlay.vue:1452)

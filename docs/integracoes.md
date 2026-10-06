@@ -316,12 +316,21 @@ A correção tem duas camadas, porque uma só não fecha o buraco:
    ([`temFaixaPortuguesa()`](../media-service/src/services/hls.js:596)) vira o
    fato `tem_audio_pt` no status da sessão
    ([`obterSessao()`](../media-service/src/services/sessoes.js:2255)). O frontend
-   ([`aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:1745))
+   ([`aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:1781))
    compara a promessa da fonte (`idioma` = `pt-BR`/`dual`) com esse fato: se a
    fonte prometia português e o arquivo só tem áudio original, a sessão é
    descartada e o laço segue para a próxima — em vez de tocar em inglês. Quando
    nenhuma fonte passa pelo porteiro, o overlay diz "Nenhuma fonte traz áudio em
    português" em vez de um genérico "não conseguiu conectar".
+   - **Exceção do acervo brasileiro.** O CDN do passo zero
+     (`nixplay.lat`, o host do provedor endereçável por id) re-encoda os arquivos
+     e entrega faixa `und` sem tag de idioma — como o da Odisseia, medido por
+     ffprobe. `und` é ausência de prova, não prova de áudio original, então para
+     os hosts de `ACERVOS_BRASILEIROS` o porteiro não reprova
+     ([`eAcervoBrasileiro()`](../frontend/src/components/PlayerOverlay.vue:1746)):
+     quem responde pelo idioma ali é o contrato do acervo (o vizer é site
+     brasileiro e 5/5 títulos da amostragem têm faixa `por`). Torrent, agregador
+     e embed continuam sob a prova do ffprobe.
 
 #### Os trackers PT-BR nativos saem do ar com frequência — e hoje não sobrou nenhum
 
@@ -3958,7 +3967,7 @@ conversão**. O resultado era um link HTTP saudável rotulado como "sem peers" e
 abandonado no meio da conversão.
 
 O fluxo direto ganhou tratamento próprio em
-[`PlayerOverlay::aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:1745):
+[`PlayerOverlay::aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:1781):
 
 - O teto de espera é `TIMEOUT_DIRETO_MS` (5 min), não o `TIMEOUT_FONTE_MS` (90 s)
   pensado para torrent.

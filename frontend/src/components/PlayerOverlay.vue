@@ -1722,6 +1722,42 @@ function prometePortugues(fonte) {
 }
 
 /**
+ * Acervos de arquivo cujo contrato é brasileiro por construção.
+ *
+ * O `nixplay.lat` é o CDN do provedor endereçável por id (o passo zero do
+ * stream direto): o espelho `vizer.autos` publica acervo brasileiro e **não
+ * declara idioma na API** — o backend rotula `pt-BR` por essa convenção, e o
+ * ffprobe depois encontra a faixa `por` ou `und` (arquivo re-encodado sem
+ * tag de idioma, como o da Odisseia). Para estes hosts o porteiro não rejeita
+ * o `und`: quem garante o idioma é o contrato do acervo, e a ausência de tag
+ * é falta de prova, não prova de áudio original. Todo o resto — torrent,
+ * agregador, embed — continua sob a prova do ffprobe.
+ */
+const ACERVOS_BRASILEIROS = Object.freeze(['nixplay.lat'])
+
+/**
+ * Diz se o arquivo vem de um acervo brasileiro (host em `ACERVOS_BRASILEIROS`).
+ *
+ * O critério é o host da URL do arquivo (`fonte.stream`), não o rótulo da
+ * fonte: o mesmo CDN pode ser alcançado por mais de um caminho de busca, e a
+ * URL é o único dado que aponta de onde os bytes realmente vêm. Subdomínios
+ * contam (`cdn.nixplay.lat`), uma URL malformada não conta.
+ */
+function eAcervoBrasileiro(fonte) {
+  const alvo = fonte?.stream
+
+  if (!alvo) return false
+
+  try {
+    const host = new URL(alvo).hostname.toLowerCase()
+
+    return ACERVOS_BRASILEIROS.some((dominio) => host === dominio || host.endsWith(`.${dominio}`))
+  } catch {
+    return false
+  }
+}
+
+/**
  * Aguarda o desfecho de uma única fonte.
  *
  * Devolve `{ desfecho }` com `pronto` quando a playlist ficou disponível no
@@ -1840,9 +1876,15 @@ function aguardarFonte(minhaGeracao, fonte) {
            * áudio original. A fonte é descartada em vez de tocar em inglês sob o
            * rótulo "Dublado", e o loop segue para a próxima.
            *
+           * Exceção dos acervos brasileiros (`eAcervoBrasileiro`): o CDN do passo
+           * zero re-encoda e entrega `und` sem tag de idioma, e `und` é ausência
+           * de prova — para esse host quem responde pelo idioma é o contrato do
+           * acervo, e a fonte toca mesmo com o ffprobe em silêncio. Os demais
+           * seguem o ffprobe como sempre.
+           *
            * O `null` (sem faixas para julgar) não reprova: só o `false` é prova.
            */
-          if (prometePortugues(fonte) && status.tem_audio_pt === false) {
+          if (prometePortugues(fonte) && !eAcervoBrasileiro(fonte) && status.tem_audio_pt === false) {
             await limparSessaoAtual()
             return resolve({ desfecho: 'sem_audio_pt' })
           }
