@@ -123,14 +123,6 @@ original: algumas traduções ficam curtas demais para o buscador do site
 duas fases são fundidas sem duplicar (a chave é o infohash). A chave
 `TORRENTS_TITULO_ORIGINAL_SEGUNDA_TENTATIVA` desliga a segunda fase.
 
-A busca acontece em **duas fases**. A primeira pergunta pelo título traduzido —
-é o que os trackers brasileiros publicam. Só quando essa fase não junta PT-BR
-suficiente (a meta de `TORRENTS_META_PT_BR`) o serviço repete a busca pelo título
-original: algumas traduções ficam curtas demais para o buscador do site
-("Homem-Aranha" devolve o desenho, "Spider-Man" devolve o filme). As fontes das
-duas fases são fundidas sem duplicar (a chave é o infohash). A chave
-`TORRENTS_TITULO_ORIGINAL_SEGUNDA_TENTATIVA` desliga a segunda fase.
-
 ```json
 {
   "data": {
@@ -161,6 +153,25 @@ reserva em inglês) e `provedor_rotulo` é o texto pronto para exibição. O ove
 do player mostra esse rótulo junto do idioma, o que explica de relance por que um
 filme veio com áudio original. Detalhes em
 [Integrações](integracoes.md#de-onde-veio-a-fonte).
+
+#### Quando a lista volta vazia
+
+Com o corte de idioma ligado, uma lista vazia responde por si: o título existe,
+mas não em português. A resposta chega com `200`, `fontes: []` e a explicação em
+`data.mensagem` — *"Este título ainda não está disponível em português. Assim que
+sair uma versão dublada ou em dual áudio, ele aparece aqui."* O frontend mostra
+esse texto direto no overlay, então ele é escrito para o usuário, não para o log.
+
+A outra mensagem possível é a de provedor indisponível (*"Nenhum provedor de fontes
+pôde ser consultado..."*), que é diagnóstico de configuração (chave de API faltando,
+serviço fora do ar) e pede outra ação. Quem escolhe entre as duas é o
+`TorrentController`, perguntando ao serviço se havia provedor disponível antes de
+culpar o idioma.
+
+O corte roda **durante** a busca — inclusive na varredura do stream direto, que não
+passa pela ordenação final —, então uma lista vazia significa que os dois canais
+foram ouvidos: o acervo web e os trackers. Detalhes em
+[Integrações](integracoes.md).
 
 #### Busca por episódio
 

@@ -98,13 +98,22 @@ class StreamDiretoTest extends TestCase
      *
      * @param  array<int, array<string, mixed>>  $fontes
      * @param  array<int, array<string, mixed>>  $diretas
+     * @param  bool  $cascataDispensada  `false` vira uma vigilância: o teste falha
+     *                                    se a busca dispensar a cascata quando não
+     *                                    devia (o caso da fonte direta sem PT-BR)
      */
-    private function servicoComFontes(array $fontes, array $diretas = []): TorrentService
+    private function servicoComFontes(array $fontes, array $diretas = [], bool $cascataDispensada = true): TorrentService
     {
         $catalogo = Mockery::mock(CatalogoProvedores::class);
         $catalogo->shouldReceive('buscar')->andReturn($fontes);
         $catalogo->shouldReceive('buscarFallbackDireto')->andReturn($diretas);
-        $catalogo->shouldReceive('dispensarCascata')->andReturnNull();
+
+        if ($cascataDispensada) {
+            $catalogo->shouldReceive('dispensarCascata')->andReturnNull();
+        } else {
+            $catalogo->shouldNotReceive('dispensarCascata');
+        }
+
         $catalogo->shouldReceive('reconciliarCenso')->andReturnNull();
         $catalogo->shouldReceive('fecharOrcamento')->andReturnNull();
         $catalogo->shouldReceive('temDublado')->andReturn(true);
@@ -249,6 +258,50 @@ class StreamDiretoTest extends TestCase
         $fontes = $servico->fontes('Filme Raro');
 
         $this->assertCount(0, $fontes, 'Sem PT-BR e sem fallback, a lista sai vazia — o original não volta.');
+    }
+
+    /**
+     * O corte de idioma vale para a fonte direta, e não só para os torrents.
+     *
+     * A lista do direto **não passa por `ordenar()`**: quando vem preenchida, ela
+     * substitui o resultado e a cascata nem é ouvida. Sem o crivo de idioma na
+     * busca, um link que a página não etiquetou — o `original` que a montagem
+     * deduziria do título — encerrava a busca e ia para o player no lugar da
+     * resposta, deixando o dublado que os trackers tinham sem ser procurado. Aqui
+     * a fonte sem PT-BR declarado é descartada e quem responde é a cascata.
+     */
+    public function test_fonte_direta_sem_pt_br_declara_nao_dispensa_a_cascata(): void
+    {
+        $servico = $this->servicoComFontes(
+            [$this->fonteTorrent('dublado')],
+            [$this->fonteDireta('web', 'original')],
+            cascataDispensada: false,
+        );
+
+        $fontes = $servico->fontes('Filme Dublado');
+
+        $this->assertCount(1, $fontes, 'A fonte direta sem PT-BR não entra, e a cascata responde.');
+        $this->assertSame('torrent', $fontes[0]['tipo']);
+        $this->assertSame('pt-BR', $fontes[0]['idioma']);
+    }
+
+    /**
+     * O mesmo crivo com a fonte direta em legendado: o áudio é o original, então
+     * ela também não responde pela busca — a legenda em PT-BR não é o que o
+     * usuário pediu.
+     */
+    public function test_fonte_direta_legendada_nao_dispensa_a_cascata(): void
+    {
+        $servico = $this->servicoComFontes(
+            [$this->fonteTorrent('dublado')],
+            [$this->fonteDireta('web', 'legendado')],
+            cascataDispensada: false,
+        );
+
+        $fontes = $servico->fontes('Filme Dublado');
+
+        $this->assertCount(1, $fontes);
+        $this->assertSame('torrent', $fontes[0]['tipo']);
     }
 
     /**

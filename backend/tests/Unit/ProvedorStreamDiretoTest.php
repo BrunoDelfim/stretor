@@ -190,6 +190,31 @@ class ProvedorStreamDiretoTest extends TestCase
     }
 
     /**
+     * O crivo de idioma da busca direta só aceita PT-BR provado.
+     *
+     * É a barreira que roda **na busca**: uma página que rendeu só link de idioma
+     * não declarado não encerra a varredura — a próxima candidata (e, no fim, o
+     * agregador seguinte) é perguntada. Sem isso, a primeira página que
+     * respondesse com qualquer áudio virava a resposta.
+     */
+    public function test_crivo_de_idioma_da_fonte_direta(): void
+    {
+        $this->assertTrue($this->invocar('ptBrDeclarado', ['idioma' => 'pt-BR']));
+        $this->assertTrue($this->invocar('ptBrDeclarado', ['idioma' => 'dual']));
+        $this->assertTrue(
+            $this->invocar('ptBrDeclarado', ['idioma' => 'original', 'pt_br' => true]),
+            'A etiqueta pt_br da inspeção de conteúdo vence o idioma cru.'
+        );
+
+        $this->assertFalse($this->invocar('ptBrDeclarado', ['idioma' => 'legendado']));
+        $this->assertFalse($this->invocar('ptBrDeclarado', ['idioma' => 'original']));
+        $this->assertFalse(
+            $this->invocar('ptBrDeclarado', []),
+            'Sem idioma declarado não há prova nenhuma: a fonte não responde pela busca.'
+        );
+    }
+
+    /**
      * O `assistaonline.tv` respondia 200 com a página "Deployment Paused" do
      * Vercel — o status não denuncia, mas o corpo sim.
      */

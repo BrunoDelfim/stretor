@@ -124,10 +124,16 @@ class TorrentController extends Controller
     /**
      * Escolhe o aviso quando a lista de fontes veio vazia.
      *
-     * A distinção importa para o usuário: "nenhum provedor pôde ser consultado" é
-     * problema de configuração (chave faltando, serviço fora do ar) e pede uma
-     * ação diferente de "nenhuma fonte encontrada", que é apenas a ausência de
-     * release para aquele filme.
+     * Com o corte duro de idioma ligado, a lista vazia quase sempre diz uma coisa
+     * só: o título existe, mas não em português — o acervo web devolveu link sem
+     * áudio PT-BR ou nada, os trackers não tinham release dublado, e o corte
+     * descartou o resto. É o texto que o usuário lê no overlay depois de a busca
+     * ter percorrido os dois canais, e ele é escrito para ele, não para o log.
+     *
+     * A outra mensagem (provedor indisponível) é diagnóstico de configuração
+     * (chave faltando, serviço fora do ar) e pede uma ação bem diferente de
+     * "espere sair a dublagem". Quem decide entre as duas é o censo: sem provedor
+     * disponível, culpar o idioma seria mentir sobre o motivo.
      *
      * @param  array<int, array<string, mixed>>  $fontes
      */

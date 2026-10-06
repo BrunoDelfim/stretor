@@ -78,10 +78,13 @@ monta a query, resolve páginas de streaming pelo acervo dos agregadores de víd
 e extrai o link MP4/HLS do HTML da página. Ele é o **primeiro método** da busca, e
 não um socorro de última hora: quando acha, a resposta sai dali e a cascata de
 torrents nem chega a ser consultada. O corte fica no `TorrentService`, logo depois
-do acionamento: com a lista direta na mão, ele chama `dispensarCascata()` — que
-zera o censo dos trackers, para o relatório não exibir números da busca anterior
-como se fossem desta — e devolve a lista direta. Quando o direto volta vazio, aí
-sim a cascata roda, com o que sobrou do teto global da busca. A fonte resultante
+do acionamento: antes de dispensar a cascata, a lista direta passa pelo mesmo corte
+de idioma do resto da busca (`ePtBr()`) — só uma fonte com áudio PT-BR provado
+conta como acerto, e uma sem declaração de idioma é descartada como se o direto
+tivesse voltado vazio. Com a fonte em PT-BR na mão, o `dispensarCascata()` zera o
+censo dos trackers — para o relatório não exibir números da busca anterior como se
+fossem desta — e devolve a lista direta. Quando o direto volta vazio (ou perde tudo
+no corte), aí sim a cascata roda, com o que sobrou do teto global da busca. A fonte resultante
 não tem magnet — carrega uma URL no campo `stream` — e o media-service a converte
 para HLS pelo endpoint `POST /sessao-direta`, sem passar pelo WebTorrent.
 O player consome a mesma playlist e não distingue os dois caminhos. Detalhes em

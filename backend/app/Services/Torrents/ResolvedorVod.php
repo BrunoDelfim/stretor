@@ -30,8 +30,9 @@ use Illuminate\Support\Facades\Log;
  *
  * ## O que sai daqui
  *
- * Uma URL de `.mp4`/`.m3u8` e o idioma. O acervo é PT-BR, então o idioma sai
- * como `pt-BR` — a mesma marca que o [`IdiomaFonte`] traduz para "Dublado". A URL
+ * Uma URL de `.mp4`/`.m3u8` e o idioma. O idioma é o que o espelho **declarar** na
+ * resposta; sem declaração, vale o contrato do acervo (`IDIOMA_DO_ACERVO`, hoje
+ * `pt-BR`) — a mesma marca que o [`IdiomaFonte`] traduz para "Dublado". A URL
  * só é devolvida quando o provedor a marca como `native`: quando ele responde
  * `embed`, está apontando para um agregador de terceiro, e esse caminho é do
  * [`ResolvedorEmbed`], não deste — oferecer o embed cru entregaria ao usuário uma
@@ -64,6 +65,21 @@ class ResolvedorVod
      * responde no mesmo formato.
      */
     private const ROTA_DO_PLAYER = '/wp-json/api/v1/player';
+
+    /**
+     * Idioma que o acervo deste provedor entrega quando ele não declara nada.
+     *
+     * É uma **declaração do espelho**, não um chute: o que os hosts desta família
+     * publicam é a versão brasileira do título, e é por isso que `pt-BR` sempre foi
+     * o valor devolvido. O que muda agora é a forma: quando a resposta traz um
+     * campo de idioma (`idioma`, `language`, `audio`, `audio_language` ou os
+     * booleanos `dublado`/`legendado`), é ele que vale — e um espelho que declarar
+     * legendado entrega `legendado`, que o crivo de idioma da busca descarta como
+     * qualquer outra fonte sem áudio PT-BR provado. Sem campo nenhum, vale o
+     * contrato do acervo; a constante existe para essa escolha ficar escrita num
+     * lugar só, em vez de espalhada em literais.
+     */
+    private const IDIOMA_DO_ACERVO = 'pt-BR';
 
     /**
      * Formatos que o media-service aceita como fonte direta.
@@ -195,12 +211,55 @@ class ResolvedorVod
             return null;
         }
 
+        /*
+         * O idioma sai do que o espelho declarou, e não de um literal fixo: um
+         * host que anota a faixa na resposta é ouvido. Sem declaração nenhuma,
+         * vale o contrato do acervo (ver `IDIOMA_DO_ACERVO`).
+         */
+        $idioma = $this->idiomaDeclarado($dados) ?? self::IDIOMA_DO_ACERVO;
+
         Log::debug('Stream direto: VOD resolvido pelo id.', [
             'host' => $host,
             'url' => $url,
+            'idioma' => $idioma,
         ]);
 
-        return ['url' => $url, 'idioma' => 'pt-BR'];
+        return ['url' => $url, 'idioma' => $idioma];
+    }
+
+    /**
+     * Lê o idioma que o provedor declarou na resposta, quando ele declara algum.
+     *
+     * A leitura é defensiva porque o formato é de terceiro: os campos podem
+     * aparecer com qualquer um dos nomes usados aqui, vir preenchidos com o
+     * código de áudio, o nome do idioma ou a palavra que a comunidade usa
+     * ("Dublado", "Legendado", "Dual Áudio"), e a maioria dos espelhos não traz
+     * campo nenhum. O primeiro valor com conteúdo vence; a ausência devolve
+     * `null`, e aí o chamador cai para o contrato do acervo.
+     *
+     * O texto sai cru de propósito: quem sabe traduzir rótulo e código para o
+     * [`IdiomaFonte`] é o `NormalizaFonte::montarFonteDireta()`, e repetir essa
+     * classificação aqui faria dois lugares divergirem com o tempo.
+     *
+     * @param  array<string, mixed>  $dados
+     */
+    private function idiomaDeclarado(array $dados): ?string
+    {
+        foreach (['idioma', 'language', 'audio', 'audio_language', 'audio_lang'] as $campo) {
+            $valor = $dados[$campo] ?? null;
+
+            if (is_string($valor) && trim($valor) !== '') {
+                return trim($valor);
+            }
+        }
+
+        foreach (['dublado', 'legendado', 'dual'] as $campo) {
+            if (($dados[$campo] ?? null) === true) {
+                return $campo;
+            }
+        }
+
+        return null;
     }
 
     /**

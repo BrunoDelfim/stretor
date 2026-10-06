@@ -63,6 +63,29 @@ class ResolvedorVodTest extends TestCase
         $this->assertSame('pt-BR', $resolvido['idioma']);
     }
 
+    /**
+     * O idioma sai do que o espelho declarou; sem declaração, vale o acervo.
+     *
+     * O host é o mesmo, mas agora a declaração dele é ouvida: um espelho que
+     * marca a faixa como legendada não pode sair etiquetado de dublado, senão o
+     * crivo de idioma da busca o aceitaria como se o áudio fosse PT-BR.
+     */
+    public function test_idioma_declarado_pelo_espelho_e_respeitado(): void
+    {
+        $this->comHosts(['https://vizer.autos']);
+
+        Http::fake([
+            'https://vizer.autos/wp-json/api/v1/player' => Http::response(
+                $this->respostaNativa(self::URL_FILME) + ['audio_language' => 'Legendado']
+            ),
+        ]);
+
+        $resolvido = $this->resolvedor()->resolver('550', null, null, 10);
+
+        $this->assertNotNull($resolvido);
+        $this->assertSame('Legendado', $resolvido['idioma']);
+    }
+
     public function test_filme_manda_type_movie_sem_temporada(): void
     {
         $this->comHosts(['https://vizer.autos']);

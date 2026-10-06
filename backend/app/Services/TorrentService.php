@@ -100,11 +100,33 @@ class TorrentService
         $diretas = $this->buscarPeloStreamDireto($titulo, $ano, $imdbId, $tituloOriginal, $temporada, $episodio, $tmdbId, $titulos);
 
         /*
-         * Com a fonte direta na mão, a cascata é dispensada — e o censo dos
-         * provedores de torrent é zerado junto, pela mesma razão que o relatório
-         * existe: sem isso ele mostraria os números e as fontes da busca anterior
-         * como se fossem desta, e a cobertura diria que os trackers entregaram o
-         * que foi, na verdade, achado no acervo web.
+         * O corte de idioma roda **na busca**, e não só na montagem final.
+         *
+         * A lista direta não passa por `ordenar()` — ela substitui o resultado
+         * antes disso —, então sem esta barreira uma fonte direta de idioma não
+         * declarado (o `original` que a página não etiquetou) entrava como
+         * resposta, dispensava a cascata e mandava para o player um áudio que o
+         * usuário não pediu. O idioma só aparecia como problema na preparação da
+         * exibição, quando o estrago já estava feito: a cascata de torrents nunca
+         * era ouvida naquele título.
+         *
+         * Com o filtro aqui, o critério é o mesmo da cascata — só áudio PT-BR
+         * provado (dublado ou dual) responde pela busca. Uma fonte direta sem
+         * PT-BR declarado é descartada, e a busca segue para o próximo provedor,
+         * exatamente como se o direto tivesse voltado vazio. É o que permite ao
+         * fallback de torrents achar o dublado que o acervo web não tinha.
+         */
+        $diretas = array_values(array_filter(
+            $diretas,
+            fn (array $fonte): bool => $this->ePtBr($fonte)
+        ));
+
+        /*
+         * Com a fonte direta em PT-BR na mão, a cascata é dispensada — e o censo
+         * dos provedores de torrent é zerado junto, pela mesma razão que o
+         * relatório existe: sem isso ele mostraria os números e as fontes da
+         * busca anterior como se fossem desta, e a cobertura diria que os
+         * trackers entregaram o que foi, na verdade, achado no acervo web.
          */
         if ($diretas !== []) {
             $this->catalogo->dispensarCascata();

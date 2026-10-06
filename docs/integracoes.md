@@ -2598,6 +2598,38 @@ episódio). Quando a cascata também roda — o caso em que o direto voltou vazi
 que impede os dois prazos de somarem além do que o frontend espera é o teto global
 (`TORRENTS_TEMPO_TOTAL_BUSCA`), que corta cada canal em `abrir()`.
 
+##### O corte de idioma roda na busca, e não só na montagem
+
+A fonte direta tem um caminho próprio até a lista final: ela **não** passa por
+`ordenar()`, que é onde o corte duro de idioma do resto da busca acontece. Ela já
+chega montada e é devolvida como está — e era por isso que um link que a página não
+etiquetou atravessava a busca inteira, dispensava a cascata e só virava problema na
+preparação da exibição, quando o usuário já estava olhando para um áudio que não
+pediu. O título que só tinha dublado nos trackers nunca era procurado.
+
+O corte passou a rodar em dois pontos, os dois **dentro da busca**:
+
+1. **Na varredura das páginas**, em
+   [`ProvedorStreamDireto::visitar()`](../backend/app/Services/Torrents/ProvedorStreamDireto.php:462):
+   depois de raspar uma página, só as fontes com PT-BR **declarado** contam como
+   acerto (`pt_br = true` ou `idioma` dublado/dual — o crivo de
+   [`ptBrDeclarado()`](../backend/app/Services/Torrents/ProvedorStreamDireto.php:420)).
+   Uma página que rendeu só link legendado ou sem etiqueta nenhuma **não** encerra a
+   varredura: as próximas candidatas são abertas e o agregador seguinte também. O
+   descarte fica em `debug` **"Stream direto: fonte sem PT-BR declarado descartada
+   na busca."** — e é ele que explica uma busca que demorou porque abriu várias
+   páginas.
+2. **Na lista que o provedor devolveu**, em
+   [`TorrentService::fontes()`](../backend/app/Services/TorrentService.php:119): o
+   filtro por `ePtBr()` roda **antes** do `dispensarCascata()`. É esse detalhe de
+   ordem que muda o desfecho — com a lista vazia depois do corte, o código cai no
+   `else` e a cascata de torrents roda como se o direto tivesse voltado vazio.
+
+O critério é o mesmo da cascata: só áudio PT-BR provado (dublado ou dual) responde
+pela busca. Quando nem o acervo web nem os trackers têm o áudio em português, a
+lista sai vazia e o cliente mostra que o título ainda não está disponível em
+português, em vez de oferecer um release que o usuário não pediu.
+
 ##### A fonte direta é marcada pelo site de origem
 
 O `provedor` de uma fonte direta deixou de ser o nome do método: ele carrega o
@@ -3204,6 +3236,18 @@ zero** do [`ProvedorStreamDireto`]: é a primeira consulta, antes do motor e dos
 agregadores. Quando ele resolve, a cascata nem começa; quando devolve "sem
 fonte", a varredura segue exatamente como era.
 
+O idioma da fonte sai daqui também, e agora é lido em vez de presumido. Quando o
+espelho declara a faixa (`idioma`, `language`, `audio`, `audio_language`,
+`audio_lang`) ou marca um booleano (`dublado`, `legendado`, `dual`), é essa
+declaração que vale; sem declaração nenhuma, vale o contrato do acervo
+([`IDIOMA_DO_ACERVO`](../backend/app/Services/Torrents/ResolvedorVod.php:82), hoje
+`pt-BR`), porque o que essa família de hosts publica é a versão brasileira do
+título. O valor alimenta `idioma` e `idioma_titulo` da fonte montada, e é ele que o
+corte de idioma da busca lê — um espelho que declarar faixa legendada entrega uma
+fonte legendada, e essa fonte não responde pela busca. A tradução entre rótulo
+("Dublado") e código (`pt-BR`) continua sendo do `NormalizaFonte::montarFonteDireta()`,
+para não existirem duas classificações de idioma no projeto.
+
 A lista de espelhos é configurável (`stream_direto_vod_hosts`) porque esses
 domínios giram com frequência e nem sempre carregam o mesmo acervo — o primeiro
 que resolver encerra a tentativa. Vazia, cai no padrão embutido (`vizer.autos`).
@@ -3662,6 +3706,13 @@ rastro, no acionamento e na entrada do provedor:
   consultado."** — a lista de títulos chegou vazia.
 - `debug` **"Stream direto: fallback concluído."** — fontes devolvidas e tempo
   gasto.
+- `debug` **"Stream direto: fonte sem PT-BR declarado descartada na busca."** — uma
+  página rendeu link e o corte de idioma o derrubou (legendado ou sem etiqueta). A
+  varredura **não** parou ali: ela seguiu para as próximas candidatas e, no fim, para
+  o agregador seguinte. É o log que explica uma busca direta demorada que termina com
+  a mesma lista vazia de sempre — e, do lado de fora, é o que separa "o título não
+  está no acervo" de "está, mas em outro idioma". Quando o direto perde tudo no corte,
+  a cascata de torrents entra como se ele tivesse voltado vazio.
 
 A ordem de leitura é: se o `debug` "acionando o stream direto" aparece mas o
 `debug` "fallback acionado" não, o problema está entre o `TorrentService` e o

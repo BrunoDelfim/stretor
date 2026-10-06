@@ -2078,11 +2078,13 @@ async function iniciar() {
     if (cancelado || minhaAbertura !== abertura) return
 
     if (!fontes.length) {
-      // O backend explica o motivo quando a lista volta vazia: "nenhuma fonte
-      // encontrada" é ausência de release, "nenhum provedor pôde ser consultado"
-      // é configuração faltando. Sem essa distinção o usuário não sabe se o
-      // problema é o filme ou o sistema.
-      erro.value = aviso || 'Nenhuma fonte encontrada para este título no momento.'
+      // O backend explica o motivo quando a lista volta vazia: "ainda não
+      // disponível em português" é o corte de idioma (nenhum provedor declarou
+      // áudio PT-BR), "nenhum provedor pôde ser consultado" é configuração
+      // faltando. Sem essa distinção o usuário não sabe se o problema é o filme
+      // ou o sistema. O texto local é só a rede de segurança de quando o backend
+      // não manda aviso nenhum.
+      erro.value = aviso || 'Este título ainda não está disponível em português. Assim que sair uma versão dublada ou em dual áudio, ele aparece aqui.'
       estado.value = 'erro'
       return
     }

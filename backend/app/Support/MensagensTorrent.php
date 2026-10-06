@@ -11,7 +11,17 @@ namespace App\Support;
  */
 final class MensagensTorrent
 {
-    public const SEM_FONTES = 'Nenhuma fonte encontrada para este título no momento.';
+    /**
+     * Aviso de lista vazia, com o recado que o corte de idioma impõe.
+     *
+     * A lista sai vazia quando **nenhum** provedor declarou áudio PT-BR — não
+     * porque o título não exista em algum lugar, mas porque ele ainda não tem
+     * versão em português nas fontes consultadas. Dizer só "nenhuma fonte
+     * encontrada" mandava o usuário procurar o problema no lugar errado (chave de
+     * API, serviço fora do ar). A mensagem agora diz o que de fato aconteceu e o
+     * que ele deve esperar.
+     */
+    public const SEM_FONTES = 'Este título ainda não está disponível em português. Assim que sair uma versão dublada ou em dual áudio, ele aparece aqui.';
 
     public const FALHA_PROVEDOR = 'Não foi possível consultar as fontes agora. Tente novamente em instantes.';
 

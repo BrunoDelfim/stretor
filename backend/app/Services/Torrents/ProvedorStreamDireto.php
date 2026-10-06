@@ -3,6 +3,7 @@
 namespace App\Services\Torrents;
 
 use App\Contracts\ProvedorTorrents;
+use App\Enums\IdiomaFonte;
 use App\Support\FiltroConteudoAdulto;
 use App\Support\IndiciosPtBr;
 use Illuminate\Support\Facades\Log;
@@ -401,6 +402,35 @@ class ProvedorStreamDireto implements ProvedorTorrents
     }
 
     /**
+     * Diz se a fonte direta tem o PT-BR **declarado** por quem a publicou.
+     *
+     * É o crivo de idioma da busca direta, e ele é deliberadamente restrito ao que
+     * está provado: dublado e dual áudio. Um link que a página marcou como
+     * legendado não serve — o áudio dele é o original, e quem pediu português não
+     * vai ouvir português. Um link que a página não marcou não prova nada e cai
+     * no mesmo descarte: é o `original` que a montagem deduziria do título, e
+     * tratá-lo como acerto era o que fazia a busca parar numa página qualquer.
+     *
+     * A etiqueta `pt_br` é lida primeiro porque é a que a promoção por inspeção
+     * do conteúdo grava; a fonte direta, por não passar pelo gate da cascata,
+     * normalmente chega só com o `idioma`.
+     *
+     * @param  array<string, mixed>  $fonte
+     */
+    private function ptBrDeclarado(array $fonte): bool
+    {
+        if (($fonte['pt_br'] ?? null) === true) {
+            return true;
+        }
+
+        return in_array(
+            $fonte['idioma'] ?? '',
+            [IdiomaFonte::DUBLADO->value, IdiomaFonte::DUAL_AUDIO->value],
+            true
+        );
+    }
+
+    /**
      * Percorre uma lista de páginas candidatas e devolve se a busca deve parar.
      *
      * As candidatas chegam de duas origens — a **busca direta nos agregadores**
@@ -409,12 +439,20 @@ class ProvedorStreamDireto implements ProvedorTorrents
      * laço aqui evita duas cópias da mesma regra e garante que um filtro novo
      * valha para as duas origens de uma vez.
      *
-     * A parada é a **primeira fonte**: assim que uma página rende, a função
-     * devolve `true` e quem chamou encerra o fluxo — o próximo agregador nem é
-     * perguntado e o motor web não chega a rodar. É o contrato de prioridade do
-     * provedor: cada origem é tentada na ordem declarada, e a primeira que
-     * entrega responde pela busca. O orçamento é a outra parada: sem tempo para
-     * começar a próxima consulta, insistir só gastaria a espera que falta.
+     * A parada é a **primeira fonte em PT-BR**: assim que uma página rende um
+     * link com o idioma declarado (dublado ou dual), a função devolve `true` e
+     * quem chamou encerra o fluxo — o próximo agregador nem é perguntado e o
+     * motor web não chega a rodar. É o contrato de prioridade do provedor: cada
+     * origem é tentada na ordem declarada, e a primeira que entrega responde pela
+     * busca.
+     *
+     * Uma página que rende **só** link de idioma não provado não encerra nada: o
+     * idioma é filtrado na busca, e não só na montagem final, então essa página é
+     * descartada e a varredura segue para a próxima candidata — e, esgotadas
+     * elas, para o agregador seguinte e para o motor. É o que faz o acervo web
+     * procurar o dublado em vez de oferecer a primeira página que respondeu com
+     * qualquer áudio. O orçamento é a outra parada: sem tempo para começar a
+     * próxima consulta, insistir só gastaria a espera que falta.
      *
      * @param  array<int, string>  $candidatas
      * @param  array<string, bool>  $paginasVisitadas
@@ -461,20 +499,44 @@ class ProvedorStreamDireto implements ProvedorTorrents
             $novas = $this->rasparPagina($pagina, $titulo, $temporada, $episodio);
 
             /*
-             * O teto é aplicado a cada página e a ordem de chegada é preservada —
-             * os primeiros links da página são os que ficam. Como o fluxo agora
-             * para na primeira página que rende, este corte é o que impede um
-             * agregador cheio de espelhos de encher a lista sozinho.
+             * O crivo de idioma roda na busca, e não só na montagem final: só a
+             * fonte com PT-BR **declarado** (dublado ou dual) conta como acerto.
+             * Um link que a página marcou como legendado, ou que ela não marcou
+             * de jeito nenhum — o que a montagem leria como `original` —, é
+             * descartado aqui, e a varredura segue tentando as próximas
+             * candidatas. Antes, qualquer resposta encerrava o fluxo: a página
+             * que não declarava idioma virava a resposta, e o dublado que outra
+             * página tinha nunca era procurado.
              */
-            $fontes = $this->limitarFontes(array_merge($fontes, $novas), $tetoFontes);
+            $aproveitadas = array_values(array_filter(
+                $novas,
+                fn (array $fonte): bool => $this->ptBrDeclarado($fonte)
+            ));
+
+            $descartadas = count($novas) - count($aproveitadas);
+
+            if ($descartadas > 0) {
+                Log::debug('Stream direto: fonte sem PT-BR declarado descartada na busca.', [
+                    'pagina' => $pagina,
+                    'descartadas' => $descartadas,
+                ]);
+            }
 
             /*
-             * A página rendeu: a varredura inteira acaba aqui. Seguir abrindo
-             * candidatas depois de ter uma fonte tocável era o custo que fazia a
-             * resposta demorar — e cada abertura pode custar uma renderização de
-             * navegador.
+             * O teto é aplicado a cada página e a ordem de chegada é preservada —
+             * os primeiros links da página são os que ficam. Como o fluxo agora
+             * para na primeira página que rende PT-BR, este corte é o que impede
+             * um agregador cheio de espelhos de encher a lista sozinho.
              */
-            if ($novas !== []) {
+            $fontes = $this->limitarFontes(array_merge($fontes, $aproveitadas), $tetoFontes);
+
+            /*
+             * A página rendeu fonte em PT-BR: a varredura inteira acaba aqui.
+             * Seguir abrindo candidatas depois de ter uma fonte tocável era o
+             * custo que fazia a resposta demorar — e cada abertura pode custar
+             * uma renderização de navegador.
+             */
+            if ($aproveitadas !== []) {
                 return true;
             }
         }
@@ -838,10 +900,21 @@ class ProvedorStreamDireto implements ProvedorTorrents
             'video' => $resolvido['url'],
         ]);
 
+        /*
+         * `idioma` e `idioma_titulo` recebem o mesmo valor **declarado**: o
+         * primeiro alimenta a leitura por código (`pt-BR`, `Portuguese`) e o
+         * segundo a leitura por rótulo (`Dublado`, `Legendado`, `Dual Áudio`).
+         * Sem os dois, um espelho que declarasse legendado só por rótulo cairia na
+         * dedução pelo título do filme — que não diz nada sobre o áudio — e a
+         * fonte sairia etiquetada com o idioma errado.
+         */
+        $idioma = (string) ($resolvido['idioma'] ?? $this->idiomaDaPagina($pagina));
+
         return [$this->montarFonteDireta([
             'url' => $resolvido['url'],
             'titulo' => $this->limparTexto($titulo),
-            'idioma' => $resolvido['idioma'] ?? $this->idiomaDaPagina($pagina),
+            'idioma' => $idioma,
+            'idioma_titulo' => $idioma,
         ], ...$this->origemDa($pagina))];
     }
 
