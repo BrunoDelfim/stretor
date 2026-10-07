@@ -553,9 +553,7 @@ async function prepararSessaoDireta(sessao) {
   sessao.idiomasAudio = analise?.idiomasAudio ?? []
   sessao.idiomaAudio = analise?.idiomaAudio ?? null
   sessao.idiomaAudioRotulo = analise?.idiomaAudioRotulo ?? null
-  sessao.temAudioPortugues = sessao.idiomasAudio.length
-    ? temFaixaPortuguesa(sessao.idiomasAudio)
-    : null
+  sessao.temAudioPortugues = temFaixaPortuguesa(sessao.idiomasAudio)
 
   sessao.status = 'convertendo'
   sessao.mensagem = mensagemDoModo(modo)
@@ -1065,13 +1063,12 @@ async function prepararSessao(sessao) {
   sessao.idiomaAudioRotulo = analise.idiomaAudioRotulo ?? null
 
   /*
-   * Fato que o porteiro de idioma consulta: existe faixa em português? Fica
-   * `null` quando a sondagem não trouxe faixas, para não reprovar uma fonte por
-   * falta de dado — só o `false` (prova de que só há áudio original) reprova.
+   * Fato que o porteiro de idioma consulta. São três respostas: `true` (há faixa
+   * em português), `false` (toda faixa declara idioma estrangeiro conhecido —
+   * prova de que só há áudio original) e `null` (não há como julgar). Só o
+   * `false` reprova: faixa sem tag é ausência de prova, não prova de original.
    */
-  sessao.temAudioPortugues = sessao.idiomasAudio.length
-    ? temFaixaPortuguesa(sessao.idiomasAudio)
-    : null
+  sessao.temAudioPortugues = temFaixaPortuguesa(sessao.idiomasAudio)
 
   // Agora a resposta é definitiva: com o cabeçalho lido, o `moov` de um arquivo
   // com índice no fim já chegou ao disco.
@@ -1112,7 +1109,7 @@ async function prepararSessao(sessao) {
    * quando o áudio escolhido não bate com o que a fonte prometia.
    */
   logger.info(
-    `[sessao ${sessao.id}] faixas de áudio: ${descreverFaixasAudio(sessao.idiomasAudio)} (português: ${sessao.temAudioPortugues === null ? '?' : sessao.temAudioPortugues ? 'sim' : 'não'})`
+    `[sessao ${sessao.id}] faixas de áudio: ${descreverFaixasAudio(sessao.idiomasAudio)} (português: ${sessao.temAudioPortugues === null ? 'indefinido' : sessao.temAudioPortugues ? 'sim' : 'não'})`
   )
 
   if (indiceNoFim) {

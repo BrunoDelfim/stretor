@@ -492,25 +492,38 @@ export async function analisarArquivo(arquivo, extensao = '') {
 }
 
 /**
+ * Códigos que o ffprobe devolve quando **não** há idioma a declarar.
+ *
+ * `und` é "não informado" e `mul`, "vários idiomas" — nenhum dos dois identifica
+ * uma faixa, então valem como ausência do código. É o caso do arquivo
+ * re-encodado e de boa parte dos packs de anime, onde o idioma só aparece no
+ * `title` da faixa.
+ */
+const CODIGOS_GENERICOS = ['und', 'mul']
+
+/**
  * Descreve uma faixa de áudio a partir do stream devolvido pelo ffprobe.
  *
  * O rótulo prefere o mapa de idiomas, mas cai no `title` da faixa quando o
- * contêiner não trouxe `language` — alguns lançamentos nomeiam a faixa como
- * "Português (BR)" em vez de marcar o código, e perder essa informação seria
- * justamente perder a confirmação da dublagem.
+ * contêiner não trouxe um código útil — alguns lançamentos nomeiam a faixa como
+ * "Português (BR)" em vez de marcar o idioma, e perder essa informação seria
+ * justamente perder a confirmação da dublagem. Um `und` ("não informado") não é
+ * código útil: preferi-lo sobre o título era o que escondia a dublagem de uma
+ * faixa marcada assim.
  *
  * @param {object} stream stream de áudio do ffprobe
  * @param {number} indice posição da faixa na ordem do arquivo
  * @returns {{indice: number, codigo: string|null, rotulo: string|null, codec: string, canais: number|null, padrao: boolean}}
  */
-function descreverFaixaAudio(stream, indice) {
+export function descreverFaixaAudio(stream, indice) {
   const codigo = stream?.tags?.language ?? null
   const titulo = String(stream?.tags?.title ?? '').trim() || null
+  const util = codigo && !CODIGOS_GENERICOS.includes(normalizarIdioma(codigo)) ? codigo : null
 
   return {
     indice,
     codigo,
-    rotulo: descreverIdioma(codigo) ?? titulo,
+    rotulo: descreverIdioma(util) ?? titulo ?? descreverIdioma(codigo),
     // Codec da faixa: é ele que decide se o áudio pode ser copiado (`remux`)
     // ou precisa ser convertido para AAC (`audio`).
     codec: (stream?.codec_name ?? '').toLowerCase(),
@@ -583,18 +596,52 @@ function descrevePortugues(faixa) {
 }
 
 /**
- * Diz se o arquivo traz alguma faixa de áudio em português.
+ * Diz se o arquivo traz faixa de áudio em português.
  *
  * É o fato que o porteiro de idioma consulta: a fonte prometeu dublagem no nome,
- * mas só a sondagem do arquivo prova se a faixa existe. Um release só com áudio
- * original — o caso do americano do EZTV que o Torrentio rotulava como
- * "Dublado" — devolve `false` e a fonte é descartada em vez de tocar em inglês.
+ * mas só a sondagem do arquivo diz o que há lá dentro. São três respostas porque
+ * há três situações distintas:
+ *
+ * - `true`  — alguma faixa é português (a dublagem existe);
+ * - `false` — **toda** faixa declara um idioma estrangeiro conhecido: só há
+ *   áudio original, e é essa a prova que manda descartar a fonte (era o caso do
+ *   americano do EZTV que o Torrentio rotulava como "Dublado");
+ * - `null`  — não há como julgar: nenhuma faixa é português, mas ao menos uma
+ *   está sem código (`und`/`mul` ou sem tag). Ausência de prova não é prova de
+ *   áudio original, então o porteiro deixa passar em vez de recusar.
+ *
+ * O `null` é o que salva o pack dublado cujo arquivo veio com a faixa sem tag de
+ * idioma — o `[IceBlue] ... [Dublado PT-BR]/AoTDublado01x01.mkv`, medido por
+ * ffprobe como `#0[sem-código]`. Tratá-lo como `false` reprovava uma fonte
+ * legítima e fazia o overlay esgotar a lista. A proteção continua onde existe
+ * prova: um release só com `jpn`/`eng` declarado segue devolvendo `false`.
  *
  * @param {Array<object>} faixas faixas descritas por `descreverFaixaAudio`
- * @returns {boolean}
+ * @returns {boolean|null}
  */
 export function temFaixaPortuguesa(faixas = []) {
-  return faixas.some(descrevePortugues)
+  if (!faixas.length) return null
+  if (faixas.some(descrevePortugues)) return true
+
+  return faixas.every(declaraIdiomaEstrangeiro) ? false : null
+}
+
+/**
+ * Diz se uma faixa de áudio declara um idioma estrangeiro **com prova**.
+ *
+ * A prova é o código do contêiner: só ele identifica o idioma de forma
+ * confiável. Um código genérico (`und`/`mul`) ou a ausência dele não provam
+ * nada. O `title` da faixa também não serve para condenar: um título qualquer
+ * ("Comentários", "Dual") não é declaração de idioma — por isso ele só é usado
+ * do lado que **confirma** o português, em `descrevePortugues`.
+ *
+ * @param {object} faixa faixa descrita por `descreverFaixaAudio`
+ * @returns {boolean}
+ */
+function declaraIdiomaEstrangeiro(faixa) {
+  const codigo = normalizarIdioma(faixa.codigo)
+
+  return Boolean(codigo) && !CODIGOS_GENERICOS.includes(codigo) && !descrevePortugues(faixa)
 }
 
 /**

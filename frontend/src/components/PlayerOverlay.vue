@@ -1953,26 +1953,42 @@ function aguardarFonte(minhaGeracao, fonte) {
           return resolve({ desfecho: 'falhou', motivo: status.motivo ?? 'erro' })
         }
 
-        if (status.status === 'pronto' && status.playlist) {
-          /*
-           * Porteiro de idioma. A fonte prometeu dublagem, mas quem diz o que há
-           * no arquivo é o ffprobe: `tem_audio_pt === false` prova que só existe
-           * áudio original. A fonte é descartada em vez de tocar em inglês sob o
-           * rótulo "Dublado", e o loop segue para a próxima.
-           *
-           * Exceção dos acervos brasileiros (`eAcervoBrasileiro`): o CDN do passo
-           * zero re-encoda e entrega `und` sem tag de idioma, e `und` é ausência
-           * de prova — para esse host quem responde pelo idioma é o contrato do
-           * acervo, e a fonte toca mesmo com o ffprobe em silêncio. Os demais
-           * seguem o ffprobe como sempre.
-           *
-           * O `null` (sem faixas para julgar) não reprova: só o `false` é prova.
-           */
-          if (prometePortugues(fonte) && !eAcervoBrasileiro(fonte) && status.tem_audio_pt === false) {
-            await limparSessaoAtual()
-            return resolve({ desfecho: 'sem_audio_pt' })
-          }
+        /*
+         * Porteiro de idioma. A fonte prometeu dublagem, mas quem diz o que há
+         * no arquivo é o ffprobe: `tem_audio_pt === false` prova que só existe
+         * áudio original. A fonte é descartada em vez de tocar em inglês sob o
+         * rótulo "Dublado", e o loop segue para a próxima.
+         *
+         * O `false` é estreito de propósito: o media-service só o devolve quando
+         * **toda** faixa declara um idioma estrangeiro conhecido. Uma faixa sem
+         * tag (`und`) — o caso do pack dublado que não etiqueta o áudio — é
+         * ausência de prova e chega como `null`, que não reprova: melhor servir o
+         * que a fonte prometeu do que esvaziar a lista por falta de etiqueta.
+         *
+         * O veredito é consultado **aqui**, e não só quando a playlist fica
+         * pronta: o ffprobe lê o áudio assim que o cabeçalho chega, então o fato
+         * existe muito antes de a conversão terminar. Esperar o `pronto` mantinha
+         * uma fonte de áudio estrangeiro "convertendo" por todo o tempo do
+         * preparo — foi o que fez a primeira fonte de um filme segurar a fila
+         * mesmo com o idioma já provado errado. Assim que a prova aparece, a
+         * fonte cai e a próxima entra.
+         *
+         * Exceção dos acervos brasileiros (`eAcervoBrasileiro`): o CDN do passo
+         * zero re-encoda e entrega `und` sem tag de idioma — que o porteiro já
+         * não reprova. A exceção fica como rede de segurança para o caso de a
+         * sondagem achar uma faixa estrangeira por engano de origem: para esse
+         * host quem responde pelo idioma é o contrato do acervo (o vizer é site
+         * brasileiro). Os demais seguem o ffprobe como sempre.
+         *
+         * O `null` (sem faixas para julgar, faixa sem etiqueta ou sessão ainda
+         * sem sondagem) não reprova: só o `false` é prova.
+         */
+        if (prometePortugues(fonte) && !eAcervoBrasileiro(fonte) && status.tem_audio_pt === false) {
+          await limparSessaoAtual()
+          return resolve({ desfecho: 'sem_audio_pt' })
+        }
 
+        if (status.status === 'pronto' && status.playlist) {
           const url = streamingService.urlPlaylist(status.playlist)
 
           /*

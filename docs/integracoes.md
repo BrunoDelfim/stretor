@@ -333,9 +333,26 @@ A correção tem duas camadas, porque uma só não fecha o buraco:
    ([`aguardarFonte()`](../frontend/src/components/PlayerOverlay.vue:1781))
    compara a promessa da fonte (`idioma` = `pt-BR`/`dual`) com esse fato: se a
    fonte prometia português e o arquivo só tem áudio original, a sessão é
-   descartada e o laço segue para a próxima — em vez de tocar em inglês. Quando
+   descartada e o laço segue para a próxima — em vez de tocar em inglês. O
+   veredito é consultado **assim que o fato aparece**, não só quando a playlist
+   fica `pronto`: o ffprobe lê o áudio antes de a conversão terminar, e esperar o
+   `pronto` fazia uma fonte de áudio estrangeiro segurar a fila por todo o
+   preparo (era o caso da primeira fonte que demorava mais que as outras). Quando
    nenhuma fonte passa pelo porteiro, o overlay diz "Nenhuma fonte traz áudio em
    português" em vez de um genérico "não conseguiu conectar".
+   - **A prova de áudio estrangeiro exige etiqueta.** O porteiro só reprova com
+     `tem_audio_pt === false`, e
+     [`temFaixaPortuguesa()`](../media-service/src/services/hls.js:622) só devolve
+     `false` quando **toda** faixa de áudio declara um idioma estrangeiro
+     conhecido (a tag do contêiner: `jpn`, `eng`, `ger`...). Uma faixa sem código
+     útil — `und`/`mul` ou sem tag alguma — é **ausência de prova**, não prova de
+     áudio original, e o fato chega como `null` (que não reprova). Sem essa
+     distinção, um pack dublado cujo arquivo não etiqueta o áudio
+     (`[IceBlue] ... [Dublado PT-BR]/AoTDublado01x01.mkv`, sondado como
+     `#0[sem-código]`) era descartado apesar de ser a dublagem certa. O `title` da
+     faixa continua valendo para **confirmar** português
+     ([`descreverFaixaAudio()`](../media-service/src/services/hls.js:518) deixa o
+     título falar quando o código é `und`), mas nunca para condenar.
    - **Exceção do acervo brasileiro.** O CDN do passo zero
      (`nixplay.lat`, o host do provedor endereçável por id) re-encoda os arquivos
      e entrega faixa `und` sem tag de idioma — como o da Odisseia, medido por
