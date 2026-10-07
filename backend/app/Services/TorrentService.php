@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Services\Torrents\BuscaLegendas;
 use App\Services\Torrents\CatalogoProvedores;
 use App\Services\Torrents\OrcamentoBusca;
+use App\Services\Torrents\PalavrasChave;
 use App\Services\Torrents\TermosBusca;
 use App\Support\MensagensTorrent;
 use App\Enums\IdiomaFonte;
@@ -264,7 +265,7 @@ class TorrentService
             }
         }
 
-        return $this->ordenar($fontes, $temporada, $episodio);
+        return $this->ordenar($fontes, $temporada, $episodio, $titulo, $tituloOriginal);
     }
 
     /**
@@ -606,14 +607,24 @@ class TorrentService
      * @param  int|null  $episodio   Episódio pedido, quando a busca é de série
      * @return array<int, array<string, mixed>>
      */
-    private function ordenar(array $fontes, ?int $temporada = null, ?int $episodio = null): array
-    {
+    private function ordenar(
+        array $fontes,
+        ?int $temporada = null,
+        ?int $episodio = null,
+        ?string $titulo = null,
+        ?string $tituloOriginal = null,
+    ): array {
         $ordemProvedores = $this->ordemDeProvedores();
 
         $somentePtBr = (bool) config('services.torrents.somente_pt_br_ou_legendado', true);
         $packsQualquerIdioma = (bool) config('services.torrents.packs_qualquer_idioma', true);
 
-        $fontes = array_values(array_filter($fontes, function (array $fonte) use ($packsQualquerIdioma, $temporada, $episodio): bool {
+        // Os dois nomes pelos quais a busca perguntou — o traduzido (fase 1) e o
+        // original (fase 2). O porteiro de relevância julga o release contra os
+        // dois, aceitando se ele falar de pelo menos um.
+        $titulosBuscados = [$titulo, $tituloOriginal];
+
+        $fontes = array_values(array_filter($fontes, function (array $fonte) use ($packsQualquerIdioma, $temporada, $episodio, $titulosBuscados): bool {
             /*
              * A fonte direta (MP4/HLS) não tem magnet nem malha para medir: o
              * filtro de torrent não se aplica a ela. O que a valida é ter uma URL
@@ -624,6 +635,17 @@ class TorrentService
             }
 
             if (($fonte['seeds'] ?? 0) <= 0 || ($fonte['magnet'] ?? '') === '') {
+                return false;
+            }
+
+            /*
+             * Porteiro de relevância. Os provedores por nome não filtram por
+             * título: quando o termo de busca perde o título (o original
+             * não-latino), eles devolvem uma página de releases de séries
+             * aleatórias. O nome que não fala do título buscado não vira fonte,
+             * por mais seeds e magnet que tenha.
+             */
+            if (! $this->nomeRelevante($fonte, $titulosBuscados)) {
                 return false;
             }
 
@@ -708,6 +730,66 @@ class TorrentService
         }
 
         return array_slice(array_merge($ptBr, $reserva), 0, $limite);
+    }
+
+    /**
+     * Diz se o nome de uma fonte tem a ver com algum dos títulos buscados.
+     *
+     * É o porteiro de relevância da montagem. Ele existe por causa de um caso
+     * concreto: quando o título original é não-latino (ex.: "兰香如故"), o termo de
+     * busca que chega aos provedores por nome perde o título e vira só a
+     * numeração do episódio — e o acervo mundial devolve uma página de "S01E01
+     * dublado" de séries aleatórias, que entravam como se fossem a série pedida.
+     * Os provedores por nome não filtram por título; quem filtra é aqui.
+     *
+     * O julgamento é **por título**, e não contra a união deles: a busca tem duas
+     * fases (traduzido e original) e um release legítimo pode casar só um dos
+     * nomes ("The Godfather" para "O Poderoso Chefão"). Basta ser relevante para
+     * um deles. A régua é a mesma do stream direto ([`PalavrasChave`]): o release
+     * precisa trazer o mínimo de palavras-chave do título — duas para um título
+     * composto, uma para um título de uma palavra só.
+     *
+     * A checagem é conservadora: sem palavra aproveitável em nenhum título (todos
+     * só com ideogramas, por exemplo) não há como julgar, e a fonte passa. O
+     * porteiro só recusa quando há como provar que o nome não fala do título.
+     *
+     * @param  array<string, mixed>  $fonte
+     * @param  array<int, string|null>  $titulos
+     */
+    private function nomeRelevante(array $fonte, array $titulos): bool
+    {
+        $limiar = (int) config('services.torrents.montagem_min_palavras_chave', 2);
+
+        // Zero desliga o porteiro: volta ao critério antigo, só seeds e magnet.
+        if ($limiar <= 0) {
+            return true;
+        }
+
+        $nomes = trim(($fonte['titulo'] ?? '').' '.($fonte['release'] ?? ''));
+
+        if ($nomes === '') {
+            return true;
+        }
+
+        $julgaveis = 0;
+
+        foreach ($titulos as $titulo) {
+            $palavras = PalavrasChave::extrair((string) $titulo);
+
+            if ($palavras === []) {
+                continue;
+            }
+
+            $julgaveis++;
+
+            if (PalavrasChave::presentes($nomes, $palavras) >= min($limiar, count($palavras))) {
+                return true;
+            }
+        }
+
+        // Nenhum título tinha palavra aproveitável: não há como provar
+        // irrelevância, e descartar seria adivinhar.
+        return $julgaveis === 0;
     }
 
     /**

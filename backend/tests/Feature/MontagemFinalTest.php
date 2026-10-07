@@ -48,7 +48,7 @@ class MontagemFinalTest extends TestCase
     ): array {
         return [
             'id' => $id,
-            'titulo' => "Release {$id}",
+            'titulo' => "American Horror Story {$id}",
             'qualidade' => '1080P',
             'idioma' => $idioma,
             'idioma_rotulo' => $idioma,

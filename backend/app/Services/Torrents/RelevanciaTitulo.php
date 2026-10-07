@@ -48,24 +48,6 @@ namespace App\Services\Torrents;
 trait RelevanciaTitulo
 {
     /**
-     * Palavras de ligação que não contam como palavra-chave.
-     *
-     * São os artigos, preposições e conjunções que aparecem em quase todo título
-     * e não distinguem nada: "Donas **de** Casa **Desesperadas**" tem duas
-     * palavras que importam e uma que não. A lista cobre o português e o inglês,
-     * porque o título original entra como alternativa na busca.
-     *
-     * @var array<int, string>
-     */
-    private const PALAVRAS_DE_LIGACAO = [
-        'a', 'o', 'as', 'os', 'de', 'da', 'do', 'das', 'dos', 'e', 'em', 'no',
-        'na', 'nos', 'nas', 'um', 'uma', 'uns', 'umas', 'para', 'por', 'com',
-        'sem', 'ao', 'aos', 'à', 'às', 'que', 'se', 'the', 'of', 'and', 'in',
-        'on', 'at', 'to', 'for', 'with', 'a', 'an', 'is', 'it', 'its', 'by',
-        'from', 'as', 'or',
-    ];
-
-    /**
      * Diz se a página tem relação com o título buscado.
      *
      * A checagem junta o endereço e o `<title>` num único texto normalizado e
@@ -222,46 +204,7 @@ trait RelevanciaTitulo
      */
     private function palavrasChave(string $titulo): array
     {
-        $normalizado = $this->normalizarParaBusca($titulo);
-
-        /*
-         * A numeração do episódio sai antes da quebra em palavras. Ela não é
-         * puramente numérica — "s01e01" tem letras —, então o filtro de
-         * `is_numeric()` não a pegaria, e uma página com "s01e01" no endereço
-         * passaria como se fosse sobre o título. Os padrões cobrem as mesmas
-         * grafias que o gerador de termos usa ("1x01", "S01E01", "Temporada 1
-         * Episódio 1").
-         */
-        $normalizado = preg_replace([
-            '/\b\d{1,2}x\d{1,3}\b/u',
-            '/\bs\d{1,2}[\s._-]*e\d{1,3}\b/u',
-            '/\btemporada\s*\d{1,2}\s*episodio\s*\d{1,3}\b/u',
-            '/\b\d{1,2}a\s*temporada\s*episodio\s*\d{1,3}\b/u',
-        ], ' ', $normalizado) ?? $normalizado;
-
-        $brutas = preg_split('/[^a-z0-9]+/', $normalizado) ?: [];
-
-        $palavras = [];
-
-        foreach ($brutas as $bruta) {
-            if ($bruta === '' || is_numeric($bruta)) {
-                continue;
-            }
-
-            if (in_array($bruta, self::PALAVRAS_DE_LIGACAO, true)) {
-                continue;
-            }
-
-            // Palavras de uma letra não distinguem nada e casariam com qualquer
-            // endereço; o mesmo vale para a numeração de episódio já removida.
-            if (strlen($bruta) < 2) {
-                continue;
-            }
-
-            $palavras[$bruta] = true;
-        }
-
-        return array_keys($palavras);
+        return PalavrasChave::extrair($titulo);
     }
 
     /**
@@ -273,16 +216,7 @@ trait RelevanciaTitulo
      */
     private function normalizarParaBusca(string $texto): string
     {
-        $texto = mb_strtolower($texto, 'UTF-8');
-
-        return strtr($texto, [
-            'á' => 'a', 'à' => 'a', 'ã' => 'a', 'â' => 'a', 'ä' => 'a',
-            'é' => 'e', 'è' => 'e', 'ê' => 'e', 'ë' => 'e',
-            'í' => 'i', 'ì' => 'i', 'î' => 'i', 'ï' => 'i',
-            'ó' => 'o', 'ò' => 'o', 'õ' => 'o', 'ô' => 'o', 'ö' => 'o',
-            'ú' => 'u', 'ù' => 'u', 'û' => 'u', 'ü' => 'u',
-            'ç' => 'c', 'ñ' => 'n',
-        ]);
+        return PalavrasChave::normalizar($texto);
     }
 
     /**

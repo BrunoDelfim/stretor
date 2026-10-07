@@ -657,6 +657,21 @@ return [
         'somente_pt_br_ou_legendado' => (bool) env('TORRENTS_SOMENTE_PT_BR_OU_LEGENDADO', true),
 
         /*
+         * Relevância de título na montagem final.
+         *
+         * Os provedores por nome (APIBay, Knaben, BT4G) não filtram por título:
+         * devolvem o que a busca deles achar. Quando o termo de busca perde o
+         * título — o caso do original não-latino, em que "兰香如故 S01E01" vira só
+         * "S01E01" —, eles devolvem uma página de releases de séries aleatórias,
+         * que entravam na lista como se fossem o título pedido. Com esta chave, um
+         * release só vira fonte se o nome trouxer ao menos este número de
+         * palavras-chave do título buscado (traduzido **ou** original). O padrão é
+         * 2, a mesma régua do stream direto; zero desliga o porteiro e volta ao
+         * critério antigo, só seeds e magnet.
+         */
+        'montagem_min_palavras_chave' => (int) env('TORRENTS_MONTAGEM_MIN_PALAVRAS_CHAVE', 2),
+
+        /*
          * Fallback legendado: quando NENHUM provedor entregou áudio PT-BR, a
          * busca deixa de devolver lista vazia e passa a oferecer as fontes de
          * idioma original — diretas e reserva dos torrents — com legendas

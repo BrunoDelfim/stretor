@@ -1155,6 +1155,20 @@ reconciliado com a lista que de fato saiu — ver
 [`reconciliarCenso()`](../backend/app/Services/Torrents/CatalogoProvedores.php:818)
 e a situação `descartado_na_montagem` mais abaixo.
 
+Antes de ordenar, a montagem passa cada fonte por um **porteiro de relevância**. Os
+provedores por nome (APIBay, Knaben, BT4G) não filtram por título: devolvem o que a
+busca deles achar. Quando o termo de busca perde o título — o caso do original
+não-latino, em que "兰香如故 S01E01" vira só "S01E01" —, o acervo mundial devolve uma
+página de "S01E01 dublado" de séries aleatórias ("Grimm", "My Wife and Kids"), que
+entravam na lista como se fossem o título pedido. O porteiro
+([`TorrentService::nomeRelevante()`](../backend/app/Services/TorrentService.php:759))
+recusa o release cujo nome não fala do título buscado, pela mesma régua de
+palavras-chave do stream direto
+([`PalavrasChave`](../backend/app/Services/Torrents/PalavrasChave.php:1)). O
+julgamento é **por título** (traduzido e original): basta o release casar um deles —
+"The Godfather" passa para "O Poderoso Chefão". O limiar é
+`TORRENTS_MONTAGEM_MIN_PALAVRAS_CHAVE` (padrão `2`); zero desliga o porteiro.
+
 A ordem dentro de cada pilha vem de uma chave única,
 [`chaveDeOrdem()`](../backend/app/Services/TorrentService.php:643):
 **`[idioma, pack, provedor, -seeds]`**. Ela diz a regra em uma linha:

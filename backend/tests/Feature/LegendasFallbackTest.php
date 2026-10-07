@@ -36,7 +36,7 @@ class LegendasFallbackTest extends TestCase
         return [
             'id' => $id,
             'tipo' => 'torrent',
-            'titulo' => "Release {$id}",
+            'titulo' => "Some Movie {$id}",
             'qualidade' => '1080P',
             'idioma' => $idioma,
             'idioma_rotulo' => $idioma,
@@ -56,7 +56,7 @@ class LegendasFallbackTest extends TestCase
         return [
             'id' => $id,
             'tipo' => 'direto',
-            'titulo' => "Release {$id}",
+            'titulo' => "Some Movie {$id}",
             'qualidade' => '1080P',
             'idioma' => $idioma,
             'idioma_rotulo' => $idioma,

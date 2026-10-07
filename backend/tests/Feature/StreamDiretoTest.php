@@ -47,7 +47,7 @@ class StreamDiretoTest extends TestCase
         return [
             'id' => $id,
             'tipo' => 'direto',
-            'titulo' => "Release {$id}",
+            'titulo' => "Filme Raro Dublado {$id}",
             'qualidade' => '1080P',
             'idioma' => $idioma,
             'idioma_rotulo' => $idioma,
@@ -73,7 +73,7 @@ class StreamDiretoTest extends TestCase
         return [
             'id' => $id,
             'tipo' => 'torrent',
-            'titulo' => "Release {$id}",
+            'titulo' => "Filme Raro Dublado {$id}",
             'qualidade' => '1080P',
             'idioma' => $idioma,
             'idioma_rotulo' => $idioma,

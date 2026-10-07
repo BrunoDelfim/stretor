@@ -39,7 +39,7 @@ class SegundaTentativaTest extends TestCase
     {
         return [
             'id' => $id,
-            'titulo' => "Release {$id}",
+            'titulo' => "Homem-Aranha {$id}",
             'qualidade' => '1080P',
             'idioma' => $idioma,
             'idioma_rotulo' => $idioma,
