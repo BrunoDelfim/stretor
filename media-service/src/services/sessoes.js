@@ -2762,6 +2762,12 @@ export async function inspecionarTorrent(magnet, esperaMs = TIMEOUT_METADADOS_MS
   let indicio = contemIndicioPtBr(nome)
   let prova = indicio ? nome : null
 
+  /*
+   * O nome do torrent não provou nada; olhamos então os caminhos internos. A
+   * mesma régua vale para eles — só uma pasta "Dublado/" ou um "PT-BR" no nome do
+   * arquivo sustenta o veredito. O "[Dual Audio]" de uma pasta não faz do pack um
+   * dublado, porque a tag genérica não prova que existe uma faixa em português.
+   */
   if (!indicio) {
     for (const caminho of caminhos) {
       if (contemIndicioPtBr(caminho)) {

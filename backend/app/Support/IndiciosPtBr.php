@@ -13,15 +13,34 @@ namespace App\Support;
  * (`src/utils/idiomas.js`) é o espelho dela e só existe porque o Node não lê
  * PHP.
  *
- * A lista foi montada com o que os trackers PT-BR usam na prática. O critério do
- * usuário é generoso de propósito: **um** indício já prova o áudio — não precisa
- * ter todos. "Dublado", "dual áudio", "multi áudio", "nacional", "PT-BR", "🇧🇷" e
- * "Brasileiro" apontam todos para a mesma coisa.
+ * O critério é **conservador** de propósito: só a marca que fala do áudio (ou da
+ * origem brasileira) prova a dublagem. "Dublado", "nacional", "português",
+ * "brasileiro", a bandeira 🇧🇷 e o código colado de PT-BR apontam todos para a
+ * mesma coisa.
+ *
+ * Ficaram de fora duas pistas que enganavam a classificação de título:
+ *
+ * - **O indício genérico de multi-faixa** ("dual", "multi áudio"). Ele diz que o
+ *   arquivo carrega mais de uma faixa, **não** que uma delas é português — num
+ *   pack de anime quase sempre é japonês + inglês. Tratado como prova, ele
+ *   rotulava de "Dublado" releases que o ffprobe depois reprovava, e o usuário
+ *   ficava sem nada: as falsas dublagens esgotavam a lista e o original com
+ *   legenda nem chegava a ser oferecido.
+ * - **O código `pt` solto.** Em "Legendado pt BR" ele descreve a legenda, não o
+ *   áudio; num nome sem outra pista, é ambíguo demais para provar dublagem. A
+ *   forma colada (`pt-br`, `ptbr`, `br-pt`) continua valendo — ela não se
+ *   confunde com a legenda.
+ *
+ * Um release sem marca descritiva não é promovido: cai para o idioma original e a
+ * fonte passa a ser servida com legenda (ou sai da lista, quando não há legenda).
+ * Isso também dispensa a detecção de idioma estrangeiro que existia aqui: um nome
+ * que declarava alemão já não tinha marca de PT-BR e virava original de qualquer
+ * jeito.
  *
  * Ficou de fora o "br" solto: em "BRRip" (BluRay ripado) ele apareceria em
  * release americano e marcaria como dublado o que não é. O "pt" também não pode
  * ser procurado como texto puro — casaria com "script" —, então usa borda de
- * palavra.
+ * palavra (só na leitura de **conteúdo**, onde a ambiguidade é tolerável).
  */
 final class IndiciosPtBr
 {
@@ -34,16 +53,10 @@ final class IndiciosPtBr
      *
      * @var array<int, string>
      */
-    public const TAGS_AUDIO = [
+    public const TAGS_AUDIO_FORTE = [
         'dublado',
         'dublada',
         'dublagem',
-        'dual',
-        'duplo áudio',
-        'duplo audio',
-        'multi áudio',
-        'multi audio',
-        'multi-audio',
         'nacional',
         'portugu',
         'áudio pt',
@@ -56,15 +69,54 @@ final class IndiciosPtBr
     ];
 
     /**
-     * Códigos de idioma que provam PT-BR, mas podem ser a **legenda**.
+     * Indícios genéricos de multi-faixa — pista fraca, nunca prova.
      *
-     * Um release "Legendado pt BR" carrega o código da legenda, não do áudio.
-     * Por isso estes indícios só valem depois de descartado o "legendado" — ver
-     * [`IdiomaFonte::deduzirDoTitulo()`].
+     * Dizem que o arquivo carrega mais de uma faixa de áudio, não que uma delas é
+     * português. Servem à leitura de **conteúdo** ([`contem()`], sobre o nome de
+     * uma pasta ou de um arquivo interno), onde a ausência de outra pista
+     * justifica um palpite; a classificação de título não os aceita sozinhos (ver
+     * a nota da classe).
+     *
+     * @var array<int, string>
+     */
+    public const TAGS_MULTIFA = [
+        'dual',
+        'duplo áudio',
+        'duplo audio',
+        'multi áudio',
+        'multi audio',
+        'multi-audio',
+    ];
+
+    /**
+     * Lista dos indícios de **áudio** PT-BR: as provas fortes mais os genéricos
+     * de multi-faixa.
+     *
+     * É a base da leitura de **conteúdo** ([`contem()`]). A classificação de
+     * título não usa esta lista: ela exige a marca descritiva
+     * ([`temProvaFortePtBr()`]), e o genérico de multi-faixa de nada prova ali.
+     *
+     * @var array<int, string>
+     */
+    public const TAGS_AUDIO = [
+        ...self::TAGS_AUDIO_FORTE,
+        ...self::TAGS_MULTIFA,
+    ];
+
+    /**
+     * Códigos **colados** de idioma PT-BR.
+     *
+     * Diferente do "pt" solto, estas formas não se confundem com a legenda nem com
+     * outro idioma, então provam o áudio por si (ver [`temProvaFortePtBr()`]). São
+     * a marca mais fraca que ainda conta; a forma separada ("pt" sozinho) fica de
+     * fora da classificação de título e só vale na leitura de **conteúdo**.
      *
      * @var array<int, string>
      */
     public const TAGS_CODIGO = [
+        'pt-br',
+        'pt_br',
+        'pt br',
         'ptbr',
         'br-pt',
     ];
@@ -141,12 +193,79 @@ final class IndiciosPtBr
     }
 
     /**
+     * Diz se o texto traz uma **marca** de áudio PT-BR.
+     *
+     * É a única prova aceita pela classificação de título
+     * ([`IdiomaFonte::deduzirDoTitulo()`]): fala do áudio ou da origem brasileira
+     * ("dublado", "nacional", "português", "brasileiro", a bandeira) ou usa o
+     * código colado de PT-BR ([`TAGS_CODIGO`]). De fora ficam o indício genérico
+     * de multi-faixa ("dual", "multi áudio") e o "pt" solto — nenhum dos dois
+     * prova que existe uma faixa em português (ver a nota da classe).
+     *
+     * O código, porém, só conta quando o nome **não** anuncia legenda: em
+     * "Legendado pt BR" o "pt BR" descreve a **legenda**, não o áudio. A prova
+     * descritiva ("Dublado e Legendado") vem antes e vence sem essa ressalva.
+     */
+    public static function temProvaFortePtBr(string $texto): bool
+    {
+        if ($texto === '') {
+            return false;
+        }
+
+        if (str_contains($texto, self::EMOJI_BRASIL)) {
+            return true;
+        }
+
+        $normalizado = mb_strtolower($texto);
+
+        foreach (self::TAGS_AUDIO_FORTE as $tag) {
+            if (str_contains($normalizado, $tag)) {
+                return true;
+            }
+        }
+
+        if (self::marcaLegendado($texto)) {
+            return false;
+        }
+
+        foreach (self::TAGS_CODIGO as $tag) {
+            if (str_contains($normalizado, $tag)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Diz se o título anuncia **legenda** — a marca "legendado"/"legenda".
+     *
+     * Fecha a classificação: um release sem marca de áudio PT-BR que anuncia
+     * legenda é `legendado` (áudio original com legenda), e não original puro. O
+     * código de PT por perto ("Legendado pt BR") descreve a legenda — e é
+     * justamente por isso que ele não conta como prova de dublagem.
+     */
+    public static function marcaLegendado(string $texto): bool
+    {
+        if ($texto === '') {
+            return false;
+        }
+
+        $normalizado = mb_strtolower($texto);
+
+        return str_contains($normalizado, 'legendado') || str_contains($normalizado, 'legenda');
+    }
+
+    /**
      * Confere o "pt" como palavra, não como pedaço de outra.
      *
      * `str_contains('pt')` casaria com "script", "concept" e afins. A borda de
      * palavra (`\b` do PCRE não serve aqui por causa dos acentos) exige que o
      * "pt" não esteja colado a outra letra ou dígito dos dois lados — o que
      * libera "pt", "pt-br", "pt br", "pt_br" e "br-pt", mas barra "script".
+     *
+     * Só a leitura de **conteúdo** ([`contem()`]) recorre a ele: no título, o
+     * "pt" solto é ambíguo demais para contar como prova (ver a nota da classe).
      */
     public static function temCodigoPt(string $textoNormalizado): bool
     {

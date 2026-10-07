@@ -32,9 +32,12 @@ class InspecaoPack
      *
      * Mesmo raciocínio do [`CatalogoProvedores::VERSAO_CACHE`]: subir isto a cada
      * mudança na lógica de leitura (a lista de indícios, por exemplo) faz a
-     * reconsulta valer de imediato, sem depender de limpar o Redis à mão.
+     * reconsulta valer de imediato, sem depender de limpar o Redis à mão. Subiu
+     * para `3` quando a leitura passou a desarmar o indício fraco de multi-faixa
+     * diante de um nome com idioma estrangeiro — o veredito antigo ("Dual Audio"
+     * = dublado) ficaria cacheado e a fonte voltaria a enganar.
      */
-    private const VERSAO_CACHE = 2;
+    private const VERSAO_CACHE = 3;
 
     /**
      * Apura se o pack tem indício de áudio PT-BR no conteúdo.

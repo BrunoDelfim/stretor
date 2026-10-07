@@ -52,43 +52,42 @@ enum IdiomaFonte: string
      * Deduz o idioma a partir do título da fonte.
      *
      * As APIs de torrents não têm um campo confiável de idioma, então a
-     * classificação sai das tags que a comunidade usa nos nomes dos arquivos
-     * (ex.: "Dublado", "Dual Áudio", "Nacional", "PT-BR", "🇧🇷"). A lista de
-     * indícios mora em [`IndiciosPtBr`], compartilhada com a leitura do conteúdo
-     * dos packs — assim o que vale como "nacional" é o mesmo em todos os pontos.
+     * classificação sai das tags que a comunidade usa nos nomes dos arquivos. A
+     * lista canônica mora em [`IndiciosPtBr`], compartilhada com a leitura do
+     * conteúdo dos packs — assim o que vale como "nacional" é o mesmo em todos os
+     * pontos.
      *
-     * A ordem das checagens é o que separa um release dublado de um apenas
-     * legendado:
+     * O critério é **conservador**: só a marca que fala do áudio (ou da origem
+     * brasileira) promove a fonte a dublado/dual — "Dublado", "Nacional",
+     * "Português", "Brasileiro", a bandeira 🇧🇷 e o código colado de PT-BR.
      *
-     * 1. **Dual áudio** — é a tag mais específica: diz que o arquivo carrega as
-     *    duas faixas. Vem antes de tudo.
-     * 2. **Áudio explícito** — "dublado", "nacional", "português", "brasileiro"
-     *    e a bandeira. Se qualquer um aparecer, o áudio é PT-BR e ponto.
-     * 3. **Legendado** — antes da faixa ambígua de propósito. Um release
-     *    "Legendado pt BR" carrega o "pt BR" da **legenda**, não do áudio: se o
-     *    código viesse primeiro, ele viraria "Dublado" e a fonte seria oferecida
-     *    errada (era o caso do filme 550).
-     * 4. **Código ambíguo** — "PT-BR", "PT", "PTBR". Sem uma tag de legendado por
-     *    perto, o código prova que o áudio é PT-BR.
+     * Dois indícios ficam de fora, e a razão é a mesma: eles não provam áudio.
+     * Um marcador genérico de multi-faixa ("dual", "multi áudio") diz que o
+     * arquivo carrega mais de uma faixa, não que uma delas é português — num pack
+     * de anime quase sempre é japonês + inglês. Tratá-lo como prova rotulava de
+     * "Dublado" releases que o ffprobe depois reprovava, e o usuário ficava sem
+     * nada: as falsas dublagens esgotavam a lista e o original com legenda nem
+     * chegava a ser oferecido. Pelo mesmo motivo, o "pt" solto não conta — em
+     * "Legendado pt BR" ele descreve a legenda. Sem marca, a fonte é `original`:
+     * o corte de idioma a rebaixa à reserva, e o fallback a serve com legenda (ou
+     * a descarta, quando não há legenda alguma).
+     *
+     * A ordem das checagens:
+     *
+     * 1. **Marca de áudio PT-BR** — prova o áudio. Se o nome também traz "dual",
+     *    a fonte é `dual`; senão, `dublado`.
+     * 2. **Legendado** — fecha a classificação: sem marca de áudio, um release que
+     *    anuncia legenda é `legendado`, não original puro.
+     * 3. **Nada disso** — é `original`.
      */
     public static function deduzirDoTitulo(string $titulo): self
     {
-        if (IndiciosPtBr::eDual($titulo)) {
-            return self::DUAL_AUDIO;
+        if (IndiciosPtBr::temProvaFortePtBr($titulo)) {
+            return IndiciosPtBr::eDual($titulo) ? self::DUAL_AUDIO : self::DUBLADO;
         }
 
-        if (IndiciosPtBr::temAudioExplicito($titulo)) {
-            return self::DUBLADO;
-        }
-
-        $texto = mb_strtolower($titulo);
-
-        if (str_contains($texto, 'legendado') || str_contains($texto, 'legenda')) {
+        if (IndiciosPtBr::marcaLegendado($titulo)) {
             return self::LEGENDADO;
-        }
-
-        if (IndiciosPtBr::contem($titulo)) {
-            return self::DUBLADO;
         }
 
         return self::ORIGINAL;

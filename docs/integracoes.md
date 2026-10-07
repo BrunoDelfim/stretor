@@ -308,9 +308,23 @@ A correção tem duas camadas, porque uma só não fecha o buraco:
    [`idiomaDoNome()`](../backend/app/Services/Torrents/LeituraStreamStremio.php:209)
    lê apenas o nome do arquivo (o `behaviorHints.filename` ou a primeira linha do
    rótulo), não o rótulo inteiro. O que o nome não provar, o
-   `IdiomaFonte::deduzirDoTitulo()` resolve pelas tags do próprio nome (`DUAL`,
-   `DUBLADO`, `PT-BR`, `NACIONAL`). Releases como o do EZTV passam a ser
-   `original` e saem no corte de `TORRENTS_APENAS_PT_BR`.
+   [`IdiomaFonte::deduzirDoTitulo()`](../backend/app/Enums/IdiomaFonte.php:79)
+   resolve pelas tags do próprio nome (`DUAL`, `DUBLADO`, `PT-BR`, `NACIONAL`).
+   Releases como o do EZTV passam a ser `original` e saem no corte de
+   `TORRENTS_APENAS_PT_BR`.
+   - **A classificação é conservadora: só a marca de áudio PT-BR promove.** A
+     fonte só vira `pt-BR`/`dual` com uma prova que fala do **áudio** — "Dublado",
+     "Nacional", "Português", "Brasileiro", a bandeira 🇧🇷 ou o código colado de
+     PT-BR. Duas pistas que enganavam ficam de fora: o indício genérico de
+     multi-faixa ("dual", "multi áudio"), que só diz que o arquivo carrega mais de
+     uma faixa — num pack de anime quase sempre japonês + inglês —, e o "pt" solto,
+     que em "Legendado pt BR" descreve a legenda. Sem marca, a fonte é `original`:
+     o corte de idioma a rebaixa à reserva, e o fallback a serve com legenda (ou a
+     descarta, quando não há legenda). Era isso que fazia um pack de anime "Dual
+     Audio" (japonês + inglês) subir como "Dublado", o player esgotar a lista de
+     falsas dublagens no ffprobe e o usuário ficar sem nada. A correção vive **no
+     backend**, na classificação, e não depende do porteiro da camada 2 para o caso
+     comum.
 2. **Porteiro de idioma em tempo real.** Mesmo com a ordenação corrigida, um
    release ambíguo pode chegar ao player. A sondagem do arquivo
    ([`temFaixaPortuguesa()`](../media-service/src/services/hls.js:596)) vira o
@@ -765,10 +779,10 @@ O idioma é deduzido por **dois caminhos**, em ordem de confiança:
    `torznab:attr name="language"`. O
    [`TorznabService`](../backend/app/Services/TorznabService.php:150) repassa o
    valor cru em `idioma` e o
-   [`IdiomaFonte::deduzirDoIdioma()`](../backend/app/Enums/IdiomaFonte.php:113) o
+   [`IdiomaFonte::deduzirDoIdioma()`](../backend/app/Enums/IdiomaFonte.php:131) o
    interpreta, reconhecendo códigos como `pt`, `pt-br`, `por` e `portuguese`.
 2. **Tags no título** — quando o atributo não existe ou não é reconhecido, cai
-   em [`IdiomaFonte::deduzirDoTitulo()`](../backend/app/Enums/IdiomaFonte.php:74).
+   em [`IdiomaFonte::deduzirDoTitulo()`](../backend/app/Enums/IdiomaFonte.php:79).
 
 #### A lista de indícios de áudio PT-BR é única
 
@@ -776,24 +790,37 @@ Antes, cada canto do código tinha a sua própria noção de "dublado", e isso p
 divergências: o backend reconhecia `dual`, o detector do pack não; o detector do
 media-service reconhecia a bandeira 🇧🇷, o do backend não. A lista agora mora num
 lugar só — [`IndiciosPtBr`](../backend/app/Support/IndiciosPtBr.php:1) no backend e
-[`contemIndicioPtBr()`](../media-service/src/utils/idiomas.js:189) no media-service —
+[`contemIndicioPtBr()`](../media-service/src/utils/idiomas.js:335) no media-service —
 e é a mesma em toda parte.
 
-Basta **um** indício para provar áudio PT-BR; não precisa ter todos:
+Basta **uma** marca para provar áudio PT-BR; não precisa ter todas:
 
-| Indício | Exemplo |
+| Marca | Exemplo |
 | --- | --- |
 | `dublado`, `dublada`, `dublagem` | `AHS S01 Dublado 720p` |
-| `dual` / `dual audio` | `Dual Áudio By-LuanHarper` |
-| `multi áudio` / `multi audio` | `Multi Áudio 1080p` |
-| `duplo áudio` / `duplo audio` | `Duplo Áudio 720p` |
 | `nacional` / `brasileiro` | `Nacional` |
-| `português` / `portuguese` / `pt` | `PORTUGUÊS BR`, `[pt-br]` |
+| `português` / `portuguese` / `portugu` | `PORTUGUÊS BR` |
 | `brasil` / `brazil` / `brazilian` | `Brasil` |
+| código colado de PT-BR (`pt-br`, `ptbr`) | `[pt-br]`, `PT-BR 1080p` |
 | emoji 🇧🇷 | `🇧🇷 1080p` |
 
-O `pt` só vale como **palavra inteira** — `720p` não conta, e é por isso que a
-regra exige borda de palavra.
+Os cuidados que fecham a classificação:
+
+- **O indício genérico de multi-faixa** (`dual`, `multi áudio`, `duplo áudio`) **não
+  é marca.** Ele diz que o arquivo carrega mais de uma faixa, não que uma delas é
+  português — num pack de anime quase sempre é japonês + inglês. Sozinho, o
+  release cai para `original`: a fonte vai à reserva e o fallback a serve com
+  legenda (ou a descarta, se não houver legenda). A mesma régua vale na leitura do
+  **conteúdo do pack**: o `[Dual Audio]` de uma pasta não faz do pacote um dublado
+  — só o que tem marca (`Dublado/`, `PT-BR`) sustenta o veredito. Foi assim que o
+  pack `[Anime Time] ... [Dual Audio] ... [Eng Sub]` (japonês + inglês) deixou de
+  aparecer como dublado.
+- **O "pt" solto não conta.** Em "Legendado pt BR" ele descreve a **legenda**, não
+  o áudio; num nome sem outra pista, é ambíguo demais para provar dublagem. A
+  forma colada (`pt-br`, `ptbr`, `br-pt`) continua valendo, mas só quando o nome
+  não anuncia legenda — daí um `Legendado pt BR` virar reserva, e não dublado (ver
+  a seção seguinte). Na leitura de **conteúdo**, o "pt" solto ainda vale: ali não
+  há uma tag de legenda no título para desempatar.
 
 #### Legendado sem áudio PT-BR é reserva, não dublado
 
@@ -1914,10 +1941,11 @@ reserva volta, porque uma lista vazia não é "só PT-BR", é o player sem nada 
 
 Como a lista de indícios de áudio PT-BR foi ampliada (`multi áudio`, `multi audio`,
 `duplo áudio`, `duplo audio` em [`IndiciosPtBr`](../backend/app/Support/IndiciosPtBr.php:37)
-e no espelho [`idiomas.js`](../media-service/src/utils/idiomas.js:126)), o
-`VERSAO_CACHE` de [`InspecaoPack`](../backend/app/Services/Torrents/InspecaoPack.php:37)
-subiu para `2`: o veredito cacheado depende da leitura, e a inspeção antiga precisa ser
-refeita na próxima busca.
+e no espelho [`idiomas.js`](../media-service/src/utils/idiomas.js:150)), o
+`VERSAO_CACHE` de [`InspecaoPack`](../backend/app/Services/Torrents/InspecaoPack.php:40)
+subiu para `2` — e depois para `3`, quando a leitura passou a desarmar o indício fraco
+de multi-faixa diante de um nome com idioma estrangeiro. O veredito cacheado depende da
+leitura, e a inspeção antiga precisa ser refeita na próxima busca.
 
 ### Ajustes obrigatórios no media-service
 
