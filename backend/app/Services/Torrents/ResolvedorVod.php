@@ -93,6 +93,37 @@ class ResolvedorVod
      */
     private const EXTENSOES = ['.mp4', '.m4v', '.webm', '.mkv', '.mov', '.m3u8'];
 
+    /**
+     * Status que significam "não há arquivo servido atrás desta URL".
+     *
+     * O `404`/`410` são definitivos: o servidor diz que o caminho não existe.
+     * O `503` entra porque é o que o CDN do provedor devolve quando a origem
+     * atrás dele está fora — e ele, diferente dos outros, muda de ideia, por isso
+     * leva uma segunda leitura antes de condenar (ver [`arquivoVivo()`]).
+     *
+     * De propósito não estão aqui `403`, `405` nem `500`: um host que recusa o
+     * `HEAD` ou bota a CDN em manutenção continuaria apto a entregar o arquivo
+     * por `GET`, e condenar nesses casos perderia fonte boa — o preço do falso
+     * negativo (busca sem o título) é maior que o do falso positivo (o FFmpeg
+     * reclama adiante, como reclamava antes da sonda).
+     *
+     * @var array<int, int>
+     */
+    private const STATUS_DE_ARQUIVO_MORTO = [404, 410, 503];
+
+    /** Espera antes da segunda leitura de um `503`, em microssegundos. */
+    private const PAUSA_NO_503_MICROSSEGUNDOS = 400000;
+
+    /**
+     * Teto da sonda, em segundos.
+     *
+     * Um `HEAD` bem-sucedido volta em menos de um segundo; o teto existe para o
+     * caso ruim — CDN que segura a conexão. É o `ClienteHttp` que encolhe este
+     * valor para o que resta do orçamento da busca, então uma sonda começada no
+     * fim do prazo custa o que sobra e não mais que isso.
+     */
+    private const TEMPO_DA_SONDA_SEGUNDOS = 4;
+
     public function __construct(
         private readonly OrcamentoBusca $orcamento,
         private readonly ClienteHttp $cliente,
@@ -212,6 +243,19 @@ class ResolvedorVod
         }
 
         /*
+         * Sonda de existência. O espelho afirma que o arquivo está lá; quem sabe
+         * é o CDN. Sem isto, a API entrega `success: true` para um episódio que o
+         * servidor nem tem, a busca dispensa a cascata por causa de um link morto
+         * e o FFmpeg só reclama minutos depois, dentro da conversão — com o
+         * agregador seguinte (e o `plenoflu.com` por trás dele) nunca ter sido
+         * perguntado. Recusado aqui, o retorno é `null` e o degrau seguinte
+         * acontece como se o passo zero não existisse.
+         */
+        if (! $this->arquivoVivo($url, $host)) {
+            return null;
+        }
+
+        /*
          * O idioma sai do que o espelho declarou, e não de um literal fixo: um
          * host que anota a faixa na resposta é ouvido. Sem declaração nenhuma,
          * vale o contrato do acervo (ver `IDIOMA_DO_ACERVO`).
@@ -276,6 +320,50 @@ class ResolvedorVod
         }
 
         return false;
+    }
+
+    /**
+     * Diz se o CDN está servindo o arquivo por trás da URL, ou se a API mentiu.
+     *
+     * Duas leituras no máximo: a primeira, e uma segunda só quando o status é
+     * `503` — o único que oscila (a origem atrás do CDN pode estar piscando).
+     * O `404` é resposta de quem sabe que o caminho não existe, e repetir pergunta
+     * a mesma certeza; o `null` (sonda que não completou) não condena ninguém,
+     * porque uma falha de caminho não é prova de que o arquivo não exista.
+     *
+     * Desligada pela configuração, devolve `true` de cara — é o comportamento de
+     * antes da sonda, para poder desligar este passo sem desligar o passo zero.
+     *
+     * @param  string  $host  espelho consultado, só para o log apontar quem mentiu
+     */
+    private function arquivoVivo(string $url, string $host): bool
+    {
+        if (! (bool) config('services.torrents.stream_direto_sondar_url', true)) {
+            return true;
+        }
+
+        $status = $this->cliente->sondarArquivo($url, self::TEMPO_DA_SONDA_SEGUNDOS);
+        $sondagens = 1;
+
+        if ($status === 503 && $this->temOrcamento()) {
+            usleep(self::PAUSA_NO_503_MICROSSEGUNDOS);
+
+            $status = $this->cliente->sondarArquivo($url, self::TEMPO_DA_SONDA_SEGUNDOS);
+            $sondagens = 2;
+        }
+
+        if ($status !== null && in_array($status, self::STATUS_DE_ARQUIVO_MORTO, true)) {
+            Log::debug('Stream direto: VOD apontou para um arquivo morto; a busca segue adiante.', [
+                'host' => $host,
+                'url' => $url,
+                'status' => $status,
+                'sondagens' => $sondagens,
+            ]);
+
+            return false;
+        }
+
+        return true;
     }
 
     /**

@@ -96,7 +96,16 @@ class ResolvedorVodTest extends TestCase
 
         $this->assertNotNull($this->resolvedor()->resolver('550', null, null, 10));
 
+        /*
+         * A sonda de existência também passa pelo cliente HTTP (um `HEAD` no
+         * CDN), mas sem corpo; o filtro pelo endpoint do espelho evita ler um
+         * corpo vazio como se fosse o da consulta.
+         */
         Http::assertSent(function ($requisicao): bool {
+            if (! str_contains($requisicao->url(), '/wp-json/api/v1/player')) {
+                return false;
+            }
+
             $corpo = $requisicao->data();
 
             return $corpo['type'] === 'movie'
@@ -116,10 +125,19 @@ class ResolvedorVodTest extends TestCase
 
         $this->resolvedor()->resolver('693', 4, 17, 10);
 
-        Http::assertSent(fn ($requisicao): bool => ($corpo = $requisicao->data())['type'] === 'episode'
-            && $corpo['tmdb'] === '693'
-            && (int) $corpo['season'] === 4
-            && (int) $corpo['episode'] === 17);
+        Http::assertSent(function ($requisicao): bool {
+            // Mesmo filtro do teste de filme: a sonda de arquivo não tem corpo.
+            if (! str_contains($requisicao->url(), '/wp-json/api/v1/player')) {
+                return false;
+            }
+
+            $corpo = $requisicao->data();
+
+            return $corpo['type'] === 'episode'
+                && $corpo['tmdb'] === '693'
+                && (int) $corpo['season'] === 4
+                && (int) $corpo['episode'] === 17;
+        });
     }
 
     /**
@@ -217,5 +235,47 @@ class ResolvedorVodTest extends TestCase
         $this->assertNull($this->resolvedor()->resolver('693', 4, 17, 10));
 
         Http::assertNothingSent();
+    }
+
+    /**
+     * Link que o CDN não serve não vira fonte.
+     *
+     * O espelho afirma `success: true` e `mode: native`, mas o `404` no `HEAD`
+     * prova que o arquivo não existe. A sonda pega a mentira aqui, e o `null`
+     * faz a busca seguir para o degrau seguinte em vez de entregar ao usuário um
+     * link que só o FFmpeg, minutos adiante, denunciaria.
+     */
+    public function test_arquivo_morto_no_cdn_e_recusado(): void
+    {
+        $this->comHosts(['https://vizer.autos']);
+
+        Http::fake([
+            'https://vizer.autos/wp-json/api/v1/player' => Http::response($this->respostaNativa(self::URL_EPISODIO)),
+            'https://cdn.test/*' => Http::response('', 404),
+        ]);
+
+        $this->assertNull($this->resolvedor()->resolver('693', 4, 17, 10));
+    }
+
+    /**
+     * Desligada a sonda, o comportamento volta ao de antes: o espelho manda.
+     *
+     * A chave existe para poder desligar a conferência sem desligar o passo zero
+     * inteiro; aqui isso é provado pelo link morto que ainda assim é aceito.
+     */
+    public function test_sonda_desligada_aceita_o_link_mesmo_sem_arquivo(): void
+    {
+        $this->comHosts(['https://vizer.autos']);
+        config()->set('services.torrents.stream_direto_sondar_url', false);
+
+        Http::fake([
+            'https://vizer.autos/wp-json/api/v1/player' => Http::response($this->respostaNativa(self::URL_EPISODIO)),
+            'https://cdn.test/*' => Http::response('', 404),
+        ]);
+
+        $resolvido = $this->resolvedor()->resolver('693', 4, 17, 10);
+
+        $this->assertNotNull($resolvido);
+        $this->assertSame(self::URL_EPISODIO, $resolvido['url']);
     }
 }

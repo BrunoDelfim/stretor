@@ -3262,6 +3262,24 @@ domínios giram com frequência e nem sempre carregam o mesmo acervo — o prime
 que resolver encerra a tentativa. Vazia, cai no padrão embutido (`vizer.autos`).
 A chave `stream_direto_resolver_vod` desliga o passo sem desligar o fallback.
 
+**A mentira do espelho e a sonda de existência.** O espelho afirma o que não
+pode provar. Ele devolve `success: true` e `mode: native` para um episódio que o
+CDN nem tem — o `404` só apareceria quando alguém tentasse ler o arquivo —, e
+como a fonte entrava na lista como se fosse boa, a busca **dispensava a cascata**
+por causa de um link morto. O FFmpeg reclamava minutos depois, dentro da
+conversão, com o usuário já esperando e o agregador seguinte (e o `plenoflu.com`
+por trás dele) nunca perguntado: o degrau que teria a fonte ficava de fora por
+causa de um endereço vazio. A correção força o provedor a **provar o arquivo**
+antes de aceitá-lo. Um `HEAD` no CDN
+([`ClienteHttp::sondarArquivo()`](../backend/app/Services/Torrents/ClienteHttp.php:315))
+devolve só os cabeçalhos, e `404`/`410` — e o `503`, que leva uma segunda leitura
+porque oscila — condenam o link. Recusado, o retorno é `null` e o passo zero recua
+como se não existisse, deixando a cascata correr. A sonda é propositalmente
+**tímida**: qualquer status inesperado é lido como "vivo", porque o custo de
+descartar uma fonte boa é maior do que o de deixar passar uma morta — essa o
+FFmpeg corrige adiante. A chave `stream_direto_sondar_url` desliga a conferência
+sem desligar o passo zero.
+
 **O muro do CDN: o `403` sem `User-Agent`.** Resolvida a URL, faltava a segunda
 metade — o media-service conseguir *lê-la*. O CDN do provedor recusa quem não se
 anuncia como navegador: o `ffprobe`/`ffmpeg` mandam o agente `Lavf/...` e recebem

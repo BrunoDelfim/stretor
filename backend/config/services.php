@@ -571,6 +571,17 @@ return [
         'stream_direto_resolver_vod' => (bool) env('TORRENTS_STREAM_DIRETO_RESOLVER_VOD', true),
 
         /*
+         * Sondagem de existência do arquivo: antes de aceitar o que o espelho
+         * entregou, o cliente HEAD a URL e confirma que o CDN está servindo
+         * algo. Sem isto, um link morto (404) faz a busca dispensar a cascata
+         * e o FFmpeg só reclama dentro da conversão, com o agregador seguinte
+         * jamais perguntado.
+         *
+         * Desligada, o fluxo é exatamente o antigo: só o espelho entra.
+         */
+        'stream_direto_sondar_url' => (bool) env('TORRENTS_STREAM_DIRETO_SONDAR_URL', true),
+
+        /*
          * Espelhos do provedor endereçável por id, em ordem de tentativa.
          *
          * Os domínios giram com frequência e nem sempre carregam o mesmo

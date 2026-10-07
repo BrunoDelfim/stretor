@@ -189,6 +189,11 @@ services:
       - TORRENTS_STREAM_DIRETO_MAX_FONTES=${TORRENTS_STREAM_DIRETO_MAX_FONTES:-2}
       - TORRENTS_STREAM_DIRETO_TEMPO_LIMITE=${TORRENTS_STREAM_DIRETO_TEMPO_LIMITE:-10}
       - TORRENTS_STREAM_DIRETO_ORCAMENTO=${TORRENTS_STREAM_DIRETO_ORCAMENTO:-45}
+      # Sondagem de existência do arquivo (HEAD): antes de aceitar o que o espelho
+      # entregou, o backend confirma por cabeçalho que o CDN está servindo algo.
+      # Desligada, o valor padrão `true` de `config/services.php` mantém o fluxo
+      # como era, com a proposta original do `ResolvedorVod`.
+      - TORRENTS_STREAM_DIRETO_SONDAR_URL=${TORRENTS_STREAM_DIRETO_SONDAR_URL:-true}
       # Teto da busca inteira, em segundos (padrão 55). O direto roda primeiro e,
       # quando acha, dispensa a cascata; quando ele volta vazio, é este teto que
       # impede os dois canais de somarem além do que o frontend espera.

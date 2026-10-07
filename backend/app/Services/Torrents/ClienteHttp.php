@@ -287,6 +287,52 @@ class ClienteHttp
     }
 
     /**
+     * Sonda se um arquivo de mídia está sendo servido, sem baixar nada dele.
+     *
+     * Um `HEAD` devolve só os cabeçalhos, então o custo é o de um round-trip —
+     * e é o que separa "a API entregou uma URL" de "aquela URL tem um arquivo
+     * atrás". O provedor endereçável por id descobriu na prática a diferença:
+     * o espelho devolve `success: true` e `mode: native` para um episódio que o
+     * CDN nem tem (`404`), e o FFmpeg só falhava minutos depois, dentro da
+     * conversão, com o usuário já esperando. Aqui a mentira aparece antes de a
+     * busca gastar o resto do orçamento nela.
+     *
+     * A sonda é propositalmente **tímida**, ao contrário do `get()`: não passa
+     * pelo FlareSolverr, não tem passe e não classifica bloqueio. O alvo é um
+     * CDN de arquivo, não um site com desafio — mandar um 403/503 para o
+     * navegador custaria ~20 s para descobrir algo que o cabeçalho já diz. E
+     * qualquer status inesperado é lido como "vivo": o erro de uma sonda que
+     * derruba uma fonte boa é pior que o de uma que deixa passar uma morta,
+     * porque o segundo erro é corrigido pelo FFmpeg adiante.
+     *
+     * O redirecionamento é seguido (máximo de 5): os arquivos vivos deste
+     * provedor respondem `302` para um CDN assinado, e é o destino que prova a
+     * existência.
+     *
+     * @return int|null status final, ou `null` quando a sonda não pôde ser feita
+     *                  (sem orçamento, conexão que não completou)
+     */
+    public function sondarArquivo(string $url, ?int $timeout = null): ?int
+    {
+        $timeout = $this->tempoDisponivel($timeout ?? 5);
+
+        if ($timeout <= 0) {
+            return null;
+        }
+
+        try {
+            return $this->requisicao(null, $timeout)->head($url)->status();
+        } catch (\Throwable $excecao) {
+            Log::debug('Cliente HTTP: sonda de arquivo não completou.', [
+                'url' => $url,
+                'erro' => $excecao->getMessage(),
+            ]);
+
+            return null;
+        }
+    }
+
+    /**
      * Faz um GET forçando a passagem pelo navegador do FlareSolverr.
      *
      * O `get()` comum só aciona o proxy quando fareja bloqueio. Isso resolve o
