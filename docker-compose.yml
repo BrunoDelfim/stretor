@@ -138,6 +138,10 @@ services:
       # deixando só dublado e dual áudio. Sem esta linha no environment, o valor
       # do .env da raiz não chega ao container.
       - TORRENTS_SOMENTE_PT_BR_OU_LEGENDADO=${TORRENTS_SOMENTE_PT_BR_OU_LEGENDADO:-true}
+      # Fallback legendado: quando nenhum provedor entrega áudio PT-BR, a busca
+      # serve as fontes de idioma original com as legendas anexadas (PT-BR e
+      # inglês; só inglês quando não houver PT-BR).
+      - TORRENTS_LEGENDAS_FALLBACK=${TORRENTS_LEGENDAS_FALLBACK:-true}
       - TORRENTS_PACKS_HABILITADOS=${TORRENTS_PACKS_HABILITADOS:-true}
       - TORRENTS_PACKS_QUALQUER_IDIOMA=${TORRENTS_PACKS_QUALQUER_IDIOMA:-true}
       # Termos de série no fim da cascata: sem numeração e sem "completa", é o

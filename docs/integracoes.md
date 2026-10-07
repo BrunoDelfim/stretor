@@ -4675,11 +4675,56 @@ entregue**. As fontes dos agregadores abertos (`plenoflu.com` → `vaiquecol.com
 percorre; diante de Turnstile, o que o sistema tem hoje é recusar com veredito
 claro.
 
-### Legendas — roadmap
+### Legendas — fallback de idioma original
+
+Quando a busca inteira — stream direto e trackers — termina **sem áudio em PT-BR**,
+o sistema deixa de responder "ainda não disponível em português" e passa a servir o
+**idioma original com legenda**. O player toca o áudio original e o usuário lê a
+legenda.
+
+**A regra de idioma.** PT-BR e inglês quando existirem; só inglês quando não houver
+PT-BR. A lista sai nessa ordem (PT-BR primeiro) e a primeira faixa já nasce ligada
+no player. Quem decide tudo isso é o
+[`TorrentService::montarFallbackLegendado()`](../backend/app/Services/TorrentService.php:838):
+quando a lista PT-BR sai vazia, ele reaproveita as fontes de idioma original — as
+diretas e a reserva que `ordenar()` guardou em `reservaDaBusca` — e anexa a cada
+uma o campo `legendas`.
+
+**Só com legenda.** O fallback só se concretiza com **pelo menos uma legenda**.
+Áudio original sem legenda não serve ao usuário brasileiro — a regra existe
+justamente para tornar o original assistível —, e nesse caso o aviso de
+indisponibilidade continua. A chave `TORRENTS_LEGENDAS_FALLBACK` (padrão `true`)
+desliga o fallback por inteiro.
+
+**De onde vêm as legendas.** Acervo do VidSrc, endereçável por identificador: o
+[`BuscaLegendas`](../backend/app/Services/Torrents/BuscaLegendas.php:1) pergunta ao
+host `TORRENTS_LEGENDAS_HOST` (`https://data.vidsrc.sh`, em
+`/api.php?type=tv&imdb=...&season=..&episode=..`) e recebe, em `default_subs`, as
+faixas do título/episódio. Ele escolhe uma PT-BR e uma inglesa (preferindo a faixa
+**completa** de inglês; variantes de placas/cifras — "Forced", "Signs", "Songs" —
+ficam como reserva). O endpoint é de terceiros e **oscila** entre `200` e `504`, por
+isso a consulta repete algumas vezes antes de desistir. O resultado vai para o
+cache — mas **só o positivo**: gravar o vazio prenderia "sem legenda" por horas por
+causa de uma falha passageira do CDN.
+
+**O que o player recebe.** Cada fonte do fallback carrega `legendas`, uma lista de
+`{ srclang, label, url, origem }`. O `url` é o arquivo `.srt` de origem. Como o
+navegador só lê **WebVTT** num `<track>`, o frontend aponta o `src` da faixa para o
+conversor do backend
+([`LegendaController`](../backend/app/Http/Controllers/Api/LegendaController.php:1)),
+que baixa o SRT, converte com o
+[`ConversorLegenda`](../backend/app/Services/Torrents/ConversorLegenda.php:1) e
+devolve `text/vtt`. A lista de hosts de legenda aceitos é **fechada**, contra SSRF:
+um `url` arbitrário não vira um proxy aberto para a rede interna.
+
+**Limites conhecidos.** A cobertura do acervo é irregular (muitos títulos vêm com
+`default_subs: []`) e a legenda é do release dele, o que pode dessincronizar com o
+nosso. O endpoint não é documentado e pode mudar sem aviso — por isso o fallback é
+isolado atrás de uma chave e de um serviço próprio.
 
 Ainda não implementado:
 
-- Suporte a APIs de legendas próprias.
+- Suporte a APIs de legendas próprias (ex.: OpenSubtitles).
 - Rotinas para **extração de legendas diretamente dos arquivos de torrent**.
 
 ## Real-Debrid — roadmap

@@ -141,6 +141,15 @@ let player = null
 let instanciaHls = null
 let timerStatus = null
 let sessaoId = null
+
+/*
+ * Legendas da fonte em reprodução.
+ *
+ * O fluxo de fontes passa a lista direto para `iniciarPlayer`, mas o
+ * reposicionamento (seek) remonta o player sem conhecer a fonte — lê daqui para
+ * não perder a legenda quando a reprodução recomeça de outro ponto.
+ */
+let legendasDaFonteAtual = []
 let cancelado = false
 
 /*
@@ -332,6 +341,51 @@ function destruirPlayer() {
 }
 
 /**
+ * Anexa as faixas de legenda ao `<video>` antes do Plyr assumir o elemento.
+ *
+ * Só o fallback legendado carrega `legendas` — as fontes de áudio PT-BR não
+ * precisam delas. Cada faixa aponta para o conversor do backend, que devolve
+ * WebVTT (o único formato de legenda que o navegador lê num `<track>`; o
+ * provedor entrega SRT). A primeira faixa — PT-BR quando existir, senão o
+ * inglês — nasce marcada como padrão, para a legenda já aparecer sem o usuário
+ * mexer no menu.
+ *
+ * @param {HTMLVideoElement|null} video
+ * @param {Array<{srclang: string, label: string, url: string}>|undefined} legendas
+ */
+function montarFaixasDeLegenda(video, legendas) {
+  if (!video) return
+
+  /*
+   * O player é remontado sobre o mesmo `<video>` num reposicionamento; sem
+   * limpar, as faixas antigas ficariam e seriam duplicadas a cada remontagem.
+   */
+  video.querySelectorAll('track').forEach((faixa) => faixa.remove())
+
+  if (!Array.isArray(legendas) || legendas.length === 0) return
+
+  legendas.forEach((legenda, indice) => {
+    const src = streamingService.urlLegenda(legenda.url)
+
+    if (!src) return
+
+    const faixa = document.createElement('track')
+
+    faixa.kind = 'captions'
+    faixa.label = legenda.label || legenda.srclang
+    faixa.srclang = legenda.srclang
+    faixa.src = src
+
+    // A primeira faixa (PT-BR quando há, senão inglês) já vem ligada.
+    if (indice === 0) faixa.default = true
+
+    video.appendChild(faixa)
+  })
+
+  anotarDiagnostico(`legendas anexadas: ${legendas.map((legenda) => legenda.srclang).join(', ')}`)
+}
+
+/**
  * Monta o player e anexa o HLS.
  *
  * Entregamos ao Plyr apenas uma fonte que ele já sabe consumir. Onde o
@@ -345,7 +399,7 @@ function destruirPlayer() {
  * jogava fora uma fonte perfeitamente válida — o fluxo queimava a lista inteira
  * de fontes por um problema de UI.
  */
-async function iniciarPlayer(url, minhaGeracao) {
+async function iniciarPlayer(url, minhaGeracao, fonte = null) {
   if (!url) return
 
   anotarDiagnostico(`montando player para ${url}`)
@@ -376,6 +430,13 @@ async function iniciarPlayer(url, minhaGeracao) {
     erro.value = 'Não foi possível preparar o player.'
     return
   }
+
+  /*
+   * As faixas de legenda entram ANTES de o Plyr ser criado: ao ser instanciado,
+   * ele varre os elementos <track> presentes no <video> e monta o menu de
+   * legendas a partir deles. Anexar depois exigiria re-sincronizar o player.
+   */
+  montarFaixasDeLegenda(video, fonte?.legendas ?? legendasDaFonteAtual)
 
   /*
    * O Plyr precisa ser criado ANTES de anexarmos o HLS.
@@ -1517,6 +1578,9 @@ async function tentarFontes(fontes, minhaGeracao, minhaAbertura, filme) {
 
     const fonte = fontes[indice]
 
+    // Guardado para o reposicionamento (seek) remontar a legenda junto do vídeo.
+    legendasDaFonteAtual = fonte.legendas ?? []
+
     tentativaAtual.value = indice + 1
     estado.value = 'tentando'
     mensagem.value = `Tentando fonte ${indice + 1} de ${fontes.length}...`
@@ -2103,6 +2167,8 @@ async function iniciar() {
   // A timeline do filme novo começa do zero.
   tempoBase = 0
   buscandoTrecho.value = false
+  // As legendas pertenciam à fonte (e ao filme) anterior.
+  legendasDaFonteAtual = []
 
   /*
    * O filme é congelado aqui, no começo do fluxo. Todo o resto — a busca e a

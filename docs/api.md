@@ -11,6 +11,7 @@ Endpoints expostos pelo backend (Laravel) e pelo media-service (Node).
 - `GET /api/v1/movies/search?query=...` — busca por título na navbar (filmes e séries, via `/search/multi` do TMDB)
 - `GET /api/v1/movies/{id}` — detalhes do filme (modal)
 - `GET /api/v1/movies/{id}/fontes` — fontes de torrent para reprodução
+- `GET /api/v1/movies/legenda?url=...` — converte uma legenda SRT em WebVTT para o `<track>` do Plyr (usado pelo fallback legendado)
 
 > As respostas do TMDB são cacheadas no Redis (`TMDB_CACHE_TTL`, padrão 3600s)
 > para respeitar o rate limit da API e acelerar a Home.
@@ -153,6 +154,26 @@ reserva em inglês) e `provedor_rotulo` é o texto pronto para exibição. O ove
 do player mostra esse rótulo junto do idioma, o que explica de relance por que um
 filme veio com áudio original. Detalhes em
 [Integrações](integracoes.md#de-onde-veio-a-fonte).
+
+#### Fallback legendado (idioma original)
+
+Quando nenhum provedor entrega áudio em PT-BR, a lista pode vir com as fontes de
+**idioma original** em vez de vazia — cada uma carregando um campo `legendas`:
+
+```json
+"legendas": [
+  { "srclang": "pt-BR", "label": "Português (Brasil)", "url": "https://.../Brazilian.por.srt", "origem": "vidsrc" },
+  { "srclang": "en", "label": "English", "url": "https://.../eng.eng.srt", "origem": "vidsrc" }
+]
+```
+
+O `url` é o arquivo `.srt` de origem. O `<track>` do Plyr não aponta para ele
+direto — o navegador não lê SRT —, e sim para o conversor
+(`GET /api/v1/movies/legenda?url=...`), que devolve WebVTT. A regra de idioma é
+"PT-BR e inglês quando existirem, só inglês quando não houver PT-BR". Sem nenhuma
+legenda, o fallback não se aplica e o aviso "ainda não disponível em português"
+continua. A chave `TORRENTS_LEGENDAS_FALLBACK` liga/desliga o recurso. Detalhes em
+[Integrações](integracoes.md#legendas--fallback-de-idioma-original).
 
 #### Quando a lista volta vazia
 

@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Services\Torrents\BuscaLegendas;
 use App\Services\Torrents\CatalogoProvedores;
 use App\Services\Torrents\OrcamentoBusca;
 use App\Services\Torrents\TermosBusca;
@@ -38,9 +39,31 @@ use Illuminate\Support\Facades\Log;
  */
 class TorrentService
 {
+    /**
+     * Reserva em idioma não-provado da última passagem pelos torrents.
+     *
+     * `ordenar()` separa a lista em PT-BR provado e reserva (o original e o
+     * legendado). Com o corte duro de idioma ligado, a reserva é descartada da
+     * resposta — mas ela é a matéria-prima do fallback legendado: quando não há
+     * PT-BR nenhum, é dessa reserva (mais as fontes diretas de idioma original)
+     * que sai a lista devolvida ao player, agora com as legendas anexadas.
+     * Zerada no começo de cada busca para não carregar resíduo da anterior.
+     *
+     * @var array<int, array<string, mixed>>
+     */
+    private array $reservaDaBusca = [];
+
     public function __construct(
         private readonly CatalogoProvedores $catalogo,
         private readonly OrcamentoBusca $orcamento,
+        /*
+         * O provedor de legendas é opcional pelo mesmo motivo do passe no
+         * [`ClienteHttp`]: os testes constroem o serviço só com o catálogo e o
+         * orçamento, e sem legendas injetadas o fallback legendado não roda —
+         * comportamento antigo (lista vazia quando não há PT-BR). Em produção o
+         * container injeta a implementação real, e o fallback vale.
+         */
+        private readonly ?BuscaLegendas $legendas = null,
     ) {
     }
 
@@ -96,8 +119,13 @@ class TorrentService
         );
 
         $titulos = [];
+        // Resíduo da busca anterior não pode contaminar o fallback desta.
+        $this->reservaDaBusca = [];
 
-        $diretas = $this->buscarPeloStreamDireto($titulo, $ano, $imdbId, $tituloOriginal, $temporada, $episodio, $tmdbId, $titulos);
+        // Guardamos TODAS as fontes diretas (inclusive as de idioma original):
+        // as PT-BR respondem pela busca; as demais viram matéria-prima do
+        // fallback legendado, quando nenhum provedor tiver áudio em português.
+        $todasDiretas = $this->buscarPeloStreamDireto($titulo, $ano, $imdbId, $tituloOriginal, $temporada, $episodio, $tmdbId, $titulos);
 
         /*
          * O corte de idioma roda **na busca**, e não só na montagem final.
@@ -117,7 +145,7 @@ class TorrentService
          * fallback de torrents achar o dublado que o acervo web não tinha.
          */
         $diretas = array_values(array_filter(
-            $diretas,
+            $todasDiretas,
             fn (array $fonte): bool => $this->ePtBr($fonte)
         ));
 
@@ -134,6 +162,19 @@ class TorrentService
             $fontes = $diretas;
         } else {
             $fontes = $this->buscarPelosTorrents($titulo, $ano, $imdbId, $tituloOriginal, $temporada, $episodio, $episodioDeSerie, $titulos);
+        }
+
+        /*
+         * Nenhum provedor entregou áudio PT-BR. Com o fallback legendado ligado,
+         * em vez de devolver a lista vazia ("ainda não disponível em português")
+         * a busca oferece as fontes de idioma ORIGINAL — as diretas e a reserva
+         * dos torrents — com as legendas (PT-BR quando existir, senão inglês)
+         * anexadas a cada uma. O player toca o áudio original e o usuário lê a
+         * legenda. Sem legenda utilizável, o método devolve vazio e o
+         * comportamento antigo permanece.
+         */
+        if ($fontes === []) {
+            $fontes = $this->montarFallbackLegendado($todasDiretas, $imdbId, $temporada, $episodio);
         }
 
         /*
@@ -614,6 +655,11 @@ class TorrentService
          * desligado (`somente_pt_br_ou_legendado = false`), aí sim o usuário
          * aceita qualquer idioma.
          */
+        // A reserva fica guardada para o fallback legendado: é o original que a
+        // resposta descarta quando não há PT-BR, e já vem filtrado e ordenado —
+        // matéria-prima pronta para quando nenhum áudio em português aparecer.
+        $this->reservaDaBusca = array_slice($reserva, 0, $limite);
+
         if ($somentePtBr) {
             return array_slice($ptBr, 0, $limite);
         }
@@ -770,6 +816,72 @@ class TorrentService
         }
 
         return $declarada !== $temporada;
+    }
+
+    /**
+     * Monta o fallback legendado: fontes de idioma original + legendas.
+     *
+     * É o caminho de quando a busca inteira — acervo web e trackers — ficou sem
+     * áudio PT-BR. Em vez do aviso "ainda não disponível em português", o usuário
+     * recebe as fontes de idioma original que existem, com as legendas anexadas
+     * para poder acompanhar. A ordem põe as diretas primeiro: elas tocam sem
+     * esperar malha, então são a melhor experiência quando existem.
+     *
+     * A oferta só se concretiza com **pelo menos uma legenda**. O áudio original
+     * sem legenda não serve ao usuário brasileiro — a regra existe justamente
+     * para tornar o original assistível —, e nesse caso é mais honesto manter o
+     * aviso de indisponibilidade do que servir um vídeo que ele não entenderia.
+     *
+     * @param  array<int, array<string, mixed>>  $todasDiretas  Fontes diretas cruas da busca
+     * @return array<int, array<string, mixed>>
+     */
+    private function montarFallbackLegendado(
+        array $todasDiretas,
+        ?string $imdbId,
+        ?int $temporada,
+        ?int $episodio,
+    ): array {
+        if (! config('services.torrents.legendas_fallback', true) || $this->legendas === null) {
+            return [];
+        }
+
+        // Das diretas, só as de idioma original interessam aqui — as PT-BR, se
+        // houvesse alguma, já teriam respondido pela busca.
+        $originais = array_values(array_filter(
+            $todasDiretas,
+            fn (array $fonte): bool => ! $this->ePtBr($fonte)
+        ));
+
+        $candidatas = $this->mesclarFontes($originais, $this->reservaDaBusca);
+
+        if ($candidatas === []) {
+            return [];
+        }
+
+        $tipo = ($temporada !== null && $episodio !== null) ? 'tv' : 'movie';
+        $legendas = $this->legendas->buscar($imdbId, $tipo, $temporada, $episodio);
+
+        if ($legendas === []) {
+            return [];
+        }
+
+        $candidatas = array_slice($candidatas, 0, MensagensTorrent::LIMITE_FONTES);
+
+        foreach ($candidatas as &$fonte) {
+            $fonte['legendas'] = $legendas;
+        }
+
+        unset($fonte);
+
+        Log::info('Fallback legendado: sem áudio PT-BR, servindo o original com legendas.', [
+            'imdb_id' => $imdbId,
+            'temporada' => $temporada,
+            'episodio' => $episodio,
+            'fontes' => count($candidatas),
+            'legendas' => array_column($legendas, 'srclang'),
+        ]);
+
+        return array_values($candidatas);
     }
 
     /**

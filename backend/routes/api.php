@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Api\LegendaController;
 use App\Http\Controllers\Api\MovieController;
 use App\Http\Controllers\Api\PasseCloudflareController;
 use App\Http\Controllers\Api\TorrentController;
@@ -19,6 +20,11 @@ Route::prefix('v1')->group(function () {
         // Home unificada: filmes, animação e séries no mesmo fluxo.
         Route::get('/trending', [MovieController::class, 'tendencias']);
         Route::get('/search', [MovieController::class, 'buscar']);
+        // Conversão de legenda (SRT → WebVTT) para o `<track>` do Plyr. O `url`
+        // aponta para uma das fontes de legenda permitidas; a lista de hosts é
+        // fechada no controller, contra SSRF. Fica antes de `/{id}` — que é
+        // restrita a número — para não correr o risco de ser capturada por ela.
+        Route::get('/legenda', [LegendaController::class, 'converter']);
         Route::get('/{id}', [MovieController::class, 'detalhes'])->whereNumber('id');
         // Detalhes de série e episódios de uma temporada, usados pelo modal de
         // série. Ficam antes de "/{id}" para que o segmento extra não seja

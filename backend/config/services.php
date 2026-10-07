@@ -628,6 +628,51 @@ return [
         'somente_pt_br_ou_legendado' => (bool) env('TORRENTS_SOMENTE_PT_BR_OU_LEGENDADO', true),
 
         /*
+         * Fallback legendado: quando NENHUM provedor entregou áudio PT-BR, a
+         * busca deixa de devolver lista vazia e passa a oferecer as fontes de
+         * idioma original — diretas e reserva dos torrents — com legendas
+         * anexadas. O player toca o áudio original e o usuário lê a legenda.
+         *
+         * A regra de idioma da legenda é "PT-BR e inglês quando existirem, só
+         * inglês quando não houver PT-BR". Sem nenhuma legenda utilizável, o
+         * fallback não se aplica e o aviso "ainda não disponível em português"
+         * continua. Desligue a chave para voltar ao comportamento estrito de
+         * só servir áudio PT-BR.
+         */
+        'legendas_fallback' => (bool) env('TORRENTS_LEGENDAS_FALLBACK', true),
+
+        /*
+         * Acervo de legenda endereçável por identificador (o mesmo IMDB usado na
+         * busca). A resposta traz, em `default_subs`, as faixas disponíveis para
+         * o título/episódio; o [`BuscaLegendas`] escolhe PT-BR e inglês.
+         */
+        'legendas_host' => env('TORRENTS_LEGENDAS_HOST', 'https://data.vidsrc.sh'),
+
+        /** Prazo de cada tentativa de requisição de legenda, em segundos. */
+        'legendas_tempo_limite' => (int) env('TORRENTS_LEGENDAS_TEMPO_LIMITE', 5),
+
+        /** Tentativas da consulta ao acervo — ele oscila entre `200` e `504`. */
+        'legendas_tentativas' => (int) env('TORRENTS_LEGENDAS_TENTATIVAS', 3),
+
+        /** Validade do cache da lista e do arquivo de legenda já convertido. */
+        'legendas_cache_ttl' => (int) env('TORRENTS_LEGENDAS_CACHE_TTL', 21600),
+
+        /*
+         * Hosts cujas legendas o conversor aceita baixar. É a barreira contra
+         * SSRF no endpoint de conversão: sem ela, um `url` arbitrário viraria um
+         * proxy aberto para a rede interna. Podem ser estendidos por quem trocar
+         * de provedor de legenda.
+         */
+        'legendas_hosts_permitidos' => [
+            'vidapi.cloud',
+            'vidsrc.sh',
+            'vidsrc.to',
+            'vidsrc.xyz',
+            'vidsrc.me',
+            'cloudorchestranova.com',
+        ],
+
+        /*
          * Busca de packs de temporada no fim da cascata de episódio.
          *
          * Um episódio isolado de série antiga raramente tem seeds; o pack da

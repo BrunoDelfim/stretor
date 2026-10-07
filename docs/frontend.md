@@ -158,6 +158,16 @@ O player é o **Plyr**, que recebe apenas uma fonte HLS válida
 (`application/x-mpegURL`). Onde o navegador não toca HLS nativamente
 (Chrome/Firefox), o `hls.js` faz a ponte; no Safari o suporte é nativo.
 
+**Legendas.** Quando a fonte é do fallback legendado, ela traz o campo `legendas`
+e o overlay anexa um `<track>` por idioma (PT-BR primeiro, inglês depois) ao
+`<video>` **antes** de criar o Plyr — ele varre os `<track>` presentes na montagem
+e forma o menu de legendas a partir deles. O `src` de cada faixa aponta para o
+conversor do backend (`/api/v1/movies/legenda?url=...`), que devolve WebVTT: o
+`<track>` do navegador não lê SRT. A primeira faixa (PT-BR quando há) já nasce
+ligada. Num reposicionamento (seek) o player é remontado sobre o mesmo `<video>`;
+as faixas são limpas e refeitas, para não duplicar. O ajuste mora em
+[`montarFaixasDeLegenda()`](../frontend/src/components/PlayerOverlay.vue:347).
+
 ### Ordem de inicialização do player
 
 A ordem importa e já causou vários bugs visíveis: o Plyr abria com altura mínima

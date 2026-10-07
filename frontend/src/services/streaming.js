@@ -184,4 +184,21 @@ export const streamingService = {
 
     return url
   },
+
+  /**
+   * Monta a URL do conversor de legendas do backend.
+   *
+   * O fallback legendado anexa às fontes uma lista de legendas cujo `url` é o
+   * arquivo de origem (SRT). O navegador não lê SRT num `<track>`, então o
+   * `src` da faixa aponta para este endpoint, que baixa, converte para WebVTT e
+   * devolve no formato que o Plyr consome. O endpoint é servido pelo mesmo
+   * backend das fontes, então a URL sai relativa à base da API.
+   */
+  urlLegenda(url) {
+    if (!url) return null
+
+    const api = useApiStore()
+
+    return `${api.baseUrl}${BASE_MOVIES}/legenda?url=${encodeURIComponent(url)}`
+  },
 }
