@@ -362,6 +362,44 @@ class TorrentService
     }
 
     /**
+     * A última busca terminou sem poder concluir se há fonte?
+     *
+     * Uma lista vazia só é veredito — "não tem fonte" — quando a busca teve como
+     * perguntar a todos. Três cenários devolvem vazio sem essa garantia e, se
+     * tratados como negativo, travam o título por 24 h com uma prova que nunca
+     * existiu:
+     *
+     * - **Nenhum provedor utilizável** na configuração. Não havia a quem
+     *   perguntar, então o "não achamos" fala da instalação, não do título.
+     * - **A cascata foi cortada pelo orçamento**: sobrou provedor disponível que
+     *   nunca chegou a ser consultado (`nao_consultado`).
+     * - **Um provedor quebrou** ao ser perguntado (`erro`): fora do ar, bloqueado
+     *   pelo Cloudflare, o que seja. O acervo dele não chegou a ser visto.
+     *
+     * Os dois últimos costumam andar juntos: um provedor fora do ar gasta o
+     * próprio teto e o socorro do FlareSolverr, e o relógio fecha antes de a
+     * cascata terminar. Quem chama não deve gravar "sem fonte" em nenhum deles —
+     * o certo é tentar de novo na próxima rodada. Lida logo após [`fontes()`],
+     * enquanto o censo daquela busca ainda está de pé.
+     */
+    public function buscaInconclusiva(): bool
+    {
+        if (! $this->temProvedorDisponivel()) {
+            return true;
+        }
+
+        foreach ($this->cobertura() as $linha) {
+            $situacao = $linha['situacao'] ?? null;
+
+            if ($situacao === 'nao_consultado' || $situacao === 'erro') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Diz se vale disparar a segunda fase, pelo título original.
      *
      * A segunda fase existe para o caso em que a tradução não acha o release

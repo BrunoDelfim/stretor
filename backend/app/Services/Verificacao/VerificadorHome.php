@@ -198,6 +198,10 @@ class VerificadorHome
                     $item['titulo'] ?? '?',
                     $disponibilidade->fonte_idioma ?? '—',
                 ));
+            } elseif ($disponibilidade->inconclusivo) {
+                // Nem fonte, nem veredito: a busca não teve como perguntar a
+                // todos. O título volta à fila já na próxima rodada.
+                $registrar(sprintf('  … %s — inconclusivo (re-tenta)', $item['titulo'] ?? '?'));
             } else {
                 $registrar(sprintf('  · %s — sem fonte', $item['titulo'] ?? '?'));
             }
@@ -227,6 +231,11 @@ class VerificadorHome
      * sentido gastar requisição com o que já está resolvido. Título sem fonte só
      * volta à fila depois que a prova vence, porque o acervo dos trackers muda
      * com o tempo e um item que estava órfão pode reaparecer.
+     *
+     * A exceção é o veredito **inconclusivo**: ele não é "sem fonte" e sim "não
+     * deu para concluir" — a busca rodou sem como perguntar a todos. Esse título
+     * volta à fila **já**, sem esperar a validade, porque a tentativa que o
+     * marcou não valeu como prova.
      */
     private function precisaVerificar(?Disponibilidade $disponibilidade): bool
     {
@@ -236,6 +245,10 @@ class VerificadorHome
 
         if ($disponibilidade->tem_fonte) {
             return false;
+        }
+
+        if ($disponibilidade->inconclusivo) {
+            return true;
         }
 
         return $disponibilidade->expirado();

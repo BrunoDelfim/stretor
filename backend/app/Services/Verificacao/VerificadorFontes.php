@@ -74,6 +74,16 @@ class VerificadorFontes
             tempoTotal: (int) config('services.verificacao.orcamento_titulo', 30),
         );
 
+        /*
+         * Lista vazia nem sempre é veredito. Quando nenhum provedor estava
+         * utilizável, o orçamento cortou a cascata no meio ou um provedor quebrou,
+         * o "sem fonte" fala da busca — não do acervo. A marca `inconclusivo`
+         * registra isso: o título continua candidato e volta à fila já na próxima
+         * rodada, em vez de travar 24 h com uma prova que não houve. Só lemos o
+         * censo no caminho vazio; com fonte na mão, não há o que relativizar.
+         */
+        $inconclusivo = $fontes === [] && $this->torrents->buscaInconclusiva();
+
         // A lista já vem ordenada, com a PT-BR na frente. Guardamos o perfil da
         // melhor fonte para o status e para entender de onde veio a prova.
         $principal = $fontes[0] ?? null;
@@ -85,6 +95,7 @@ class VerificadorFontes
             ],
             [
                 'tem_fonte' => $fontes !== [],
+                'inconclusivo' => $inconclusivo,
                 'fonte_idioma' => $principal['idioma'] ?? null,
                 'fonte_tipo' => $principal['tipo'] ?? null,
                 'origem' => $origem->value,

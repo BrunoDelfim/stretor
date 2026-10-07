@@ -44,9 +44,18 @@ class VerificacaoFontesTest extends TestCase
 
     protected function tearDown(): void
     {
-        Mockery::close();
-
-        parent::tearDown();
+        /*
+         * O `finally` não é enfeite: sem ele, uma expectativa de mock não casada
+         * faz o `Mockery::close()` lançar e o `parent::tearDown()` — que devolve a
+         * transação do `RefreshDatabase` — nunca roda. A conexão fica `idle in
+         * transaction` segurando lock e o teste seguinte trava no primeiro insert,
+         * trocando uma falha que devia ser reportada por uma suíte pendurada.
+         */
+        try {
+            Mockery::close();
+        } finally {
+            parent::tearDown();
+        }
     }
 
     public static function setUpBeforeClass(): void
@@ -133,6 +142,9 @@ class VerificacaoFontesTest extends TestCase
                     ['tipo' => TipoMidia::doTmdb($item['tipo'])->value, 'tmdb_id' => $id],
                     [
                         'tem_fonte' => $temFonte,
+                        // Como o real: uma tentativa que chega a um veredito não é
+                        // inconclusiva, então o dublê limpa a marca ao gravar.
+                        'inconclusivo' => false,
                         'fonte_idioma' => $temFonte ? 'pt-BR' : null,
                         'fonte_tipo' => $temFonte ? 'torrent' : null,
                         'origem' => $origem->value,
@@ -151,12 +163,13 @@ class VerificacaoFontesTest extends TestCase
         return ['id' => $id, 'tipo' => $tipo, 'titulo' => $titulo, 'ano' => 2024, 'titulo_original' => $titulo];
     }
 
-    private function disponibilidade(int $id, bool $temFonte, ?string $horasAtras = null): void
+    private function disponibilidade(int $id, bool $temFonte, ?string $horasAtras = null, bool $inconclusivo = false): void
     {
         Disponibilidade::create([
             'tipo' => TipoMidia::FILME->value,
             'tmdb_id' => $id,
             'tem_fonte' => $temFonte,
+            'inconclusivo' => $inconclusivo,
             'fonte_idioma' => $temFonte ? 'pt-BR' : null,
             'origem' => OrigemVerificacao::COMANDO->value,
             'verificado_em' => $horasAtras === null ? now() : now()->subHours((int) $horasAtras),
@@ -377,6 +390,8 @@ class VerificacaoFontesTest extends TestCase
                 return $temporada === null && $episodio === null;
             })
             ->andReturn([]);
+        // A busca correu até o fim e não achou nada: veredito definitivo.
+        $torrents->shouldReceive('buscaInconclusiva')->once()->andReturn(false);
 
         $disponibilidade = (new VerificadorFontes($torrents))->verificar(
             ['id' => 550, 'tipo' => 'movie', 'titulo' => 'Clube da Luta', 'ano' => 1999],
@@ -384,5 +399,52 @@ class VerificacaoFontesTest extends TestCase
         );
 
         $this->assertFalse($disponibilidade->tem_fonte, 'Lista vazia é sem fonte.');
+        $this->assertFalse($disponibilidade->inconclusivo, 'Busca que perguntou a todos conclui.');
+    }
+
+    /**
+     * Lista vazia com a busca inconclusiva **não** vira "sem fonte": fica marcada
+     * como "não deu para concluir".
+     *
+     * É a diferença que o guard existe para travar. Um provedor fora do ar, um
+     * orçamento que cortou a cascata no meio ou nenhum provedor configurado
+     * devolvem vazio sem prova; gravar negativo aqui travaria o título por 24 h
+     * por um erro de rede, e não por ausência real de fonte.
+     */
+    public function test_lista_vazia_com_busca_inconclusiva_nao_vira_veredito(): void
+    {
+        $torrents = Mockery::mock(TorrentService::class);
+        $torrents->shouldReceive('fontes')->once()->andReturn([]);
+        $torrents->shouldReceive('buscaInconclusiva')->once()->andReturn(true);
+
+        $disponibilidade = (new VerificadorFontes($torrents))->verificar(
+            ['id' => 550, 'tipo' => 'movie', 'titulo' => 'Clube da Luta', 'ano' => 1999],
+            OrigemVerificacao::COMANDO,
+        );
+
+        $this->assertFalse($disponibilidade->tem_fonte);
+        $this->assertTrue($disponibilidade->inconclusivo, 'Busca sem como perguntar a todos não é veredito.');
+    }
+
+    /**
+     * O veredito inconclusivo não espera a validade: volta à fila já na rodada
+     * seguinte. O "sem fonte" recém-verificado, esse sim, é poupado até vencer —
+     * é o que prova que a marca é o que destrava, e não uma validade mais curta.
+     */
+    public function test_titulo_inconclusivo_volta_a_fila_mesmo_com_prova_recente(): void
+    {
+        $itens = [$this->item(1, 'movie', 'Inconclusivo'), $this->item(2, 'movie', 'Sem fonte recente')];
+
+        // O 1 foi tentado agora, mas sem concluir; o 2 é um "sem fonte" definitivo.
+        $this->disponibilidade(1, false, inconclusivo: true);
+        $this->disponibilidade(2, false);
+
+        $chamados = [];
+        $verificador = $this->verificadorFalso([1 => true], $chamados);
+
+        (new VerificadorHome($this->tmdbComPagina($itens), $verificador))
+            ->executar(limitePaginas: 1, pausas: false);
+
+        $this->assertSame([1], $chamados, 'Só o inconclusivo volta à fila; o "sem fonte" recém-verificado é poupado.');
     }
 }

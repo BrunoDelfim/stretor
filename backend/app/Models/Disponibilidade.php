@@ -13,6 +13,12 @@ use Illuminate\Database\Eloquent\Model;
  * `true` pode chegar à Home ou à busca. O resto é o rastro da prova — de onde
  * veio, qual a melhor fonte achada e quando isso foi verificado — para a rotina
  * saber o que já está resolvido e o que ainda precisa ser tentado de novo.
+ *
+ * `inconclusivo` guarda a diferença entre "não tem fonte" e "não deu para
+ * concluir". Numa busca que não teve como perguntar a todos, o `tem_fonte = false`
+ * não é veredito: é só o resultado de uma tentativa que não valeu. A rotina lê
+ * esta marca para devolver o título à fila já na próxima rodada, em vez de
+ * esperar a validade de uma prova que nunca existiu.
  */
 class Disponibilidade extends Model
 {
@@ -22,6 +28,7 @@ class Disponibilidade extends Model
         'tipo',
         'tmdb_id',
         'tem_fonte',
+        'inconclusivo',
         'fonte_idioma',
         'fonte_tipo',
         'origem',
@@ -32,6 +39,7 @@ class Disponibilidade extends Model
         'tipo' => TipoMidia::class,
         'origem' => OrigemVerificacao::class,
         'tem_fonte' => 'boolean',
+        'inconclusivo' => 'boolean',
         'verificado_em' => 'datetime',
     ];
 
