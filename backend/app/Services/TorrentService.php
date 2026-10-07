@@ -89,6 +89,11 @@ class TorrentService
         ?int $temporada = null,
         ?int $episodio = null,
         ?string $tmdbId = null,
+        // Teto de tempo, em segundos, que esta busca pode gastar. Em branco usa o
+        // padrão do fluxo interativo; a verificação em lote passa um teto curto,
+        // porque ela só quer saber se existe fonte — não precisa esgotar a
+        // cascata atrás da melhor delas.
+        ?int $tempoTotal = null,
     ): array {
         // Quando temporada e episódio vêm preenchidos, a busca é de um episódio
         // de série: o termo passa a ser "Titulo S01E02" em vez do título solto.
@@ -115,7 +120,7 @@ class TorrentService
          * soma das esperas não passe do que o frontend tolera.
          */
         $this->orcamento->definirTetoGlobal(
-            (int) config('services.torrents.tempo_total_busca', 55)
+            $tempoTotal ?? (int) config('services.torrents.tempo_total_busca', 55)
         );
 
         $titulos = [];

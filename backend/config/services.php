@@ -51,6 +51,35 @@ return [
     ],
 
     /*
+     * Verificação de disponibilidade de fontes.
+     *
+     * É o que decide o que a Home e a busca podem mostrar. A regra é rígida: só
+     * aparece título com fonte **provada**. Como provar isso exige bater nos
+     * trackers, e bater demais derruba o acesso, a verificação é feita com
+     * parcimônia:
+     *
+     *  - por página: cada página do /trending/all/day é uma unidade de trabalho;
+     *  - sob comando: nada roda sozinho em desenvolvimento — só quando o
+     *    operador chama `fontes:verificar`. No VPS, ligue VERIFICACAO_AGENDADA
+     *    para o agendador cuidar da rotina diária no horário configurado;
+     *  - em modo furtivo: uma requisição por vez, com pausa entre itens e entre
+     *    páginas, para o rastro no tracker parecer tráfego humano.
+     */
+    'verificacao' => [
+        'habilitada' => (bool) env('VERIFICACAO_HABILITADA', true),
+        // A chave do VPS: fica desligada de propósito para a carga nunca
+        // disparar sozinha durante o desenvolvimento.
+        'agendada' => (bool) env('VERIFICACAO_AGENDADA', false),
+        'horario' => env('VERIFICACAO_HORARIO', '04:00'),
+        // Sem configurar nada, verifica o mesmo número de páginas da rolagem.
+        'paginas' => (int) env('VERIFICACAO_PAGINAS', env('TMDB_MAX_PAGES', 25)),
+        'validade_horas' => (int) env('VERIFICACAO_VALIDADE_HORAS', 24),
+        'orcamento_titulo' => (int) env('VERIFICACAO_ORCAMENTO_TITULO', 15),
+        'pausa_itens_ms' => (int) env('VERIFICACAO_PAUSA_ITENS_MS', 6000),
+        'pausa_paginas_ms' => (int) env('VERIFICACAO_PAUSA_PAGINAS_MS', 45000),
+    ],
+
+    /*
      * Busca de fontes para reprodução, organizada em três degraus.
      *
      * O primeiro degrau é a busca nativa do backend: HTTP direto nos trackers

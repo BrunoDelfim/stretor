@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Services\TmdbService;
+use App\Services\Verificacao\CatalogoVerificado;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use RuntimeException;
@@ -14,8 +15,10 @@ use RuntimeException;
  */
 class MovieController extends Controller
 {
-    public function __construct(private readonly TmdbService $tmdb)
-    {
+    public function __construct(
+        private readonly TmdbService $tmdb,
+        private readonly CatalogoVerificado $verificado,
+    ) {
     }
 
     /**
@@ -48,13 +51,19 @@ class MovieController extends Controller
      *
      * O envelope é idêntico ao de `populares()` (data + meta), então a rolagem
      * infinita do frontend funciona sem nenhuma mudança.
+     *
+     * Quando a página já foi verificada, a lista vem do banco — só o que tem
+     * fonte provada. Enquanto a verificação não chega nela, é o TMDB cru que
+     * responde: a Home preenche na hora e vai ficando mais seletiva sozinha,
+     * página a página, conforme a rotina avança.
      */
     public function tendencias(Request $request): JsonResponse
     {
         $pagina = max(1, (int) $request->query('page', 1));
 
         return $this->responder(function () use ($pagina) {
-            $resultado = $this->tmdb->tendenciasDoDia($pagina);
+            $verificado = $this->verificado->itensDaPagina($pagina);
+            $resultado = $verificado ?? $this->tmdb->tendenciasDoDia($pagina);
 
             return [
                 'data' => $resultado['resultados'],
@@ -62,6 +71,8 @@ class MovieController extends Controller
                     'page' => $resultado['pagina'],
                     'total_pages' => $resultado['total_paginas'],
                     'has_more' => $resultado['pagina'] < $resultado['total_paginas'],
+                    // Aviso para o frontend de que a lista já passou pelo portão.
+                    'verificada' => $verificado !== null,
                 ],
             ];
         });
