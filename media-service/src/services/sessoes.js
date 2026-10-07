@@ -1839,7 +1839,7 @@ function esperarMetadados(torrent, timeoutMs = TIMEOUT_METADADOS_MS) {
  * @param {number|null} temporada
  * @param {number|null} episodio
  */
-function escolherArquivoDeVideo(torrent, temporada = null, episodio = null) {
+export function escolherArquivoDeVideo(torrent, temporada = null, episodio = null) {
   const videos = torrent.files.filter((arquivo) =>
     EXTENSOES_VIDEO.includes(path.extname(arquivo.name).toLowerCase())
   )
@@ -1855,6 +1855,20 @@ function escolherArquivoDeVideo(torrent, temporada = null, episodio = null) {
 
     if (doEpisodio) {
       return doEpisodio
+    }
+
+    /*
+     * Packs de anime numeram os episódios de forma **absoluta**: na 4ª temporada
+     * de Attack on Titan os arquivos vão de "... - 60.mkv" a "... - 87.mkv", sem
+     * nenhum "S04E28". O crivo acima não os alcança, e desistir aqui entregaria o
+     * maior vídeo do pacote — que num pack grande é quase sempre um filme. Antes
+     * de cair nesse fallback, tentamos casar o episódio pela numeração da pasta
+     * da temporada.
+     */
+    const porNumeracaoAbsoluta = arquivoPorNumeracaoAbsoluta(videos, temporada, episodio)
+
+    if (porNumeracaoAbsoluta) {
+      return porNumeracaoAbsoluta
     }
 
     logger.warn(
@@ -2003,6 +2017,104 @@ function caminhoCorrespondeAoEpisodio(caminho, temporada, episodio) {
   padroes.push(new RegExp(`(?:^|[\\s._-])ep\\.?\\s*0*${episodio}(?!\\d)`, 'i'))
 
   return padroes.some((padrao) => padrao.test(nomeArquivo))
+}
+
+/**
+ * Reconhece o segmento de pasta que nomeia uma temporada.
+ *
+ * Cobre as formas que aparecem na prática — "Season 4", "Temporada 4", "S04",
+ * "4ª Temporada" — e recusa o nome do pack inteiro. O pack costuma resumir o
+ * acervo num intervalo ("[Anime Time] ... (S01-S04+OVA+Movies)"), e um "S04"
+ * solto ali marcaria a pasta raiz como "temporada 4": o filme e o especial
+ * passariam por episódio e a busca por numeração absoluta escolheria o arquivo
+ * errado. O intervalo "S01-S04" é a pista de que o segmento descreve o pacote,
+ * não uma temporada.
+ *
+ * @param {string} segmento nome de uma pasta no caminho do arquivo
+ * @param {number} temporada
+ */
+function segmentoEhDaTemporada(segmento, temporada) {
+  const texto = segmento.toLowerCase()
+
+  if (/s0*\d+\s*-\s*s0*\d+/.test(texto)) return false
+
+  const marca = `0*${temporada}`
+
+  return (
+    new RegExp(`^\\s*s${marca}(?!\\d)`, 'i').test(texto) ||
+    new RegExp(`\\bseason\\s*${marca}(?!\\d)`, 'i').test(texto) ||
+    new RegExp(`\\btemporada\\s*${marca}(?!\\d)`, 'i').test(texto) ||
+    new RegExp(`\\b${marca}\\s*[ªa]?\\s*temporada`, 'i').test(texto)
+  )
+}
+
+/**
+ * Lê o número de episódio que fecha o nome do arquivo.
+ *
+ * É a numeração dos packs de anime ("... - 60.mkv", "... - 92-96.mkv"): o
+ * número — ou o começo do intervalo — vem depois do título, no fim. Devolvemos
+ * `null` quando não há número no fim, o que deixa de fora os filmes e especiais
+ * ("... Movie 04 - Chronicle.mkv").
+ *
+ * @param {string} nomeArquivo última parte do caminho
+ * @returns {number|null}
+ */
+function numeroDoEpisodioNoNome(nomeArquivo) {
+  const semExtensao = nomeArquivo.replace(/\.[a-z0-9]{2,4}$/i, '')
+  const achado = semExtensao.match(/(\d{1,4})(?:\s*-\s*\d{1,4})?\s*$/)
+
+  if (!achado) return null
+
+  const numero = Number(achado[1])
+
+  return numero >= 1 ? numero : null
+}
+
+/**
+ * Escolhe o episódio pela numeração absoluta dentro da pasta da temporada.
+ *
+ * Quando o nome do arquivo não declara "SxxExx" nem outro marcador por temporada,
+ * resta a numeração que corre pela série inteira: a 4ª temporada de Attack on
+ * Titan começa no episódio 60, então "S04E28" é o arquivo "... - 87". O
+ * deslocamento sai do próprio pack — o menor número da pasta é o episódio 1
+ * daquela temporada.
+ *
+ * @param {Array} videos arquivos de vídeo do torrent
+ * @param {number} temporada
+ * @param {number} episodio
+ * @returns {object|null}
+ */
+function arquivoPorNumeracaoAbsoluta(videos, temporada, episodio) {
+  const candidatos = videos.filter((arquivo) => {
+    const partes = arquivo.path.split('/')
+
+    /*
+     * A pasta da temporada tem de ser um diretório de verdade — o último
+     * segmento é o nome do arquivo, então só olhamos até antes dele. Extras
+     * (créditos, aberturas sem crédito) ficam de fora: eles também se numeram e
+     * deslocariam o menor número da pasta.
+     */
+    const naTemporada = partes.some(
+      (segmento, indice) =>
+        indice < partes.length - 1 && segmentoEhDaTemporada(segmento, temporada)
+    )
+
+    return naTemporada && !/(^|\/)(extras?|specials?|nc(op|ed)?)(\/|$)/i.test(arquivo.path)
+  })
+
+  const numerados = candidatos
+    .map((arquivo) => ({
+      arquivo,
+      numero: numeroDoEpisodioNoNome(arquivo.path.split('/').pop() || ''),
+    }))
+    .filter((item) => item.numero !== null)
+
+  if (numerados.length === 0) return null
+
+  const primeiroDaTemporada = Math.min(...numerados.map((item) => item.numero))
+  const alvo = primeiroDaTemporada - 1 + episodio
+
+  return numerados.find((item) => item.numero === alvo)?.arquivo ?? null
 }
 
 /**
