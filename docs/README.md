@@ -18,6 +18,7 @@ navegação:
 | [Frontend](frontend.md) | Organização Vue, rolagem infinita, skeletons e componentes. |
 | [Integrações](integracoes.md) | TMDB, cache Redis, torrents/legendas e Real-Debrid. |
 | [Fluxo de Branches](fluxo-branches.md) | Estratégia de branches e commits. |
+| [Pendências](pendencias.md) | Comportamentos em aberto, com a evidência para reproduzir. |
 
 ## Manual x planos
 
