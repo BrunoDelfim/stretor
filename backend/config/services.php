@@ -74,7 +74,7 @@ return [
         // Sem configurar nada, verifica o mesmo número de páginas da rolagem.
         'paginas' => (int) env('VERIFICACAO_PAGINAS', env('TMDB_MAX_PAGES', 25)),
         'validade_horas' => (int) env('VERIFICACAO_VALIDADE_HORAS', 24),
-        'orcamento_titulo' => (int) env('VERIFICACAO_ORCAMENTO_TITULO', 15),
+        'orcamento_titulo' => (int) env('VERIFICACAO_ORCAMENTO_TITULO', 30),
         'pausa_itens_ms' => (int) env('VERIFICACAO_PAUSA_ITENS_MS', 6000),
         'pausa_paginas_ms' => (int) env('VERIFICACAO_PAUSA_PAGINAS_MS', 45000),
     ],

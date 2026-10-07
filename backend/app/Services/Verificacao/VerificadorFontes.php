@@ -18,6 +18,20 @@ use InvalidArgumentException;
  */
 class VerificadorFontes
 {
+    /**
+     * Sonda de episódio para séries.
+     *
+     * O stream direto — o canal que hospeda os agregadores (Pobreflix, entre
+     * outros) — monta a rota do vídeo a partir da ficha da série **mais** a
+     * temporada e o episódio. Faltando esses dois números, o agregador só devolve
+     * a ficha, nunca a página do episódio, e a série era gravada como "sem fonte"
+     * mesmo estando no acervo. Perguntar pelo primeiro episódio da primeira
+     * temporada é a amostra mais barata que responde "esta série tem fonte?".
+     */
+    private const TEMPORADA_SONDA = 1;
+
+    private const EPISODIO_SONDA = 1;
+
     public function __construct(private readonly TorrentService $torrents)
     {
     }
@@ -41,15 +55,23 @@ class VerificadorFontes
             throw new InvalidArgumentException('Item sem tipo de mídia reconhecido.');
         }
 
+        // A série é sondada por um episódio concreto — é o que faz o agregador
+        // responder; o filme não tem essa dimensão e segue só com o título.
+        $sondandoEpisodio = $tipo === TipoMidia::SERIE;
+
         $fontes = $this->torrents->fontes(
             titulo: (string) ($item['titulo'] ?? ''),
             ano: $this->ano($item),
             imdbId: $item['imdb_id'] ?? null,
             tituloOriginal: $item['titulo_original'] ?? null,
+            temporada: $sondandoEpisodio ? self::TEMPORADA_SONDA : null,
+            episodio: $sondandoEpisodio ? self::EPISODIO_SONDA : null,
             tmdbId: (string) $tmdbId,
-            // Teto curto: a verificação quer saber **se** existe fonte, não
-            // esgotar a cascata atrás da melhor delas.
-            tempoTotal: (int) config('services.verificacao.orcamento_titulo', 15),
+            // O teto cobre o custo real do stream direto — duas páginas (a ficha
+            // da série e a do episódio), de 10 a 15 s cada. Um teto curto demais
+            // cortava o agregador no meio e gravava "sem fonte" para um título que
+            // só o acervo web tinha.
+            tempoTotal: (int) config('services.verificacao.orcamento_titulo', 30),
         );
 
         // A lista já vem ordenada, com a PT-BR na frente. Guardamos o perfil da
