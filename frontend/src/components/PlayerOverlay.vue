@@ -1995,7 +1995,7 @@ function aguardarFonte(minhaGeracao, fonte) {
            * ao retorno de `iniciarPlayer` fazia o fluxo queimar a lista inteira
            * de fontes por uma falha de montagem do Plyr.
            */
-          iniciarPlayer(url, minhaGeracao).catch(() => {})
+          iniciarPlayer(url, minhaGeracao, fonte).catch(() => {})
 
           return resolve({ desfecho: 'pronto' })
         }
