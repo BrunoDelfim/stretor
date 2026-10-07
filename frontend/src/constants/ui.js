@@ -31,16 +31,18 @@ export const QUANTIDADE_SKELETONS = 6
 export const INTERVALO_STATUS_SESSAO_MS = 1500
 
 /**
- * Tempo máximo aguardando uma única fonte ficar pronta, em ms (90 segundos).
+ * Tempo, em ms (90 segundos), que uma fonte torrent pode ficar **sem baixar um
+ * byte novo** antes de ser abandonada.
  *
- * Antes usávamos 5 minutos por fonte. Com várias fontes na fila, uma fonte
- * morta prendia o usuário por minutos antes de tentar a próxima. Noventa
- * segundos cobrem com folga a conexão do torrent e o buffer inicial do HLS.
+ * A régua é o progresso, não o relógio: cada byte que chega reinicia este prazo
+ * (ver `aguardarFonte`). Uma fonte viva com poucos seeds baixa devagar, mas
+ * baixa — e antes ela esgotava os 90 s fixos antes do buffer inicial e era
+ * trocada no meio de um download que estava andando, o mesmo erro que o
+ * media-service já havia corrigido na espera por peças. Agora só a estagnação
+ * real (90 s sem byte novo) derruba a fonte; uma fonte morta, que nunca baixou,
+ * ainda cai bem antes pelo `ESTAGNACAO_FONTE_MS`.
  *
- * Ajustável por `VITE_TIMEOUT_FONTE_MS`: numa conexão lenta (1 Mbps, por
- * exemplo) o buffer inicial do HLS demora bem mais que os 90 s padrão, e uma
- * fonte que baixa normalmente era abandonada no meio do preparo. Quem tem
- * banda apertada estica este valor sem mexer no código.
+ * Ajustável por `VITE_TIMEOUT_FONTE_MS`.
  */
 export const TIMEOUT_FONTE_MS = Number(import.meta.env.VITE_TIMEOUT_FONTE_MS) || 90 * 1000
 
@@ -55,9 +57,10 @@ export const TIMEOUT_FONTE_MS = Number(import.meta.env.VITE_TIMEOUT_FONTE_MS) ||
  * passamos para a próxima.
  *
  * Só vale para fonte que **nunca entregou um byte**. Uma vez que a fonte baixou
- * algo, ela provou estar viva e não é mais abandonada por estagnação — segue
- * sob o `TIMEOUT_FONTE_MS`, que é o limite para a lentidão. Sem essa distinção,
- * uma conexão lenta derrubava fontes boas por causa de uma pausa momentânea.
+ * algo, ela provou estar viva e não é mais abandonada por esta estagnação curta
+ * — passa a valer o `TIMEOUT_FONTE_MS`, que também se renova a cada byte novo.
+ * Sem essa distinção, uma conexão lenta derrubava fontes boas por causa de uma
+ * pausa momentânea.
  *
  * Ajustável por `VITE_ESTAGNACAO_FONTE_MS`.
  */

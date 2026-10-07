@@ -511,17 +511,22 @@ fonte é abandonada e o laço segue para a próxima.
 As duas condições são exigidas juntas de propósito. Só a velocidade não serve:
 durante a análise do cabeçalho o WebTorrent pode passar alguns segundos sem
 tráfego enquanto negocia com o peer, e uma fonte saudável seria descartada no
-meio da leitura. Já ter baixado algo prova que a fonte está viva — a partir daí
-ela segue sob o `TIMEOUT_FONTE_MS`, que é o limite para a lentidão.
+meio da leitura. Já ter baixado algo prova que a fonte está viva — e, a partir
+daí, o `TIMEOUT_FONTE_MS` deixa de ser um relógio fixo: ele corre desde o último
+byte baixado e se reinicia a cada avanço do download. É a mesma régua por
+progresso que o media-service usa na espera por peças — enquanto a fonte entrega,
+não importa o quão devagar ela seja; só a estagnação real (90 s sem byte novo) a
+derruba.
 
 Essa separação corrigiu um problema sério: antes, condicionar o sucesso ao
 retorno de `iniciarPlayer` fazia uma falha de montagem do Plyr (evento `ready`
 que não dispara, `player.media` nulo) descartar uma fonte perfeitamente válida —
 o fluxo queimava a lista inteira de fontes por um problema de UI.
 
-Cada fonte tem um limite próprio (`TIMEOUT_FONTE_MS`, 90 s) em vez dos 5 minutos
-anteriores: com várias fontes na fila, uma fonte morta prendia o usuário por
-minutos.
+Cada fonte ocupa a fila por um teto de estagnação próprio (`TIMEOUT_FONTE_MS`,
+90 s sem byte novo) em vez dos 5 minutos por relógio dos primeiros tempos: uma
+fonte morta prende o usuário o mínimo possível e uma fonte lenta mas viva não é
+cortada.
 
 Ao descartar uma fonte por falha real (timeout ou `status === 'erro'`),
 [`limparSessaoAtual()`](../frontend/src/components/PlayerOverlay.vue:1966) faz

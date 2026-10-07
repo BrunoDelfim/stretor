@@ -1970,10 +1970,11 @@ a paciência sem mexer no código.
 
 **No frontend:**
 
-- `VITE_TIMEOUT_FONTE_MS` (padrão `90000`) — prazo total por fonte em
-  [`aguardarFonte`](../frontend/src/components/PlayerOverlay.vue:1675). Numa
-  conexão de 1 Mbps o buffer inicial do HLS demora bem mais que os 90 s padrão, e
-  uma fonte que baixa normalmente era abandonada no meio do preparo.
+- `VITE_TIMEOUT_FONTE_MS` (padrão `90000`) — prazo da fonte torrent em
+  [`aguardarFonte`](../frontend/src/components/PlayerOverlay.vue:1781). Não é um
+  relógio total: ele corre desde o último byte baixado e cada byte novo o
+  reinicia, então mede **estagnação**, não duração. Uma fonte lenta mas viva não é
+  mais trocada no meio do preparo.
 - `VITE_ESTAGNACAO_FONTE_MS` (padrão `20000`) — tempo parado a 0 MB/s antes de
   trocar de fonte.
 
@@ -1981,13 +1982,14 @@ Os limites do media-service precisam ficar **abaixo** do `VITE_TIMEOUT_FONTE_MS`
 para que o backend seja o primeiro a desistir e o overlay receba o motivo real em
 vez de um cancelamento do navegador.
 
-**A estagnação só vale para fonte que nunca entregou um byte.** Uma vez que
+**A estagnação curta só vale para fonte que nunca entregou um byte.** Uma vez que
 qualquer byte chegou, a fonte provou estar viva e não é mais abandonada por
-estagnação — segue só sob o `VITE_TIMEOUT_FONTE_MS`. Sem essa trava, a velocidade
-oscilava até zero entre ciclos enquanto o WebTorrent negociava, e uma conexão
-lenta derrubava fontes boas no meio de um download que estava andando. A marca
-`jaEntregouBytes` em [`aguardarFonte`](../frontend/src/components/PlayerOverlay.vue:1686)
-é o que separa "fonte morta" de "fonte lenta".
+`VITE_ESTAGNACAO_FONTE_MS` — passa a valer o `VITE_TIMEOUT_FONTE_MS`, que também
+se renova a cada byte novo. Sem essa trava, a velocidade oscilava até zero entre
+ciclos enquanto o WebTorrent negociava, e uma conexão lenta derrubava fontes boas
+no meio de um download que estava andando. A marca `jaEntregouBytes` em
+[`aguardarFonte`](../frontend/src/components/PlayerOverlay.vue:1811) é o que
+separa "fonte morta" de "fonte lenta".
 
 Problemas de ambiente e de streaming encontrados na validação, já tratados:
 

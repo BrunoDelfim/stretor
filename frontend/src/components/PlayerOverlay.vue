@@ -1867,12 +1867,24 @@ function aguardarFonte(minhaGeracao, fonte) {
 
   /*
    * Prova de vida da fonte. Uma vez que qualquer byte chegou, a fonte não é mais
-   * abandonada por estagnação: ela só segue sob o `TIMEOUT_FONTE_MS`. Sem esta
-   * trava, uma conexão lenta (1 Mbps) derrubava fontes boas — a velocidade
-   * oscilava até zero por alguns ciclos e o frontend trocava de fonte no meio de
-   * um download que estava andando.
+   * abandonada pela estagnação curta: ela passa a régua por progresso do
+   * `TIMEOUT_FONTE_MS`. Sem esta trava, uma conexão lenta (1 Mbps) derrubava
+   * fontes boas — a velocidade oscilava até zero por alguns ciclos e o frontend
+   * trocava de fonte no meio de um download que estava andando.
    */
   let jaEntregouBytes = false
+
+  /*
+   * Prazo que se renova enquanto a fonte entrega bytes. O `TIMEOUT_FONTE_MS` era
+   * um relógio fixo, e uma fonte viva com poucos seeds — que baixa devagar, mas
+   * baixa — esgotava os 90 s antes do buffer inicial e era trocada no meio de um
+   * download que estava andando. Aqui guardamos o instante do último avanço do
+   * `baixado` e medimos o prazo a partir dele: cada byte novo reinicia a espera,
+   * o mesmo critério de paciência por progresso que o media-service já usa na
+   * espera por peças. Só a estagnação real derruba a fonte.
+   */
+  let ultimoBaixado = 0
+  let ultimoAvancoEm = inicio
 
   /*
    * Último percentual de conversão visto numa fonte direta. É a prova de vida
@@ -1902,7 +1914,15 @@ function aguardarFonte(minhaGeracao, fonte) {
        */
       const teto = eDireta ? TIMEOUT_DIRETO_MS : TIMEOUT_FONTE_MS
 
-      if (Date.now() - inicio > teto) {
+      /*
+       * A fonte torrent mede a estagnação, não o relógio: o prazo corre desde o
+       * último byte baixado (`ultimoAvancoEm`). Um seed lento mas vivo nunca é
+       * cortado enquanto progride. A fonte direta continua contando do começo —
+       * o que prova a vida dela é o progresso da conversão, tratado adiante.
+       */
+      const decorrido = eDireta ? Date.now() - inicio : Date.now() - ultimoAvancoEm
+
+      if (decorrido > teto) {
         await limparSessaoAtual()
         return resolve({ desfecho: 'falhou', motivo: 'lento' })
       }
@@ -2023,21 +2043,31 @@ function aguardarFonte(minhaGeracao, fonte) {
          * zerada. Só a velocidade não serve — durante a análise do cabeçalho o
          * WebTorrent pode passar alguns segundos sem tráfego enquanto negocia
          * com o peer, e uma fonte saudável seria descartada no meio da leitura.
-         * Já ter baixado algo prova que a fonte está viva; a partir daí ela
-         * segue sob o `TIMEOUT_FONTE_MS`, que é o limite para a lentidão.
+         * Já ter baixado algo prova que a fonte está viva; a partir daí a fonte
+         * sai desta estagnação curta e entra na régua por progresso do
+         * `TIMEOUT_FONTE_MS` (ver o avanço medido logo abaixo).
          */
         const baixado = status.download?.baixado ?? 0
         const velocidade = status.download?.velocidade ?? 0
 
         /*
          * Qualquer byte já baixado é prova de vida permanente. A partir daqui a
-         * fonte não é mais abandonada por estagnação — só pelo `TIMEOUT_FONTE_MS`.
-         * É o que protege a conexão lenta: a velocidade cai a zero entre ciclos
-         * enquanto o WebTorrent negocia, e sem esta trava a fonte era trocada no
-         * meio de um download que estava andando.
+         * fonte não é mais abandonada por estagnação curta — só pelo prazo de
+         * `TIMEOUT_FONTE_MS`, que corre desde o último avanço do download.
          */
         if (baixado > 0) {
           jaEntregouBytes = true
+        }
+
+        /*
+         * Cada byte novo renova o prazo. É a régua por progresso: enquanto o
+         * download avança, a fonte está viva e não é trocada, por mais lenta que
+         * seja. Só quando o `baixado` para de crescer por `TIMEOUT_FONTE_MS` é
+         * que a espera estoura (ver a checagem de prazo no topo da consulta).
+         */
+        if (baixado > ultimoBaixado) {
+          ultimoBaixado = baixado
+          ultimoAvancoEm = Date.now()
         }
 
         if (!jaEntregouBytes && baixado === 0 && velocidade === 0) {
