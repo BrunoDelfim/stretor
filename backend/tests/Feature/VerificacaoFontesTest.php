@@ -8,6 +8,7 @@ use App\Enums\TipoMidia;
 use App\Models\Disponibilidade;
 use App\Models\VerificacaoHome;
 use App\Services\TmdbService;
+use App\Services\TorrentService;
 use App\Services\Verificacao\CatalogoVerificado;
 use App\Services\Verificacao\VerificadorFontes;
 use App\Services\Verificacao\VerificadorHome;
@@ -30,7 +31,9 @@ use Tests\TestCase;
  *
  * O contrato fixado aqui: título já resolvido não é re-testado, a página só vira
  * `ok` quando é processada por inteiro, e a Home serve a lista verificada quando
- * ela existe.
+ * ela existe. Os dois últimos casos provam que a unidade que decide "tem fonte"
+ * pergunta à **mesma** `TorrentService::fontes()` que o playback usa — e com o
+ * mesmo recorte (temporada/episódio só na série).
  */
 class VerificacaoFontesTest extends TestCase
 {
@@ -311,5 +314,75 @@ class VerificacaoFontesTest extends TestCase
             ->assertJsonCount(2, 'data')
             ->assertJsonPath('meta.verificada', true)
             ->assertJsonPath('meta.total_pages', 25);
+    }
+
+    /**
+     * A verificação pergunta à **mesma** `TorrentService::fontes()` que o playback
+     * usa — não existe um caminho paralelo de "tem fonte?".
+     *
+     * A série é sondada por um episódio concreto (S01E01), exatamente como o
+     * frontend pede ao abrir o episódio: sem temporada e episódio o stream direto
+     * não monta a rota do vídeo, o acervo web some da resposta e a série nascia
+     * "sem fonte" mesmo estando no ar. Se o verificador deixasse de delegar a
+     * `fontes()`, o dublê não teria chamada casada e este teste quebraria.
+     */
+    public function test_serie_e_sonada_com_temporada_e_episodio_como_no_playback(): void
+    {
+        $torrents = Mockery::mock(TorrentService::class);
+        $torrents->shouldReceive('fontes')
+            ->once()
+            ->withArgs(function (...$args): bool {
+                // O dublê recebe os argumentos na ordem declarada de `fontes()`.
+                [$titulo, $ano, $imdbId, $tituloOriginal, $temporada, $episodio, $tmdbId] = array_values($args);
+
+                return $titulo === 'Carrie, a Estranha'
+                    && $ano === 2026
+                    && $imdbId === null
+                    && $tituloOriginal === 'Carrie'
+                    && $temporada === 1
+                    && $episodio === 1
+                    && $tmdbId === '288673';
+            })
+            ->andReturn([['idioma' => 'pt-BR', 'tipo' => 'direto', 'titulo' => 'Carrie']]);
+
+        $disponibilidade = (new VerificadorFontes($torrents))->verificar(
+            [
+                'id' => 288673,
+                'tipo' => 'tv',
+                'titulo' => 'Carrie, a Estranha',
+                'titulo_original' => 'Carrie',
+                'ano' => 2026,
+                'imdb_id' => null,
+            ],
+            OrigemVerificacao::COMANDO,
+        );
+
+        $this->assertTrue($disponibilidade->tem_fonte, 'Lista não vazia é fonte.');
+        $this->assertSame('pt-BR', $disponibilidade->fonte_idioma);
+        $this->assertSame('direto', $disponibilidade->fonte_tipo);
+    }
+
+    /**
+     * O filme não tem dimensão de temporada/episódio: a sondagem vai nula e a
+     * busca é a mesma de sempre — a lista vazia continua sendo "sem fonte".
+     */
+    public function test_filme_e_sonado_sem_temporada_nem_episodio(): void
+    {
+        $torrents = Mockery::mock(TorrentService::class);
+        $torrents->shouldReceive('fontes')
+            ->once()
+            ->withArgs(function (...$args): bool {
+                [, , , , $temporada, $episodio] = array_values($args);
+
+                return $temporada === null && $episodio === null;
+            })
+            ->andReturn([]);
+
+        $disponibilidade = (new VerificadorFontes($torrents))->verificar(
+            ['id' => 550, 'tipo' => 'movie', 'titulo' => 'Clube da Luta', 'ano' => 1999],
+            OrigemVerificacao::COMANDO,
+        );
+
+        $this->assertFalse($disponibilidade->tem_fonte, 'Lista vazia é sem fonte.');
     }
 }
