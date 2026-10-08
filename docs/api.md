@@ -11,6 +11,7 @@ Endpoints expostos pelo backend (Laravel) e pelo media-service (Node).
 - `GET /api/v1/movies/search?query=...` — busca por título na navbar (filmes e séries, via `/search/multi` do TMDB)
 - `GET /api/v1/movies/{id}` — detalhes do filme (modal)
 - `GET /api/v1/movies/{id}/fontes` — fontes de torrent para reprodução
+- `POST /api/v1/movies/{id}/fontes/reproduzida` — relato do player de que a fonte serviu o título até o fim (vira histórico e volta na frente da fila)
 - `GET /api/v1/movies/legenda?url=...` — converte uma legenda SRT em WebVTT para o `<track>` do Plyr (usado pelo fallback legendado)
 
 > As respostas do TMDB são cacheadas no Redis (`TMDB_CACHE_TTL`, padrão 3600s)
@@ -205,12 +206,65 @@ A busca é cacheada no Redis (`TORRENTS_CACHE_TTL`, padrão 1800s) e o provedor
 fica isolado no `TorrentService` — trocar de API significa reescrever apenas a
 normalização.
 
+#### Fonte comprovada (o relato do player)
+
+```
+POST /api/v1/movies/{id}/fontes/reproduzida
+```
+
+O caminho de volta do playback para a busca. Quando o vídeo chega ao fim de fato —
+o playhead passa de 95% da duração lida pelo ffprobe —, o overlay relata qual
+fonte serviu o título:
+
+```json
+{
+  "fonte_id": "0f9a…c1",
+  "tipo": "torrent",
+  "titulo": "Clube da Luta 1999 1080p Dublado",
+  "qualidade": "1080P",
+  "tamanho": "1,4 GB",
+  "idioma": "pt-BR",
+  "provedor": "apibay",
+  "provedor_rotulo": "APIBay",
+  "seeds": 9,
+  "peers": 2,
+  "magnet": "magnet:?xt=urn:btih:0f9a…c1",
+  "legendas": [],
+  "temporada": 2,
+  "episodio": 5
+}
+```
+
+`temporada` e `episodio` só vão quando a reprodução é de um episódio. O magnet é
+obrigatório no `tipo: "torrent"` e o `stream` (URL `http`/`https`) no
+`tipo: "direto"`; `legendas` são as que estavam anexadas na hora — sem elas,
+reoferecer uma fonte legendada tocaria o áudio original sem legenda nenhuma.
+
+A resposta é `{"data": {"registrada": true}}`. Repetir a mesma fonte não duplica
+a linha: soma uma reprodução e renova a data, e é esse contador que ordena o
+histórico. Relato fora de forma volta `422` — uma linha inválida iria para a
+**frente** da lista e atrasaria a reprodução de quem abriu o título.
+
+A partir daí, as fontes comprovadas do título voltam **antes** das recém-descobertas
+na `GET /{id}/fontes`, com o mesmo formato e passando pela mesma peneira de malha:
+se a comprovada morreu desde a última sessão, ela cai e o resto da lista segue.
+Quem controla é `TORRENTS_FONTES_SALVAS` (padrão `true`) e o teto por título é
+`TORRENTS_FONTES_SALVAS_MAX` (padrão 3).
+
 ## Media Service (Node)
 
 - `GET /health` — health check
 - `POST /api/media/probe` — extrai metadados de um arquivo
 - `POST /api/media/transcode` — transcodifica vídeo
 - `POST /api/media/extract-audio` — extrai áudio de vídeo
+- `POST /api/media/metadados` — abre o magnet e devolve os metadados do torrent,
+  com o indício de PT-BR no conteúdo. É o que o backend usa para inspecionar o
+  pack cujo nome não prova o idioma (ver `TORRENTS_INSPECAO_*`).
+- `POST /api/media/verificar` — abre o magnet e **mede a malha** por alguns
+  segundos (`{ magnet, espera_ms }`), respondendo `{ ok, peers, seeds, velocidade }`.
+  É o **teste de malha**: o backend descarta a fonte que não conecta antes de
+  oferecê-la ao player (ver `TORRENTS_LIVENESS_*`). Não cria sessão nem deixa
+  torrent vivo.
 
 ### Sessões de reprodução
 

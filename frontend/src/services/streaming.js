@@ -113,6 +113,44 @@ export const streamingService = {
   },
 
   /**
+   * Avisa o backend que a fonte tocou o título até o fim.
+   *
+   * É o caminho de volta do playback para a busca: o backend guarda a fonte como
+   * comprovada e a devolve na frente da fila na próxima abertura deste título,
+   * poupando o usuário do tentativa-e-erro que já foi pago uma vez. Vão junto as
+   * legendas com que a fonte tocou — sem elas, reoferecer uma fonte legendada
+   * tocaria o áudio original sem legenda nenhuma.
+   *
+   * `temporada` e `episodio` só entram quando a reprodução é de um episódio: é
+   * por eles que a comprovada é achada de volta, e mandar os dois no filme faria
+   * o histórico procurar a fonte na chave errada.
+   */
+  async reportarFonteReproduzida(fonte, filme) {
+    const corpo = {
+      fonte_id: fonte.id,
+      tipo: fonte.tipo ?? 'torrent',
+      titulo: fonte.titulo,
+      qualidade: fonte.qualidade,
+      tamanho: fonte.tamanho,
+      idioma: fonte.idioma,
+      provedor: fonte.provedor,
+      provedor_rotulo: fonte.provedor_rotulo,
+      seeds: fonte.seeds,
+      peers: fonte.peers,
+      magnet: fonte.magnet,
+      stream: fonte.stream,
+      legendas: fonte.legendas,
+    }
+
+    if (filme.temporada && filme.episodio) {
+      corpo.temporada = filme.temporada
+      corpo.episodio = filme.episodio
+    }
+
+    await clienteApi().post(`/${filme.id}/fontes/reproduzida`, corpo)
+  },
+
+  /**
    * Estado atual da sessão (conectando, convertendo, pronto ou erro).
    *
    * O 404 é traduzido para um estado próprio em vez de subir como exceção. Ele

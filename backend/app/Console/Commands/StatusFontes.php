@@ -37,6 +37,11 @@ class StatusFontes extends Command
 
         $noIndice = Disponibilidade::count();
         $comFonte = Disponibilidade::where('tem_fonte', true)->count();
+        // O "sem fonte" se divide pela marca de retentativa: quanto volta amanhã
+        // (a busca não concluiu) e quanto espera a janela longa (veredito).
+        $retentaAmanha = Disponibilidade::where('tem_fonte', false)->where('deve_retentar', true)->count();
+        $janelaLonga = Disponibilidade::where('tem_fonte', false)->where('deve_retentar', false)->count();
+        $diasJanelaLonga = (int) config('services.verificacao.validade_dias_definitivo', 7);
 
         $this->info('Status da verificação de fontes');
         $this->table(['Item', 'Valor'], [
@@ -47,6 +52,8 @@ class StatusFontes extends Command
             ['Títulos no índice', $noIndice],
             ['Títulos com fonte', $comFonte],
             ['Títulos sem fonte', $noIndice - $comFonte],
+            ['Sem fonte — volta amanhã', $retentaAmanha],
+            ["Sem fonte — reexame em {$diasJanelaLonga} dias", $janelaLonga],
         ]);
 
         $this->resumoUltimaExecucao();

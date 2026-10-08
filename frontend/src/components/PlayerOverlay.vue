@@ -9,6 +9,7 @@ import {
   ESPERA_ENTRE_TENTATIVAS_MS,
   ESTAGNACAO_DIRETA_MS,
   ESTAGNACAO_FONTE_MS,
+  FIM_REPRODUZIDO,
   INTERVALO_STATUS_SESSAO_MS,
   TENTATIVAS_FONTE_REDE,
   TIMEOUT_DIRETO_MS,
@@ -151,6 +152,17 @@ let sessaoId = null
  */
 let legendasDaFonteAtual = []
 let cancelado = false
+
+/*
+ * Fonte que está tocando, com o snapshot do título desta abertura.
+ *
+ * O relato de "reproduziu inteira" chega quando o vídeo chega ao fim — bem
+ * depois de o fluxo de fontes ter terminado —, e precisa saber qual fonte (e
+ * qual episódio) contou. Ler `props.filme` naquele instante misturaria
+ * episódios quando o usuário troca de fonte no meio, então guardamos o par no
+ * momento em que a fonte é escolhida.
+ */
+let fonteEmReproducao = null
 
 /*
  * Contador de geração do fluxo.
@@ -1007,6 +1019,14 @@ async function iniciarPlayer(url, minhaGeracao, fonte = null) {
   // convertido, então o arrasto precisa ser conduzido por fora. Ver `executarSeek()`.
   ligarControleDeSeek(midia)
 
+  /*
+   * A fonte que chegar ao fim deste título vira histórico no backend. O vigia é
+   * montado aqui, no trecho comum aos dois caminhos (hls.js e HLS nativo), e não
+   * dentro do ramo do hls.js: no Safari não há instância de HLS nenhuma e o
+   * relato nunca sairia.
+   */
+  vigiarFimDaReproducao(midia, minhaGeracao)
+
   // O Plyr já está montado e o HLS anexado: o overlay pode sair de cena.
   estado.value = 'reproduzindo'
   mensagem.value = ''
@@ -1025,6 +1045,57 @@ async function iniciarPlayer(url, minhaGeracao, fonte = null) {
   if (!instanciaHls) {
     vigiarReproducao()
   }
+}
+
+/**
+ * Observa a reprodução e, quando o título chega ao fim, avisa o backend.
+ *
+ * O gatilho é o playhead alcançar `FIM_REPRODUZIDO` da duração, e não o evento
+ * `ended`: com a playlist `EVENT` o hls.js encerra o stream quando acaba o trecho
+ * já convertido, e o `ended` dispara mesmo com o filme no meio. O playhead, ao
+ * contrário, só chega aos 95% se a fonte entregou esses 95% para tocar — e é
+ * exatamente essa prova que o backend guarda.
+ *
+ * Como a timeline local começa no ponto do último reposicionamento, a fração é
+ * medida sobre o tempo do filme (`tempoBase` + `currentTime`), não sobre o que a
+ * playlist atual cobre.
+ *
+ * O aviso sai uma única vez por montagem e é de fogo-e-esquece: o histórico é um
+ * ganho da próxima abertura, não uma condição para assistir a esta.
+ */
+function vigiarFimDaReproducao(midia, minhaGeracao) {
+  let avisado = false
+
+  const conferir = () => {
+    if (avisado || cancelado || minhaGeracao !== geracao) return
+
+    const total = duracaoTotal.value
+    const reproducao = fonteEmReproducao
+
+    // Sem duração lida pelo ffprobe não há como medir o quanto passou; sem o par
+    // fonte/título não há o que relatar.
+    if (!reproducao || !total || total <= 0) return
+
+    const assistido = (tempoBase + (midia.currentTime || 0)) / total
+
+    if (assistido < FIM_REPRODUZIDO) return
+
+    avisado = true
+
+    anotarDiagnostico(`fonte comprovada: ${(assistido * 100).toFixed(0)}% do título`)
+
+    streamingService
+      .reportarFonteReproduzida(reproducao.fonte, reproducao.filme)
+      .catch(() => {
+        // O relato não interfere na reprodução em curso: o que se perde é o
+        // atalho da próxima abertura, não esta.
+      })
+  }
+
+  midia.addEventListener('timeupdate', conferir)
+  // O `ended` é a última chance de medir: perto do fim, o `timeupdate` pode
+  // parar de chegar antes de o playhead cruzar a margem.
+  midia.addEventListener('ended', conferir)
 }
 
 /**
@@ -1577,6 +1648,14 @@ async function tentarFontes(fontes, minhaGeracao, minhaAbertura, filme) {
     if (cancelado || minhaAbertura !== abertura) return
 
     const fonte = fontes[indice]
+
+    /*
+     * Esta é a candidata da vez. Se ela conectar e o título chegar ao fim, é ela
+     * que o relato de "fonte comprovada" aponta — por isso o par fica gravado já
+     * aqui, e não no sucesso: o vigia do player precisa dele sem depender do
+     * retorno deste laço.
+     */
+    fonteEmReproducao = { fonte, filme }
 
     // Guardado para o reposicionamento (seek) remontar a legenda junto do vídeo.
     legendasDaFonteAtual = fonte.legendas ?? []

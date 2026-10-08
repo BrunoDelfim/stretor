@@ -74,6 +74,12 @@ return [
         // Sem configurar nada, verifica o mesmo número de páginas da rolagem.
         'paginas' => (int) env('VERIFICACAO_PAGINAS', env('TMDB_MAX_PAGES', 25)),
         'validade_horas' => (int) env('VERIFICACAO_VALIDADE_HORAS', 24),
+        // Janela longa do veredito definitivo, em dias. Um "sem fonte" que
+        // perguntou a todos os provedores não muda de um dia para o outro;
+        // reexaminá-lo todo dia só gastaria o ritmo furtivo com o que o acervo já
+        // respondeu. Quem pediu nova chance (busca inconclusiva) usa a validade
+        // curta acima.
+        'validade_dias_definitivo' => (int) env('VERIFICACAO_VALIDADE_DIAS_DEFINITIVO', 7),
         'orcamento_titulo' => (int) env('VERIFICACAO_ORCAMENTO_TITULO', 30),
         'pausa_itens_ms' => (int) env('VERIFICACAO_PAUSA_ITENS_MS', 6000),
         'pausa_paginas_ms' => (int) env('VERIFICACAO_PAUSA_PAGINAS_MS', 45000),
@@ -867,6 +873,69 @@ return [
          * que estourou o tempo não vira "não é dublado" permanente.
          */
         'inspecao_cache_ttl' => (int) env('TORRENTS_INSPECAO_CACHE_TTL', 86400),
+
+        /*
+         * Teste de malha: a peneira final contra fontes mortas.
+         *
+         * O `seeds` do provedor é estático e envelhece — um release com "12
+         * seeds" pode estar morto há meses. Com esta chave ligada, antes de a
+         * lista sair cada torrent é sondado no media-service (`/api/media/
+         * verificar`), que abre o magnet e mede a malha de verdade; a fonte sem
+         * peer é descartada. É o que impede o caso "Super Psychic Policeman
+         * Chojo": o release existe (com legenda), mas tem 0–1 peers e nunca
+         * conecta — o player ficava tentando e não tocava nada.
+         *
+         * A sondagem é **fail-open**: se o media-service estiver fora do ar, se a
+         * requisição estourar o prazo ou voltar malformada, a fonte é mantida —
+         * não há prova de que esteja morta. Só o veredito definitivo reprova.
+         * Desligue a chave para servir a lista como veio da busca.
+         */
+        'liveness_fontes' => (bool) env('TORRENTS_LIVENESS_FONTES', true),
+
+        /*
+         * Quantos magnetes podem ser sondados por busca. A lista já chega
+         * reduzida ao teto de fontes, então o valor cobre o caso normal; serve
+         * de trava para o teste não crescer junto com a cascata.
+         */
+        'liveness_max_fontes' => (int) env('TORRENTS_LIVENESS_MAX_FONTES', 4),
+
+        /*
+         * Teto de tempo, em segundos, do teste de malha no media-service. Cada
+         * magnet paga o custo da sua própria medição; sem teto, um magnet mudo
+         * seguraria a busca inteira. O teste termina antes quando a fonte prova
+         * vida cedo, então este prazosó é pago por uma fonte que nunca provou.
+         */
+        'liveness_tempo_limite' => (int) env('TORRENTS_LIVENESS_TEMPO_LIMITE', 9),
+
+        /*
+         * Tempo, em milissegundos, que o media-service observa a malha de uma
+         * fonte antes de reprová-la. Fica abaixo do tempo limite acima para que o
+         * media-service responda primeiro — o mesmo desenho da inspeção de pack.
+         */
+        'liveness_espera_ms' => (int) env('TORRENTS_LIVENESS_ESPERA_MS', 6000),
+
+        /*
+         * Fontes comprovadas: o histórico do que já tocou até o fim.
+         *
+         * A malha diz se a fonte *deve* conectar; o histórico diz que ela
+         * **serviu o título inteiro**, nas mãos do usuário. Com a chave ligada, a
+         * busca devolve essas fontes na frente da fila e o player as tenta antes
+         * das que acabaram de ser descobertas — o mesmo trabalho de tentativa e
+         * erro não é pago duas vezes no mesmo título. Elas passam pelo teste de
+         * malha como qualquer outra, então uma comprovada que morreu desde então
+         * não bloqueia nada: o resto da lista segue atrás dela.
+         */
+        'fontes_salvas' => (bool) env('TORRENTS_FONTES_SALVAS', true),
+
+        /*
+         * Quantas fontes comprovadas são lembradas por título (e, ao mesmo tempo,
+         * quantas a busca devolve). O teto existe para o histórico não competir
+         * com o achado de agora: três candidatas já cobrem a variação normal de
+         * um mesmo release entre trackers, e o que passa disso só gastaria a
+         * sondagem de malha em fonte velha.
+         */
+        'fontes_salvas_max' => (int) env('TORRENTS_FONTES_SALVAS_MAX', 3),
+
     ],
 
     // --- Provisionamento do Prowlarr (degrau 2) ---

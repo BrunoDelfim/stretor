@@ -2760,42 +2760,76 @@ export function encerrarSessao(id) {
  * usuário. O `seeds`/`peers` do provedor é estático e pode estar desatualizado;
  * aqui medimos a malha real por alguns segundos.
  *
+ * A leitura é **incremental**: assim que a fonte prova vida — peers e algum
+ * tráfego, ou bytes já baixados —, o teste encerra e responde na hora. A espera
+ * cheia (`esperaMs`) só é paga por uma fonte que nunca provou nada, que é
+ * exatamente o preço de condenar uma fonte morta sem reprovar uma boa por
+ * pressa. Sem esta saída antecipada, toda busca saudável pagaria os segundos
+ * inteiros do teste à toa.
+ *
+ * O prazo repassado ao `adicionarTorrent` é o mesmo `esperaMs`. Antes, ele caía
+ * no padrão de espera de metadados (80 s): um magnet mudo segurava o teste por
+ * mais de um minuto, muito além do orçamento de quem pergunta — e era por isso
+ * que este caminho nunca chegou a ser usado na busca.
+ *
  * O torrent é removido ao fim do teste para não deixar lixo no cliente — a
- * sessão de reprodução, se houver, adiciona o magnet de novo.
+ * sessão de reprodução, se houver, adiciona o magnet de novo. Um magnet que já
+ * estava no cliente (uma sessão em andamento) é **preservado**: removê-lo
+ * derrubaria a reprodução do usuário.
  *
  * @param {string} magnet
- * @param {number} esperaMs tempo de observação da malha
+ * @param {number} esperaMs tempo máximo de observação da malha
  * @returns {Promise<{ok: boolean, peers: number, seeds: number, velocidade: number}>}
  */
-export async function verificarFonte(magnet, esperaMs = 8000) {
+export async function verificarFonte(magnet, esperaMs = 6000) {
+  const espera = Math.max(1000, Number(esperaMs) || 6000)
+
   let torrent
+  let jaEstavaNoCliente = false
 
   try {
-    torrent = await adicionarTorrent(magnet)
+    const existente = await cliente.get(magnet)
+
+    if (existente) {
+      jaEstavaNoCliente = true
+      torrent = existente
+    } else {
+      torrent = cliente.add(magnet, { path: os.tmpdir() })
+    }
   } catch (erro) {
     logger.warn('[verificar] falha ao conectar a fonte:', erro.message)
+
     return { ok: false, peers: 0, seeds: 0, velocidade: 0 }
   }
 
-  // Observamos a malha por alguns segundos: o número de peers sobe conforme as
-  // conexões se estabelecem, então uma leitura imediata subestimaria a fonte.
-  await new Promise((resolve) => setTimeout(resolve, esperaMs))
+  const limite = Date.now() + espera
+  let resultado = { ok: false, peers: 0, seeds: 0, velocidade: 0 }
 
-  const peers = torrent.numPeers ?? 0
-  const velocidade = torrent.downloadSpeed ?? 0
-  const baixou = (torrent.downloaded ?? 0) > 0
+  // Sondagem em passos curtos: uma fonte viva responde no primeiro ou no
+  // segundo passo; uma fonte morta paga o prazo inteiro e sai reprovada. O
+  // número de peers sobe conforme as conexões se estabelecem, então uma leitura
+  // imediata subestimaria a fonte — daí observarmos em vez de ler uma vez só.
+  for (;;) {
+    const peers = torrent.numPeers ?? 0
+    const velocidade = torrent.downloadSpeed ?? 0
+    const baixou = (torrent.downloaded ?? 0) > 0
 
-  // Consideramos a fonte viva se há peers e algum tráfego (ou se já baixou).
-  const ok = peers > 0 && (velocidade > 0 || baixou)
+    // Consideramos a fonte viva se há peers e algum tráfego (ou se já baixou).
+    resultado = { ok: peers > 0 && (velocidade > 0 || baixou), peers, seeds: peers, velocidade }
 
-  const resultado = { ok, peers, seeds: peers, velocidade }
+    if (resultado.ok || Date.now() >= limite) {
+      break
+    }
 
-  // O teste não deve deixar o torrent vivo: a sessão de reprodução o adiciona
-  // de novo quando o usuário escolhe a fonte.
-  try {
-    cliente.remove(torrent, { destroyStore: true })
-  } catch (erro) {
-    logger.warn('[verificar] falha ao remover o torrent de teste:', erro.message)
+    await new Promise((resolve) => setTimeout(resolve, Math.min(1000, limite - Date.now())))
+  }
+
+  if (!jaEstavaNoCliente) {
+    try {
+      cliente.remove(torrent, { destroyStore: true })
+    } catch (erro) {
+      logger.warn('[verificar] falha ao remover o torrent de teste:', erro.message)
+    }
   }
 
   return resultado

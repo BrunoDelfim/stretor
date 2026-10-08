@@ -14,20 +14,16 @@ use App\Services\Verificacao\VerificadorFontes;
 use App\Services\Verificacao\VerificadorHome;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Mockery;
-use PDO;
-use PDOException;
+use Tests\Concerns\UsaBancoDeTeste;
 use Tests\TestCase;
 
 /**
  * Trava a rotina de verificação de fontes sem tocar em rede.
  *
  * O TMDB e a cascata de torrents são substituídos por dublês. O banco é um
- * **banco de teste isolado** (`stretor_testing`, no mesmo servidor), porque o
- * `RefreshDatabase` roda `migrate:fresh` — e esse comando não pode encostar no
- * banco de desenvolvimento, que carrega os dados reais da aplicação. A troca de
- * banco acontece em `refreshApplication()`, depois de o app existir (para o
- * `config()` valer) e antes de `setUpTraits()` migrar. O banco é criado uma única
- * vez em `setUpBeforeClass()`, então `php artisan test` funciona sem passo manual.
+ * **banco de teste isolado** (`stretor_testing`, no mesmo servidor), criado pelo
+ * [`UsaBancoDeTeste`] — o `RefreshDatabase` roda `migrate:fresh` e esse comando
+ * não pode encostar no banco de desenvolvimento, que carrega os dados reais.
  *
  * O contrato fixado aqui: título já resolvido não é re-testado, a página só vira
  * `ok` quando é processada por inteiro, e a Home serve a lista verificada quando
@@ -38,9 +34,7 @@ use Tests\TestCase;
 class VerificacaoFontesTest extends TestCase
 {
     use RefreshDatabase;
-
-    /** Banco dos testes — nunca o de desenvolvimento. */
-    private const BANCO_TESTE = 'stretor_testing';
+    use UsaBancoDeTeste;
 
     protected function tearDown(): void
     {
@@ -56,53 +50,6 @@ class VerificacaoFontesTest extends TestCase
         } finally {
             parent::tearDown();
         }
-    }
-
-    public static function setUpBeforeClass(): void
-    {
-        parent::setUpBeforeClass();
-
-        self::garantirBancoDeTeste();
-    }
-
-    /**
-     * Cria o banco de teste ao lado do de desenvolvimento, se ainda não existir.
-     *
-     * Conecta ao banco principal só para o `CREATE DATABASE`; a conexão de
-     * trabalho é trocada em seguida. O código `42P04` é o "banco já existe" do
-     * Postgres — tratado como sucesso, já que o banco é reutilizado nas execuções
-     * seguintes.
-     */
-    private static function garantirBancoDeTeste(): void
-    {
-        $host = $_ENV['DB_HOST'] ?? $_SERVER['DB_HOST'] ?? 'postgres';
-        $port = $_ENV['DB_PORT'] ?? $_SERVER['DB_PORT'] ?? '5432';
-        $usuario = $_ENV['DB_USERNAME'] ?? $_SERVER['DB_USERNAME'] ?? 'stretor';
-        $senha = $_ENV['DB_PASSWORD'] ?? $_SERVER['DB_PASSWORD'] ?? 'secret';
-        $principal = $_ENV['DB_DATABASE'] ?? $_SERVER['DB_DATABASE'] ?? 'stretor';
-
-        try {
-            $pdo = new PDO("pgsql:host={$host};port={$port};dbname={$principal}", $usuario, $senha);
-            $pdo->exec(sprintf('CREATE DATABASE %s OWNER %s', self::BANCO_TESTE, $usuario));
-        } catch (PDOException $erro) {
-            if ($erro->getCode() !== '42P04') {
-                throw $erro;
-            }
-        }
-    }
-
-    /**
-     * Aponta a conexão para o banco de teste antes de a suíte migrar.
-     *
-     * O compose injeta `DB_*` no ambiente do processo e o repositório de `env` lê
-     * `$_SERVER` primeiro — por isso a troca é feita por `config()`, e não por
-     * `.env.testing`, que seria ignorado.
-     */
-    protected function refreshApplication(): void
-    {
-        parent::refreshApplication();
-
-        config(['database.connections.pgsql.database' => self::BANCO_TESTE]);
     }
 
     /**
@@ -143,8 +90,10 @@ class VerificacaoFontesTest extends TestCase
                     [
                         'tem_fonte' => $temFonte,
                         // Como o real: uma tentativa que chega a um veredito não é
-                        // inconclusiva, então o dublê limpa a marca ao gravar.
+                        // inconclusiva e não pede nova chance, então o dublê limpa
+                        // as duas marcas ao gravar.
                         'inconclusivo' => false,
+                        'deve_retentar' => false,
                         'fonte_idioma' => $temFonte ? 'pt-BR' : null,
                         'fonte_tipo' => $temFonte ? 'torrent' : null,
                         'origem' => $origem->value,
@@ -163,13 +112,23 @@ class VerificacaoFontesTest extends TestCase
         return ['id' => $id, 'tipo' => $tipo, 'titulo' => $titulo, 'ano' => 2024, 'titulo_original' => $titulo];
     }
 
-    private function disponibilidade(int $id, bool $temFonte, ?string $horasAtras = null, bool $inconclusivo = false): void
-    {
+    /**
+     * Grava um veredito como o real faria. `deveRetentar` é a política que a
+     * marca carrega: `true` só para a busca que não pôde concluir.
+     */
+    private function disponibilidade(
+        int $id,
+        bool $temFonte,
+        ?string $horasAtras = null,
+        bool $inconclusivo = false,
+        bool $deveRetentar = false,
+    ): void {
         Disponibilidade::create([
             'tipo' => TipoMidia::FILME->value,
             'tmdb_id' => $id,
             'tem_fonte' => $temFonte,
             'inconclusivo' => $inconclusivo,
+            'deve_retentar' => $deveRetentar,
             'fonte_idioma' => $temFonte ? 'pt-BR' : null,
             'origem' => OrigemVerificacao::COMANDO->value,
             'verificado_em' => $horasAtras === null ? now() : now()->subHours((int) $horasAtras),
@@ -247,13 +206,16 @@ class VerificacaoFontesTest extends TestCase
     /**
      * A prova válida poupa o título; a vencida o devolve à fila. É o que separa
      * "já resolvido" de "precisa tentar de novo".
+     *
+     * O vencido aqui é um veredito definitivo, então a janela dele é a longa: o
+     * título só volta depois de `VERIFICACAO_VALIDADE_DIAS_DEFINITIVO` dias.
      */
     public function test_prova_valida_poupa_e_prova_vencida_volta_a_fila(): void
     {
         $itens = [$this->item(1, 'movie', 'Válida'), $this->item(2, 'movie', 'Vencida')];
 
-        $this->disponibilidade(1, true);          // verificada agora
-        $this->disponibilidade(2, false, '48');   // sem fonte, vencida há muito
+        $this->disponibilidade(1, true);           // verificada agora
+        $this->disponibilidade(2, false, '192');   // sem fonte, vencida há 8 dias
 
         $chamados = [];
         $verificador = $this->verificadorFalso([2 => true], $chamados);
@@ -400,6 +362,7 @@ class VerificacaoFontesTest extends TestCase
 
         $this->assertFalse($disponibilidade->tem_fonte, 'Lista vazia é sem fonte.');
         $this->assertFalse($disponibilidade->inconclusivo, 'Busca que perguntou a todos conclui.');
+        $this->assertFalse($disponibilidade->deve_retentar, 'Veredito definitivo espera a janela longa.');
     }
 
     /**
@@ -424,20 +387,26 @@ class VerificacaoFontesTest extends TestCase
 
         $this->assertFalse($disponibilidade->tem_fonte);
         $this->assertTrue($disponibilidade->inconclusivo, 'Busca sem como perguntar a todos não é veredito.');
+        $this->assertTrue($disponibilidade->deve_retentar, 'Quem não pôde concluir pede nova chance na virada do dia.');
     }
 
     /**
-     * O veredito inconclusivo não espera a validade: volta à fila já na rodada
-     * seguinte. O "sem fonte" recém-verificado, esse sim, é poupado até vencer —
-     * é o que prova que a marca é o que destrava, e não uma validade mais curta.
+     * Quem pediu nova chance espera a virada do dia — e não a rodada seguinte.
+     *
+     * O inconclusivo é o título que voltava à fila **dentro do mesmo dia**, a cada
+     * rodada: a tentativa que não valeu como prova o devolvia à fila na hora, e
+     * era isso que enchia a rodada de títulos sem fonte se repetindo. A marca
+     * `deve_retentar` muda o ritmo sem mudar o sentido: continua merecendo outra
+     * tentativa, mas a próxima virada de dia é que a autoriza.
      */
-    public function test_titulo_inconclusivo_volta_a_fila_mesmo_com_prova_recente(): void
+    public function test_inconclusivo_volta_na_virada_do_dia_e_nao_na_mesma_rodada(): void
     {
-        $itens = [$this->item(1, 'movie', 'Inconclusivo'), $this->item(2, 'movie', 'Sem fonte recente')];
+        $itens = [$this->item(1, 'movie', 'Vencido'), $this->item(2, 'movie', 'Recém-tentado')];
 
-        // O 1 foi tentado agora, mas sem concluir; o 2 é um "sem fonte" definitivo.
-        $this->disponibilidade(1, false, inconclusivo: true);
-        $this->disponibilidade(2, false);
+        // O 1 foi tentado ontem sem concluir; o 2 acabou de ser tentado, também sem
+        // concluir. Os dois pedem nova chance, mas só o primeiro já tem o dia virado.
+        $this->disponibilidade(1, false, '25', inconclusivo: true, deveRetentar: true);
+        $this->disponibilidade(2, false, inconclusivo: true, deveRetentar: true);
 
         $chamados = [];
         $verificador = $this->verificadorFalso([1 => true], $chamados);
@@ -445,6 +414,27 @@ class VerificacaoFontesTest extends TestCase
         (new VerificadorHome($this->tmdbComPagina($itens), $verificador))
             ->executar(limitePaginas: 1, pausas: false);
 
-        $this->assertSame([1], $chamados, 'Só o inconclusivo volta à fila; o "sem fonte" recém-verificado é poupado.');
+        $this->assertSame([1], $chamados, 'O inconclusivo recém-tentado não pode voltar no mesmo dia.');
+    }
+
+    /**
+     * O veredito definitivo é o lado paciente da regra: perguntou-se a todos os
+     * provedores e não havia nada, e isso não muda de um dia para o outro.
+     */
+    public function test_veredito_definitivo_so_volta_depois_da_janela_longa(): void
+    {
+        $itens = [$this->item(1, 'movie', 'Ontem'), $this->item(2, 'movie', 'Semana passada')];
+
+        // O 1 venceu a validade curta, mas não a janela longa; o 2 já passou dela.
+        $this->disponibilidade(1, false, '25');
+        $this->disponibilidade(2, false, '192');
+
+        $chamados = [];
+        $verificador = $this->verificadorFalso([2 => true], $chamados);
+
+        (new VerificadorHome($this->tmdbComPagina($itens), $verificador))
+            ->executar(limitePaginas: 1, pausas: false);
+
+        $this->assertSame([2], $chamados, 'Só o veredito além da janela longa volta à fila.');
     }
 }

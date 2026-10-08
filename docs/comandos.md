@@ -182,16 +182,21 @@ docker compose exec backend php artisan fontes:verificar --paginas=3 --limite=20
 > mesmo quando não há nada a testar, uma rodada completa leva de ~20 a ~70 min —
 > rode em primeiro plano e aguarde.
 
-> **Idempotente e parcimonioso.** Título que já tem fonte não é re-testado; só
-> entram na fila os sem fonte vencidos (`VERIFICACAO_VALIDADE_HORAS`, padrão 24h)
-> e os marcados como inconclusivos, que voltam já na próxima rodada.
+> **Idempotente e parcimonioso.** Título que já tem fonte não é re-testado. Quem
+> volta à fila é quem ainda não tem veredito, e o prazo depende do que aconteceu
+> na última tentativa: a busca que **não pôde concluir** (inconclusivo) volta na
+> virada do dia (`VERIFICACAO_VALIDADE_HORAS`, padrão 24h), e o veredito
+> **definitivo** — perguntou-se a todos os provedores e não havia nada — só é
+> reexaminado depois da janela longa (`VERIFICACAO_VALIDADE_DIAS_DEFINITIVO`,
+> padrão 7 dias), porque o acervo não muda de um dia para o outro.
 
 Parâmetros lidos de `config/services.php` (todos com override em `.env`):
 
 | Chave `.env` | Padrão | O que controla |
 |--------------|--------|----------------|
 | `VERIFICACAO_PAGINAS` | 25 | Quantas páginas do `/trending/all/day` verificar. |
-| `VERIFICACAO_VALIDADE_HORAS` | 24 | Validade da prova: vencida, o título **sem** fonte é re-testado. |
+| `VERIFICACAO_VALIDADE_HORAS` | 24 | Validade da prova de quem pediu nova chance (busca inconclusiva): vencida, o título volta à fila na virada do dia. |
+| `VERIFICACAO_VALIDADE_DIAS_DEFINITIVO` | 7 | Janela longa do veredito definitivo, em dias: um "sem fonte" que perguntou a todos só volta a ser testado depois disso. |
 | `VERIFICACAO_ORCAMENTO_TITULO` | 30 | Tempo (s) que uma busca de fonte pode gastar. Curto demais faz o corte no meio e a série nasce "sem fonte". |
 | `VERIFICACAO_PAUSA_ITENS_MS` | 6000 | Pausa entre um título e o próximo (base, recebe jitter). |
 | `VERIFICACAO_PAUSA_PAGINAS_MS` | 45000 | Pausa entre uma página e a seguinte. |

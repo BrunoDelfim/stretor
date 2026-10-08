@@ -110,17 +110,18 @@ router.post('/sessao-direta', (req, res, next) => {
  *
  * O backend chama este endpoint para descartar fontes sem peers. O `seeds` do
  * provedor é estático e pode estar desatualizado; aqui medimos a malha real por
- * alguns segundos. Não cria sessão nem deixa torrent vivo.
+ * alguns segundos (`espera_ms`, limitada pelo backend ao orçamento da busca).
+ * Não cria sessão nem deixa torrent vivo.
  */
 router.post('/verificar', async (req, res, next) => {
   try {
-    const { magnet } = req.body ?? {}
+    const { magnet, espera_ms: esperaMs } = req.body ?? {}
 
     if (!magnet) {
       return res.status(400).json({ error: 'O campo "magnet" é obrigatório.' })
     }
 
-    const resultado = await verificarFonte(magnet)
+    const resultado = await verificarFonte(magnet, Number(esperaMs) || undefined)
 
     res.json(resultado)
   } catch (err) {

@@ -166,6 +166,21 @@ services:
       - TORRENTS_INSPECAO_PACKS_LIMITE=${TORRENTS_INSPECAO_PACKS_LIMITE:-6}
       - TORRENTS_INSPECAO_TIMEOUT=${TORRENTS_INSPECAO_TIMEOUT:-12}
       - TORRENTS_INSPECAO_CACHE_TTL=${TORRENTS_INSPECAO_CACHE_TTL:-86400}
+      # Teste de malha: antes de oferecer a lista, cada torrent é sondado no
+      # media-service (abre o magnet e mede a malha) para descartar fonte sem
+      # peer — o caso "o release existe, mas nunca conecta". Quantos por busca,
+      # quanto tempo no total e quanto observar cada um.
+      - TORRENTS_LIVENESS_FONTES=${TORRENTS_LIVENESS_FONTES:-true}
+      - TORRENTS_LIVENESS_MAX_FONTES=${TORRENTS_LIVENESS_MAX_FONTES:-4}
+      - TORRENTS_LIVENESS_TEMPO_LIMITE=${TORRENTS_LIVENESS_TEMPO_LIMITE:-9}
+      - TORRENTS_LIVENESS_ESPERA_MS=${TORRENTS_LIVENESS_ESPERA_MS:-6000}
+      # Fontes comprovadas: o histórico do que já tocou até o fim. A busca devolve
+      # essas fontes na frente da fila, e o player as tenta antes das descobertas
+      # de agora. Sem estas no environment, o container cai nos padrões do
+      # config/services.php e o valor do .env da raiz não chega a valer.
+      - TORRENTS_FONTES_SALVAS=${TORRENTS_FONTES_SALVAS:-true}
+      - TORRENTS_FONTES_SALVAS_MAX=${TORRENTS_FONTES_SALVAS_MAX:-3}
+
       # Cobertura completa: com a meta PT-BR batida, ainda desce os degraus
       # restantes (indexador e YTS) para que todo provedor seja consultado ao
       # menos uma vez — é o que o relatório de cobertura usa como prova.

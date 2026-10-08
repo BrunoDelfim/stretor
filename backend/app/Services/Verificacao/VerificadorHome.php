@@ -198,12 +198,17 @@ class VerificadorHome
                     $item['titulo'] ?? '?',
                     $disponibilidade->fonte_idioma ?? '—',
                 ));
-            } elseif ($disponibilidade->inconclusivo) {
+            } elseif ($disponibilidade->deve_retentar) {
                 // Nem fonte, nem veredito: a busca não teve como perguntar a
-                // todos. O título volta à fila já na próxima rodada.
-                $registrar(sprintf('  … %s — inconclusivo (re-tenta)', $item['titulo'] ?? '?'));
+                // todos. O título volta à fila na virada do dia.
+                $registrar(sprintf('  … %s — inconclusivo (volta amanhã)', $item['titulo'] ?? '?'));
             } else {
-                $registrar(sprintf('  · %s — sem fonte', $item['titulo'] ?? '?'));
+                // Veredito definitivo: o reexame só volta depois da janela longa.
+                $registrar(sprintf(
+                    '  · %s — sem fonte (reexame em %d dias)',
+                    $item['titulo'] ?? '?',
+                    (int) config('services.verificacao.validade_dias_definitivo', 7),
+                ));
             }
 
             if ($pausas) {
@@ -228,14 +233,16 @@ class VerificadorHome
      * Este título precisa ser testado hoje?
      *
      * Título com fonte já provada **nunca** é re-testado pela rotina — não faz
-     * sentido gastar requisição com o que já está resolvido. Título sem fonte só
-     * volta à fila depois que a prova vence, porque o acervo dos trackers muda
-     * com o tempo e um item que estava órfão pode reaparecer.
+     * sentido gastar requisição com o que já está resolvido. Os demais voltam à
+     * fila quando a prova vence, e quem decide quando isso acontece é a marca
+     * `deve_retentar`, lida por [`Disponibilidade::expirado()`]: quem pediu nova
+     * chance volta na virada do dia; o veredito definitivo só é reexaminado
+     * depois da janela longa.
      *
-     * A exceção é o veredito **inconclusivo**: ele não é "sem fonte" e sim "não
-     * deu para concluir" — a busca rodou sem como perguntar a todos. Esse título
-     * volta à fila **já**, sem esperar a validade, porque a tentativa que o
-     * marcou não valeu como prova.
+     * A marca também é o que separa "sem fonte" de "não deu para concluir": o
+     * inconclusivo não é negativo do acervo, e sim resultado de uma busca que não
+     * teve como perguntar a todos — travar esse título pelo prazo longo seria
+     * punir o acervo por uma falha da tentativa.
      */
     private function precisaVerificar(?Disponibilidade $disponibilidade): bool
     {
@@ -245,10 +252,6 @@ class VerificadorHome
 
         if ($disponibilidade->tem_fonte) {
             return false;
-        }
-
-        if ($disponibilidade->inconclusivo) {
-            return true;
         }
 
         return $disponibilidade->expirado();

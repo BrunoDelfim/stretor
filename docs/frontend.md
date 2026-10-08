@@ -551,6 +551,30 @@ player. Sem o prefixo público `/media`, o `hls.js` resolveria os caminhos
 relativos contra a origem do frontend e o Nginx entregaria o `index.html` — o
 navegador passava a baixar imagens em vez dos segmentos.
 
+### Fonte que tocou até o fim
+
+Quando o vídeo chega ao fim de verdade, o overlay avisa o backend e a fonte vira
+histórico: na próxima abertura deste título ela volta na frente da fila, e o
+usuário não paga de novo todo o tentativa-e-erro da busca.
+
+Quem dispara o aviso é
+[`vigiarFimDaReproducao()`](../frontend/src/components/PlayerOverlay.vue:1065),
+montado no trecho comum aos dois motores de HLS (hls.js e o nativo do Safari) —
+dentro do ramo do hls.js o relato nunca sairia no Safari. O gatilho é o playhead
+cruzar `FIM_REPRODUZIDO` (95%) da **duração do filme**, e não o evento `ended`:
+com a playlist `EVENT` o hls.js encerra o stream quando acaba o trecho já
+convertido, e o `ended` dispara com o filme no meio. Como a timeline local começa
+no ponto do último reposicionamento, a fração é medida sobre `tempoBase +
+currentTime`.
+
+O par fonte/título é congelado em `fonteEmReproducao` no início de cada tentativa
+de [`tentarFontes()`](../frontend/src/components/PlayerOverlay.vue:1493) — ler
+`props.filme` no momento do aviso misturaria episódios quando a troca acontece no
+meio do filme. O aviso sai **uma vez por montagem** e é de fogo-e-esquece
+([`reportarFonteReproduzida()`](../frontend/src/services/streaming.js:128)): falhar
+em avisar não pode atrapalhar a reprodução em curso — o que se perde é o atalho da
+próxima abertura, não esta.
+
 ### Sessão que sumiu do servidor
 
 As sessões do media-service vivem num `Map` **em memória**. Se o processo cair e

@@ -78,9 +78,9 @@ class VerificadorFontes
          * Lista vazia nem sempre é veredito. Quando nenhum provedor estava
          * utilizável, o orçamento cortou a cascata no meio ou um provedor quebrou,
          * o "sem fonte" fala da busca — não do acervo. A marca `inconclusivo`
-         * registra isso: o título continua candidato e volta à fila já na próxima
-         * rodada, em vez de travar 24 h com uma prova que não houve. Só lemos o
-         * censo no caminho vazio; com fonte na mão, não há o que relativizar.
+         * registra isso: o título continua candidato, em vez de travar com uma
+         * prova que não houve. Só lemos o censo no caminho vazio; com fonte na
+         * mão, não há o que relativizar.
          */
         $inconclusivo = $fontes === [] && $this->torrents->buscaInconclusiva();
 
@@ -88,6 +88,15 @@ class VerificadorFontes
         // melhor fonte para o status e para entender de onde veio a prova.
         $principal = $fontes[0] ?? null;
 
+        /*
+         * `deve_retentar` traduz o veredito em política de retentativa, e é o
+         * único campo que a rotina consulta para decidir quem volta à fila. Quem
+         * não pôde concluir pede nova chance e volta na virada do dia; quem
+         * concluiu — com ou sem fonte — não tem o que antecipar: com fonte não é
+         * re-testado, e sem fonte espera a janela longa. Guardar as duas coisas
+         * separadas permite mudar a regra sem reescrever o histórico:
+         * `inconclusivo` é o que aconteceu, `deve_retentar` é o que fazer com isso.
+         */
         return Disponibilidade::updateOrCreate(
             [
                 'tipo' => $tipo->value,
@@ -96,6 +105,7 @@ class VerificadorFontes
             [
                 'tem_fonte' => $fontes !== [],
                 'inconclusivo' => $inconclusivo,
+                'deve_retentar' => $inconclusivo,
                 'fonte_idioma' => $principal['idioma'] ?? null,
                 'fonte_tipo' => $principal['tipo'] ?? null,
                 'origem' => $origem->value,

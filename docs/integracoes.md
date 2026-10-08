@@ -1366,9 +1366,78 @@ nenhum**, então bastava a primeira tentativa falhar para a segunda pendurar o
 overlay para sempre; agora os dois caminhos passam por
 [`esperarMetadados()`](../media-service/src/services/sessoes.js:1762).
 
-O `POST /verificar` continua disponível para testar a fonte antes de abrir a
-sessão, mas deixou de ser o caminho principal: quem mede os peers de verdade
-agora é a própria sessão, que já precisa esperar os dados de qualquer forma.
+O `POST /verificar` voltou a ser caminho de produção: é ele que o backend usa no
+**teste de malha** — a peneira final que descarta a fonte que existe mas não
+conecta (ver abaixo).
+
+#### A peneira final: fonte que existe mas não conecta
+
+Um release pode ter seeds no papel e nenhum peer de verdade. Era o caso do "Super
+Psychic Policeman Chojo": a busca achava o episódio (com legenda anexada), a lista
+saía cheia, mas os dois torrents tinham 0–1 peers e nunca entregaram metadados — o
+player ficava tentando conectar e passava para a próxima, ou não tocava nada. A
+busca achava; a malha não sustentava.
+
+Antes de a lista sair, [`TorrentService::fontes()`](../backend/app/Services/TorrentService.php:104)
+passa o resultado por [`TesteDeFontes::filtrar()`](../backend/app/Services/Torrents/TesteDeFontes.php:51),
+que sonda cada torrent no media-service (`POST /api/media/verificar`). O
+media-service abre o magnet e **observa a malha** em passos curtos: assim que há
+peers e tráfego (ou bytes já baixados), a fonte é aprovada e responde na hora; a
+fonte que nunca prova paga o prazo (`TORRENTS_LIVENESS_ESPERA_MS`, padrão 6 s) e sai
+reprovada. É por isso que ele não pode voltar a esperar os 80 s padrão de metadados:
+[`verificarFonte()`](../media-service/src/services/sessoes.js:2784) recebe o prazo do
+`adicionarTorrent`, que antes caía no default e pendurava o teste por mais de um
+minuto.
+
+O desenho é **fail-open**: só o veredito definitivo reprova. Media-service fora do
+ar, prazo estourado ou resposta malformada mantêm a fonte — não há prova de que
+esteja morta, e descartar por dúvida tiraria do usuário uma fonte que poderia tocar.
+A fonte **direta** (MP4/HLS) não entra no teste: não tem malha para medir, e quem a
+valida é ter uma URL que o media-service consiga abrir.
+
+A sondagem roda no fim da busca (quando a lista já está reduzida ao teto de fontes)
+e em paralelo, limitada ao que sobra do orçamento: sem tempo, é dispensada e a lista
+segue como veio. Quando a busca achou fonte e o teste reprovou todas, a busca vira
+**inconclusiva** — não é "não tem", é "tem, mas está morto agora" —, e a verificação
+marca o título como quem pede nova chance: ele volta à fila **na virada do dia**
+(`VERIFICACAO_VALIDADE_HORAS`), e não na janela longa do veredito definitivo
+(`VERIFICACAO_VALIDADE_DIAS_DEFINITIVO`), porque os peers de um release podem voltar.
+Chaves: `TORRENTS_LIVENESS_FONTES`, `TORRENTS_LIVENESS_MAX_FONTES`,
+`TORRENTS_LIVENESS_TEMPO_LIMITE` e `TORRENTS_LIVENESS_ESPERA_MS`.
+
+#### A fonte que tocou até o fim volta na frente da fila
+
+A malha responde se a fonte *deve* conectar. Quem responde se ela **serviu o
+título** é o usuário: quando o vídeo chega ao fim, o overlay relata a fonte ao
+backend (`POST /api/v1/movies/{id}/fontes/reproduzida`) e o histórico
+([`FontesReproduzidas`](../backend/app/Services/FontesReproduzidas.php:1)) guarda a
+prova — o `id` da fonte, o magnet ou a URL, o idioma e as legendas com que ela
+tocou, com a chave do título mais a numeração do episódio.
+
+Por que isso existe: a busca é tentativa e erro cara (cascata de provedores,
+peneira de malha, conexão no media-service) e, sem histórico, tudo isso é pago de
+novo a cada abertura, mesmo quando uma fonte já tinha servido o título ontem. Com
+o histórico, [`priorizarReproduzidas()`](../backend/app/Services/TorrentService.php:519)
+põe as comprovadas **antes** do achado de agora, e o player as tenta primeiro. O
+ganho é do usuário, não do sistema: a lista continua sendo montada normalmente,
+então se a comprovada não conectar mais, o resto está logo atrás.
+
+Três detalhes de desenho:
+
+- **A comprovada passa pela mesma peneira de malha.** Ela entra na lista antes de
+  `testarMalha()`, não depois: uma fonte que morreu desde a última sessão é
+  descartada como qualquer outra, em vez de virar o único caminho oferecido.
+- **O relato é fogo-e-esquece e uma vez por montagem.** Falhar em avisar não pode
+  atrapalhar a reprodução em curso — o que se perde é o atalho da *próxima*
+  abertura. O gatilho é o playhead cruzar 95% da duração do ffprobe, e não o evento
+  `ended`: com a playlist `EVENT` o hls.js encerra quando acaba o trecho convertido
+  e o `ended` dispara no meio do filme.
+- **O magnet é conferido na porta.** O backend não tem como provar de trás para
+  frente que o vídeo tocou, mas uma linha malformada iria para a frente de todas —
+  por isso o `fonte_id`, o `magnet` e o `stream` são validados antes de virar
+  histórico.
+
+Chaves: `TORRENTS_FONTES_SALVAS` e `TORRENTS_FONTES_SALVAS_MAX`.
 
 #### A paciência com a peça se mede pelo progresso, não pelo relógio
 

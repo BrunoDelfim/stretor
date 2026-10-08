@@ -122,3 +122,17 @@ export const ESPERA_ENTRE_TENTATIVAS_MS = 1500
  * interno). Sem esse limite, a espera travava o fluxo de fontes para sempre.
  */
 export const TIMEOUT_PLYR_READY_MS = 8000
+
+/**
+ * Fração do título que a fonte precisa ter entregue para contar como comprovada.
+ *
+ * O gatilho é o playhead chegar perto do fim, e não o evento `ended`: com a
+ * playlist `EVENT` o hls.js encerra o stream quando acaba o trecho **já
+ * convertido**, e o `ended` dispara mesmo com o filme no meio. O playhead, ao
+ * contrário, só chega aos 95% se a fonte entregou esses 95% para tocar — é prova
+ * de que ela sustenta o título, que é o que o backend guarda.
+ *
+ * A margem dos 5% finais existe para o último segmento: exigir 100% faria o
+ * relato depender de um trecho que costuma ser cortado no fim do arquivo.
+ */
+export const FIM_REPRODUZIDO = 0.95

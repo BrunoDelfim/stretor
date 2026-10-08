@@ -176,6 +176,12 @@ valores reais. As variáveis que exigem atenção:
 | `TORRENTS_INSPECAO_PACKS_LIMITE` | Não | Quantos packs, no máximo, têm o conteúdo inspecionado por busca quando o nome não prova PT-BR (padrão `6`). |
 | `TORRENTS_INSPECAO_TIMEOUT` | Não | Tempo máximo, em segundos, esperando os metadados de cada pack inspecionado (padrão `12`). |
 | `TORRENTS_INSPECAO_CACHE_TTL` | Não | Tempo de cache do veredito da inspeção por infohash, em segundos. Só respostas definitivas são guardadas (padrão `86400`). |
+| `TORRENTS_LIVENESS_FONTES` | Não | Liga/desliga o **teste de malha**: antes de a lista sair, cada torrent é sondado no media-service, que abre o magnet e mede a malha real; a fonte sem peer é descartada. Impede o caso "o release existe (com legenda) mas nunca conecta" — o player ficava tentando e não tocava nada. É **fail-open**: media-service fora do ar, prazo estourado ou resposta malformada mantêm a fonte (padrão `true`). |
+| `TORRENTS_LIVENESS_MAX_FONTES` | Não | Quantos magnetes podem ser sondados por busca (padrão `4`). A lista já chega reduzida ao teto de fontes; o valor é a trava para o teste não crescer junto com a cascata. |
+| `TORRENTS_LIVENESS_TEMPO_LIMITE` | Não | Teto de tempo, em segundos, do teste de malha no media-service (padrão `9`). O teste termina antes quando a fonte prova vida cedo, então o prazo só é pago por uma fonte que nunca provou. |
+| `TORRENTS_LIVENESS_ESPERA_MS` | Não | Tempo, em milissegundos, que o media-service observa a malha de uma fonte antes de reprová-la (padrão `6000`). Fica abaixo do tempo limite para o media-service responder primeiro. |
+| `TORRENTS_FONTES_SALVAS` | Não | Liga/desliga o **histórico de fontes comprovadas**: as fontes que o player já reproduziu até o fim voltam na frente da fila na próxima abertura do título, poupando o tentativa-e-erro da busca. Elas passam pela mesma peneira de malha, então uma fonte que morreu desde então cai e o resto da lista segue (padrão `true`). |
+| `TORRENTS_FONTES_SALVAS_MAX` | Não | Quantas fontes comprovadas são lembradas por título — e, ao mesmo tempo, quantas a busca devolve (padrão `3`). |
 | `TORRENTS_KNABEN_HABILITADO` | Não | Liga/desliga o Knaben, meta-buscador de indexadores públicos que devolve os packs nacionais das séries antigas (padrão `true`). |
 | `TORRENTS_KNABEN_URL` | Não | Endpoint da API do Knaben (padrão `https://api.knaben.org/v1`). Use o domínio `.org`: o `.eu` responde `503`. Vazio desliga o provedor. |
 | `TORRENTS_KNABEN_LIMITE` | Não | Quantos resultados pedir por termo ao Knaben (padrão `20`). |

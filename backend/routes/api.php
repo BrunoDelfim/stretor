@@ -36,6 +36,10 @@ Route::prefix('v1')->group(function () {
         // Fontes de torrent para o fluxo de reprodução. Fica depois da rota de
         // detalhes porque o segmento extra ("/fontes") não colide com o id.
         Route::get('/{id}/fontes', [TorrentController::class, 'fontes'])->whereNumber('id');
+        // O relato de que a fonte tocou até o fim. É o caminho de volta do
+        // playback para a busca: a fonte comprovada vira histórico e volta na
+        // frente da fila na próxima abertura deste título.
+        Route::post('/{id}/fontes/reproduzida', [TorrentController::class, 'fonteReproduzida'])->whereNumber('id');
     });
 
     /*

@@ -2,11 +2,13 @@
 
 namespace App\Services;
 
+use App\Enums\TipoMidia;
 use App\Services\Torrents\BuscaLegendas;
 use App\Services\Torrents\CatalogoProvedores;
 use App\Services\Torrents\OrcamentoBusca;
 use App\Services\Torrents\PalavrasChave;
 use App\Services\Torrents\TermosBusca;
+use App\Services\Torrents\TesteDeFontes;
 use App\Support\MensagensTorrent;
 use App\Enums\IdiomaFonte;
 use Illuminate\Support\Facades\Log;
@@ -54,6 +56,17 @@ class TorrentService
      */
     private array $reservaDaBusca = [];
 
+    /**
+     * A última busca achou fonte, mas nenhuma sobreviveu ao teste de malha?
+     *
+     * É a leitura que separa "o acervo não tem o título" de "o acervo tem, mas
+     * os releases estão mortos agora". No primeiro caso a lista vazia é veredito;
+     * no segundo, é um "talvez" — os peers de um release morto podem voltar —, e
+     * a verificação não deve travar o título por 24 h com uma prova que pode não
+     * valer amanhã. Zerada no começo de cada busca.
+     */
+    private bool $descartadasPorLiveness = false;
+
     public function __construct(
         private readonly CatalogoProvedores $catalogo,
         private readonly OrcamentoBusca $orcamento,
@@ -65,6 +78,21 @@ class TorrentService
          * container injeta a implementação real, e o fallback vale.
          */
         private readonly ?BuscaLegendas $legendas = null,
+        /*
+         * O teste de malha também é opcional, pela mesma linha dos demais: sem
+         * ele injetado — o caso dos testes de montagem —, a lista final passa
+         * intacta, como era antes deste caminho existir. Em produção o container
+         * injeta o [`TesteDeFontes`], e as fontes mortas deixam de ser oferecidas.
+         */
+        private readonly ?TesteDeFontes $testeDeFontes = null,
+        /*
+         * O histórico de fontes comprovadas é opcional pela mesma linha dos
+         * demais: sem ele injetado — os testes que montam o serviço à mão —, a
+         * lista sai exatamente como saía antes deste caminho existir. Em produção
+         * o container injeta o [`FontesReproduzidas`], e a fonte que já serviu o
+         * título volta na frente da fila.
+         */
+        private readonly ?FontesReproduzidas $reproduzidas = null,
     ) {
     }
 
@@ -127,6 +155,7 @@ class TorrentService
         $titulos = [];
         // Resíduo da busca anterior não pode contaminar o fallback desta.
         $this->reservaDaBusca = [];
+        $this->descartadasPorLiveness = false;
 
         // Guardamos TODAS as fontes diretas (inclusive as de idioma original):
         // as PT-BR respondem pela busca; as demais viram matéria-prima do
@@ -171,6 +200,32 @@ class TorrentService
         }
 
         /*
+         * Teste de malha: a última peneira antes de a lista sair.
+         *
+         * O filtro de seeds e o idioma decidem quais releases *podem* servir; a
+         * malha decide quais de fato conectam agora. Um release com "12 seeds"
+         * pode estar morto há meses — e era o que acontecia com títulos cujo
+         * único acervo estava morto: a lista saía cheia, o player tentava, não
+         * tocava e passava para a próxima, ou não tocava nada. Aqui a fonte cuja
+         * malha não confirma é descartada antes de virar oferta. Sem o serviço
+         * injetado (os testes), a lista passa intacta.
+         */
+        /*
+         * A fonte que já serviu este título volta na frente da fila.
+         *
+         * O ganho é do usuário: a busca acabou de repetir todo o trabalho de
+         * descoberta, e a candidata mais provável não é uma novidade — é a que já
+         * tocou ontem. Ela entra **antes** do teste de malha para passar pela
+         * mesma peneira das demais, e é isso que a torna segura: uma comprovada
+         * que morreu desde então cai aqui, e o resto da lista (o achado de agora,
+         * ou o fallback legendado logo abaixo) segue valendo. Sem essa peneira, um
+         * histórico confiável viraria o único caminho oferecido ao player.
+         */
+        $fontes = $this->priorizarReproduzidas($fontes, $temporada, $episodio, $tmdbId);
+
+        $fontes = $this->testarMalha($fontes);
+
+        /*
          * Nenhum provedor entregou áudio PT-BR. Com o fallback legendado ligado,
          * em vez de devolver a lista vazia ("ainda não disponível em português")
          * a busca oferece as fontes de idioma ORIGINAL — as diretas e a reserva
@@ -178,9 +233,14 @@ class TorrentService
          * anexadas a cada uma. O player toca o áudio original e o usuário lê a
          * legenda. Sem legenda utilizável, o método devolve vazio e o
          * comportamento antigo permanece.
+         *
+         * O gatilho agora inclui o caso em que a busca ACHOU fonte e o teste de
+         * malha reprovou todas: se o que sobrou é nada, o original legendado
+         * ainda é melhor que uma tela vazia — e as fontes do fallback passam
+         * pelo mesmo teste.
          */
         if ($fontes === []) {
-            $fontes = $this->montarFallbackLegendado($todasDiretas, $imdbId, $temporada, $episodio);
+            $fontes = $this->testarMalha($this->montarFallbackLegendado($todasDiretas, $imdbId, $temporada, $episodio));
         }
 
         /*
@@ -377,14 +437,24 @@ class TorrentService
      * - **Um provedor quebrou** ao ser perguntado (`erro`): fora do ar, bloqueado
      *   pelo Cloudflare, o que seja. O acervo dele não chegou a ser visto.
      *
-     * Os dois últimos costumam andar juntos: um provedor fora do ar gasta o
-     * próprio teto e o socorro do FlareSolverr, e o relógio fecha antes de a
-     * cascata terminar. Quem chama não deve gravar "sem fonte" em nenhum deles —
-     * o certo é tentar de novo na próxima rodada. Lida logo após [`fontes()`],
-     * enquanto o censo daquela busca ainda está de pé.
+     * E há o caso do **teste de malha**: a busca achou fonte, mas nenhuma
+     * conectou. Aí não é "não tem" — é "tem, mas está morto agora", e os peers de
+     * um release podem voltar. Travar o título por 24 h com essa prova seria
+     * congelar um estado passageiro.
+     *
+     * Os dois primeiros (provedor quebrado e cascata cortada) costumam andar
+     * juntos: um provedor fora do ar gasta o próprio teto e o socorro do
+     * FlareSolverr, e o relógio fecha antes de a cascata terminar. Quem chama não
+     * deve gravar "sem fonte" em nenhum deles — o certo é tentar de novo na
+     * próxima rodada. Lida logo após [`fontes()`], enquanto o censo daquela busca
+     * ainda está de pé.
      */
     public function buscaInconclusiva(): bool
     {
+        if ($this->descartadasPorLiveness) {
+            return true;
+        }
+
         if (! $this->temProvedorDisponivel()) {
             return true;
         }
@@ -398,6 +468,83 @@ class TorrentService
         }
 
         return false;
+    }
+
+    /**
+     * Passa a lista final pelo teste de malha e registra o que caiu.
+     *
+     * Quando o serviço não está injetado — o caso dos testes de montagem —, a
+     * lista volta como veio. Quando está, o tempo disponível é o que sobra do
+     * orçamento da busca: um teste que não caiba no relógio é dispensado, e as
+     * fontes seguem (fail-open) em vez de sumirem por falta de prova.
+     *
+     * Se a lista tinha fonte e o teste deixou a lista vazia, isso vira o sinal
+     * `descartadasPorLiveness`: a busca achou, a malha não sustentou. É o que faz
+     * a verificação gravar "inconclusivo" em vez de "sem fonte" — o release
+     * existe e pode voltar a ter peers.
+     *
+     * @param  array<int, array<string, mixed>>  $fontes
+     * @return array<int, array<string, mixed>>
+     */
+    private function testarMalha(array $fontes): array
+    {
+        if ($this->testeDeFontes === null || $fontes === []) {
+            return $fontes;
+        }
+
+        $sobreviventes = $this->testeDeFontes->filtrar($fontes, $this->orcamento->restante());
+
+        if ($sobreviventes === [] && $fontes !== []) {
+            $this->descartadasPorLiveness = true;
+
+            Log::info('Busca achou fonte, mas nenhuma conectou na malha.', [
+                'descartadas' => count($fontes),
+            ]);
+        }
+
+        return $sobreviventes;
+    }
+
+    /**
+     * Põe na frente da lista as fontes que já reproduziram inteiras neste título.
+     *
+     * A cópia salva vence a recém-descoberta de mesmo id: ela carrega as legendas
+     * com que a fonte tocou da última vez — coisa que a busca de agora não tem
+     * como reconstruir quando o release já saiu do acervo dos provedores, mas o
+     * arquivo continua no ar.
+     *
+     * @param  array<int, array<string, mixed>>  $fontes
+     * @return array<int, array<string, mixed>>
+     */
+    private function priorizarReproduzidas(array $fontes, ?int $temporada, ?int $episodio, ?string $tmdbId): array
+    {
+        if ($this->reproduzidas === null || ! $this->reproduzidas->habilitado()) {
+            return $fontes;
+        }
+
+        // A mesma regra que o resto da busca usa: só é episódio quando os dois
+        // números vêm preenchidos.
+        $tipo = ($temporada !== null && $episodio !== null) ? TipoMidia::SERIE : TipoMidia::FILME;
+
+        $salvas = $this->reproduzidas->preferidas(
+            $tipo,
+            is_numeric($tmdbId) ? (int) $tmdbId : null,
+            $temporada ?? 0,
+            $episodio ?? 0,
+        );
+
+        if ($salvas === []) {
+            return $fontes;
+        }
+
+        $ids = array_column($salvas, 'id');
+
+        $descobertas = array_values(array_filter(
+            $fontes,
+            fn (array $fonte): bool => ! in_array((string) ($fonte['id'] ?? ''), $ids, true)
+        ));
+
+        return array_merge($salvas, $descobertas);
     }
 
     /**
