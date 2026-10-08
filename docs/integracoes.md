@@ -2375,7 +2375,14 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   fronteira com a posição de leitura. Quando a folga cai abaixo da margem, o
   FFmpeg é **congelado** com `SIGSTOP` e descongelado com `SIGCONT` ao recuperar,
   via [`pausar`/`retomar`](../media-service/src/services/hls.js:849). Congelar
-  preserva o estado do processo; reiniciá-lo recomeçaria a conversão do zero.
+  preserva o estado do processo; reiniciá-lo recomeçaria a conversão do zero. A
+  retomada é uma histerese (margem + passo) e o alvo passa por
+  [`limiteDeRetomada()`](../media-service/src/services/sessoes.js:1720), que o
+  limita ao que o arquivo ainda pode entregar: sem esse teto o freio pedia mais
+  folga do que o download tinha para dar e o FFmpeg ficava congelado para sempre
+  — num arquivo menor que a margem e nos últimos megabytes de um filme já
+  baixado, a conversão parava em "convertendo" até o prazo do buffer inicial
+  estourar.
 - **VOD só com o filme inteiro**: [`finalizarPlaylist()`](../media-service/src/services/hls.js:1076)
   troca `EVENT`→`VOD` e acrescenta `#EXT-X-ENDLIST` **apenas** se a duração
   publicada chegar perto da duração real (tolerância de `max(60s, 10%)`). Uma
@@ -2608,23 +2615,43 @@ do arquivo no log:
 [torrent] arquivo completo mas ilegível: "12 - Afterbirth.mp4" (1234567 bytes) — ffprobe exited with code 1
 ```
 
-#### O caminho do arquivo precisa da pasta do torrent
+#### O caminho do arquivo já vem com a pasta do torrent
 
-Um segundo erro, ainda mais enganoso, aparecia como `No such file or directory`
-no caminho `/tmp/American Horror Story 1ª Temporada [2011 DUAL ÁUDIO] 720p PT
-BR/01 - Pilot.mp4` — com o arquivo existindo no disco. A causa não era o nome
-com espaços, acentos e colchetes: o `path.join` monta a string e o fluent-ffmpeg
-a repassa como argumento de vetor, sem passar pelo shell. O problema era que o
-WebTorrent baixa cada torrent dentro de uma pasta com o **nome do próprio
-torrent** (`torrent.path/<torrent.name>/...`), e o `arquivo.path` que ele expõe
-já é relativo a essa pasta. Juntar apenas `torrent.path` com `arquivo.path`
-produzia um caminho sem o nível intermediário, e o ffprobe procurava o arquivo
-um diretório acima de onde ele estava.
+Um erro enganoso aparecia como `No such file or directory` num caminho com espaços,
+acentos e colchetes, com o arquivo existindo no disco. A causa não era o nome do
+arquivo: o `path.join` monta a string e o fluent-ffmpeg a repassa como argumento
+de vetor, sem passar pelo shell.
 
-O helper [`caminhoDoArquivo()`](../media-service/src/services/sessoes.js:1718)
-centraliza essa montagem e cobre também o caso em que o `arquivo.path` já vem
-prefixado com o nome do torrent (versões antigas do WebTorrent): nesse cenário
-o segmento não é duplicado.
+A regra do disco é `path.join(torrent.path, arquivo.path)`. O `arquivo.path` que
+o WebTorrent expõe **já traz o nome do torrent na frente** — o `parse-torrent`
+junta `info.name` à trilha de cada arquivo antes de entregar a lista, e é essa
+mesma string que vira o caminho da store. Num torrent de vários arquivos o
+prefixo vem com barra (`Pack/Ep-01.mkv`); num torrent de **um arquivo só** ele é
+o nome inteiro do torrent, sem barra (`Filme.2025.1080p.mkv`).
+
+O helper [`caminhoDoArquivo()`](../media-service/src/services/sessoes.js:1767)
+centraliza essa montagem e tem dois cuidados:
+
+- **não prefixar de novo** quando o caminho já vem com a pasta — inclusive no
+  caso de um arquivo só, em que o caminho *é* o nome do torrent. A checagem
+  antiga (`startsWith(nome + '/')`) não reconhecia esse caso e pedia
+  `.../Filme.2025.1080p.mkv/Filme.2025.1080p.mkv`. Como quase todo lançamento de
+  filme é de arquivo único, toda fonte desse tipo ficava presa em "Aguardando
+  dados da fonte..." até o prazo de 120 s do cabeçalho: a malha entregava os
+  bytes no caminho certo (o overlay mostrava peers e velocidade saudáveis)
+  enquanto o ffprobe procurava um caminho que nunca existiria. Recriado com um
+  semeador local: antes da correção, `erro` depois de 118 s; depois dela,
+  `pronto` em 6 s, com playlist HTTP 200;
+- **limpar os caracteres que o store não grava** — o `fs-chunk-store` remove
+  `<>:"/\|?*` e os de controle do nome do arquivo (`CARACTERES_RESERVADOS`).
+  Sem espelhar a mesma regra, um lançamento como "Episodio 01: O Inicio.mkv" era
+  procurado com os dois-pontos enquanto o arquivo em disco nascia sem eles.
+
+O pré-carregamento do cabeçalho ganhou ainda uma saída rápida: quando o mapa de
+pedaços afirma que o começo do arquivo está baixado e mesmo assim o arquivo não
+existe no caminho esperado, o preparo desiste na hora, registrando no log o
+caminho esperado e o caminho do arquivo do torrent. Antes, esse desencontro
+custava os 120 s inteiros por fonte.
 
 #### O ffprobe não pode ser disparado antes de o arquivo existir
 
@@ -2637,9 +2664,12 @@ na mensagem, de um arquivo corrompido. Três guardas resolvem o caso:
    aguarda o começo do filme estar contíguo em disco (`aguardarInicio()`) antes
    de sondar o cabeçalho. Isso também evita que o ffprobe leia um arquivo
    esparso e interprete os zeros do trecho não baixado como dados inválidos.
-2. [`analisarComEspera()`](../media-service/src/services/sessoes.js:2134) confere
+2. [`analisarComEspera()`](../media-service/src/services/sessoes.js:2301) confere
    o tamanho físico do arquivo a cada volta e só chama o ffprobe quando ele
-   passa de `TAMANHO_MINIMO_SONDAGEM` (1 MB).
+   passa de `TAMANHO_MINIMO_SONDAGEM` (1 MB). O piso vale **até o tamanho do
+   arquivo**: esperar 1 MB de um vídeo que inteiro tem menos que isso seria
+   esperar por um tamanho que ele nunca terá — o laço só terminava no teto de
+   120 s.
 3. [`analisarArquivo()`](../media-service/src/services/hls.js:371) valida a
    existência do arquivo e lança um erro rotulado com `code = 'ENOENT'`, para o
    laço distinguir "ainda não existe" de "existe mas o ffprobe recusou". A

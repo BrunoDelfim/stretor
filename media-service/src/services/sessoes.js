@@ -172,6 +172,17 @@ const BYTES_INICIAIS = 4 * 1024 * 1024
  */
 const TAMANHO_MINIMO_SONDAGEM = 1024 * 1024
 
+/**
+ * Caracteres que não entram num nome de arquivo e que o próprio store do
+ * WebTorrent remove ao gravar — a mesma regra do `fs-chunk-store`
+ * (`<>:"/\|?*` e os de controle).
+ *
+ * Sem espelhar essa limpeza, um lançamento como "Episodio 01: O Inicio.mkv"
+ * era procurado com os dois-pontos no nome enquanto o arquivo em disco nascia
+ * sem eles, e a sessão esperava por um arquivo que existia com outro nome.
+ */
+const CARACTERES_RESERVADOS = /[<>:"/\\|?*\u0000-\u001F]/g
+
 /*
  * A janela de leitura existe porque selecionar o arquivo inteiro (prioridade 1)
  * deixava o *picker* do WebTorrent livre para buscar o mais raro primeiro: o
@@ -869,12 +880,22 @@ function iniciarJanela(sessao, arquivo, posicao) {
 
     const folga = fronteira - lerPosicao()
 
+    /*
+     * A folga que a fonte ainda pode dar. O download só cresce até o fim do
+     * arquivo, então pedir, na retomada, mais folga do que isso deixava o freio
+     * preso: pausava a conversão e nunca mais soltava. Acontecia sempre que a
+     * leitura chegava a menos de (margem + passo) do fim do filme e, de forma
+     * total, num arquivo menor que a própria margem — o ffmpeg ficava parado
+     * com a tela em "convertendo" até estourar o prazo.
+     */
+    const teto = Math.max(arquivo.length - lerPosicao(), 0)
+
     if (!janela.retomada) {
       const minima = margemDeLeitura(sessao, arquivo)
 
       if (folga >= minima) return
 
-      janela.retomada = minima + passoDeRetomada(sessao, arquivo)
+      janela.retomada = limiteDeRetomada(minima, passoDeRetomada(sessao, arquivo), teto)
       janela.comando.pausar?.()
       logger.info(
         `[sessao ${sessao.id}] leitura colada no download (folga de ${emMB(Math.max(folga, 0))}) — pausando a conversão`
@@ -1668,36 +1689,30 @@ function aguardarDownloadCompleto(sessao, arquivo, timeoutMs = TETO_PECAS_MS) {
 }
 
 /**
- * Adiciona o magnet ao cliente e resolve quando o torrent estiver pronto.
+ * Limite de folga que solta a conversão depois de um freio.
  *
- * Se o mesmo torrent já estiver no cliente — o usuário reabriu o filme sem que
- * a sessão anterior tivesse sido encerrada — reaproveitamos a instância em vez
- * de tentar adicionar de novo. O `cliente.add` recusa duplicatas com "Cannot add
- * duplicate torrent", o que derrubava a segunda tentativa de assistir.
+ * O freio da leitura é uma histerese: pausa abaixo da margem e só retoma quando
+ * a folga passa dela mais um passo. Esse alvo não pode exigir mais folga do que
+ * o arquivo ainda tem para entregar (`teto`) — era exatamente aí que a conversão
+ * ficava presa para sempre: num arquivo menor que a própria margem, e nos
+ * últimos megabytes de um filme longo, o download não tem mais de onde crescer.
  *
- * No WebTorrent 2.x o `cliente.get()` devolve uma Promise, então a função é
- * assíncrona para poder aguardá-la.
- *
- * @param {string} magnet
- * @param {number} timeoutMs prazo para os metadados, em ms
- * @returns {Promise<import('webtorrent').Torrent>}
+ * @param {number} minima margem de leitura, em bytes
+ * @param {number} passo passo da histerese, em bytes
+ * @param {number} teto folga máxima que a fonte ainda pode dar, em bytes
+ * @returns {number}
  */
+export function limiteDeRetomada(minima, passo, teto) {
+  // O piso de 1 byte é o que mantém o valor distinto de zero: o freio usa
+  // `retomada` falsy como "não está pausado".
+  return Math.max(1, Math.min(minima + passo, teto))
+}
+
 /**
- * Monta o caminho real do arquivo no disco.
+ * Tamanho, em bytes, do arquivo no disco — `null` quando ele ainda não existe.
  *
- * O WebTorrent baixa cada torrent dentro de uma pasta com o nome do próprio
- * torrent (`torrent.path/<torrent.name>/...`), e o `arquivo.path` que ele expõe
- * já é relativo a essa pasta — não à raiz de download. Juntar apenas
- * `torrent.path` com `arquivo.path` produzia um caminho sem a pasta do torrent,
- * e o ffprobe falhava com "No such file or directory" mesmo com o arquivo
- * existindo alguns níveis abaixo. O nome do torrent costuma trazer espaços,
- * acentos e colchetes ("American Horror Story 1ª Temporada [2011 DUAL ÁUDIO]
- * 720p PT BR"), mas isso não é problema: o `path.join` monta a string e o
- * fluent-ffmpeg a repassa como argumento de vetor, sem passar pelo shell.
- *
- * @param {import('webtorrent').Torrent} torrent
- * @param {import('webtorrent').TorrentFile} arquivo
- * @returns {string} caminho absoluto do arquivo
+ * @param {string} caminho caminho absoluto do arquivo
+ * @returns {number|null}
  */
 export function tamanhoDoArquivoEmDisco(caminho) {
   try {
@@ -1712,19 +1727,62 @@ export function tamanhoDoArquivoEmDisco(caminho) {
   }
 }
 
+/**
+ * Caminho absoluto em que o WebTorrent grava um arquivo do torrent.
+ *
+ * A regra do disco é `path.join(torrent.path, arquivo.path)`, porque o caminho
+ * que o WebTorrent expõe **já traz o nome do torrent na frente**: o
+ * `parse-torrent` junta `info.name` à trilha de cada arquivo antes de entregar a
+ * lista, e é essa mesma string que vira o caminho da store.
+ *
+ * Num torrent de vários arquivos esse prefixo vem com barra
+ * ("Pack/Ep-01.mkv"); num torrent de **um arquivo só** ele é o nome inteiro do
+ * torrent, sem barra ("Filme.2025.1080p.mkv"). A checagem antiga
+ * (`startsWith(nome + '/')`) não reconhecia esse segundo caso, acrescentava a
+ * pasta do torrent por cima e pedia
+ * ".../Filme.2025.1080p.mkv/Filme.2025.1080p.mkv". Como quase todo lançamento de
+ * filme é de arquivo único, toda fonte desse tipo ficava eternamente em
+ * "Aguardando dados da fonte...": a malha baixava no caminho certo enquanto o
+ * ffprobe procurava um caminho que nunca existiria.
+ *
+ * @param {import('webtorrent').Torrent} torrent
+ * @param {import('webtorrent').TorrentFile} arquivo
+ * @returns {string} caminho absoluto do arquivo
+ */
 export function caminhoDoArquivo(torrent, arquivo) {
-  /*
-   * O `arquivo.path` pode, em versões antigas do WebTorrent, já vir prefixado
-   * com o nome do torrent. Nesse caso juntar a pasta de novo duplicaria o
-   * segmento e o arquivo não seria encontrado. Só prefixamos quando o caminho
-   * ainda não começa pela pasta do torrent.
-   */
   const relativo = arquivo.path ?? arquivo.name ?? ''
-  const jaTemPasta = torrent.name && relativo.startsWith(`${torrent.name}/`)
+  const temPasta = Boolean(torrent.name)
+    && (relativo === torrent.name || relativo.startsWith(`${torrent.name}/`))
 
-  return jaTemPasta ? path.join(torrent.path, relativo) : path.join(torrent.path, torrent.name ?? '', relativo)
+  /*
+   * O ramo de reserva cobre um caminho que não venha prefixado (versão de
+   * biblioteca diferente): aí a pasta do torrent entra na mão. Fora desse caso,
+   * prefixar de novo duplica o nível — o arquivo existe, em disco, exatamente
+   * onde o caminho exposto aponta.
+   */
+  const montado = temPasta ? relativo : path.join(torrent.name ?? '', relativo)
+
+  const pasta = path.dirname(montado)
+  const nome = path.basename(montado).replace(CARACTERES_RESERVADOS, '')
+
+  return path.join(torrent.path, pasta === '.' ? '' : pasta, nome)
 }
 
+/**
+ * Adiciona o magnet ao cliente e resolve quando o torrent estiver pronto.
+ *
+ * Se o mesmo torrent já estiver no cliente — o usuário reabriu o filme sem que
+ * a sessão anterior tivesse sido encerrada — reaproveitamos a instância em vez
+ * de tentar adicionar de novo. O `cliente.add` recusa duplicatas com "Cannot add
+ * duplicate torrent", o que derrubava a segunda tentativa de assistir.
+ *
+ * No WebTorrent 2.x o `cliente.get()` devolve uma Promise, então a função é
+ * assíncrona para poder aguardá-la.
+ *
+ * @param {string} magnet
+ * @param {number} timeoutMs prazo para os metadados, em ms
+ * @returns {Promise<import('webtorrent').Torrent>}
+ */
 async function adicionarTorrent(magnet, timeoutMs = TIMEOUT_METADADOS_MS) {
   const existente = await cliente.get(magnet)
 
@@ -2259,15 +2317,54 @@ async function analisarComEspera(sessao, caminho, arquivo, timeoutMs = 120000) {
     const tamanhoEmDisco = tamanhoDoArquivoEmDisco(caminho)
 
     if (tamanhoEmDisco === null) {
+      /*
+       * O mapa de pedaços é a prova de que o download chegou. Se ele afirma que
+       * o começo do arquivo está baixado e mesmo assim o arquivo não existe no
+       * caminho esperado, não há lentidão a esperar: o caminho está errado (ou a
+       * store foi destruída no meio). Desistimos na hora, com o caminho no log —
+       * antes, esse desencontro custava os 120 s inteiros de espera por fonte,
+       * com o overlay mostrando "Aguardando dados da fonte..." e velocidade boa,
+       * sem nenhuma pista do que estava errado.
+       */
+      const inicioPresente = sessao.torrent
+        ? faixaPresente(sessao.torrent, arquivo, 0, Math.min(BYTES_INICIAIS, arquivo.length))
+        : null
+
+      if (inicioPresente === true) {
+        logger.error(
+          `[sessao ${sessao.id}] o torrent diz ter o começo baixado e o arquivo não está em disco: ` +
+            `esperado "${caminho}", arquivo do torrent "${arquivo.path}" (${arquivo.name}), ` +
+            `peers ${sessao.torrent?.numPeers ?? 0}, ` +
+            `baixado ${emMB(sessao.torrent?.downloaded ?? 0)}`
+        )
+
+        throw erroDaFonte(
+          'sem_dados',
+          `A fonte baixa, mas o arquivo "${arquivo.name}" não aparece em disco.`
+        )
+      }
+
       ultimoErro = new Error('arquivo ainda não existe em disco')
       await new Promise((resolve) => setTimeout(resolve, 1000))
       continue
     }
 
     if (tamanhoEmDisco < TAMANHO_MINIMO_SONDAGEM) {
-      ultimoErro = new Error(`arquivo ainda pequeno demais (${tamanhoEmDisco} bytes)`)
-      await new Promise((resolve) => setTimeout(resolve, 1000))
-      continue
+      /*
+       * O mínimo de sondagem é um piso, não um alvo: quando o arquivo inteiro é
+       * menor que ele (um extra, um teaser), esperar 1 MB seria esperar por um
+       * tamanho que o arquivo nunca vai ter — o laço só terminava no teto de 120 s.
+       * Nesse caso o que libera a sondagem é o download do arquivo todo.
+       */
+      const minimo = arquivo.length > 0
+        ? Math.min(TAMANHO_MINIMO_SONDAGEM, arquivo.length)
+        : TAMANHO_MINIMO_SONDAGEM
+
+      if (tamanhoEmDisco < minimo) {
+        ultimoErro = new Error(`arquivo ainda pequeno demais (${tamanhoEmDisco} bytes)`)
+        await new Promise((resolve) => setTimeout(resolve, 1000))
+        continue
+      }
     }
 
     try {

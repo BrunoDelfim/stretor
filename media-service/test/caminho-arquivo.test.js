@@ -4,17 +4,29 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { caminhoDoArquivo, tamanhoDoArquivoEmDisco } from '../src/services/sessoes.js'
+import { caminhoDoArquivo, limiteDeRetomada, tamanhoDoArquivoEmDisco } from '../src/services/sessoes.js'
 import { analisarArquivo } from '../src/services/hls.js'
 
 /*
- * O bug que originou estes testes: o caminho era montado como
- * `path.join(torrent.path, arquivo.path)`, sem a pasta do torrent. O ffprobe
- * recebia um caminho inexistente e devolvia "No such file or directory" mesmo
- * com o arquivo presente alguns níveis abaixo.
+ * A regra do disco é `path.join(torrent.path, arquivo.path)`: o caminho que o
+ * WebTorrent expõe já traz o nome do torrent na frente. Estes testes fixam os
+ * três desfechos que já custaram sessões travadas em "Aguardando dados da
+ * fonte...":
+ *
+ * - torrent de **um arquivo só** (todo lançamento de filme): o caminho exposto
+ *   é o nome do torrent, sem barra, e prefixar de novo criava
+ *   ".../Filme.mkv/Filme.mkv" — o download corria no caminho certo e o ffprobe
+ *   procurava um caminho que nunca existiria;
+ * - torrent de **vários arquivos** (pack): o caminho vem com a pasta e não pode
+ *   ser duplicado;
+ * - nome com **caractere que o disco não aceita**: o store remove esses
+ *   caracteres ao gravar, e o preparo precisa procurar pelo nome já limpo.
+ *
+ * O comportamento da biblioteca (WebTorrent 2.8.5 + fs-chunk-store) foi medido
+ * em execução, criando torrents de verdade e gravando um pedaço pelo store.
  */
 
-test('monta o caminho com a pasta do torrent quando o arquivo é relativo', () => {
+test('monta o caminho com a pasta do torrent quando o arquivo não vem prefixado', () => {
   const torrent = {
     path: '/tmp',
     name: 'American Horror Story 1ª Temporada [2011 DUAL ÁUDIO] 720p PT BR',
@@ -30,6 +42,38 @@ test('monta o caminho com a pasta do torrent quando o arquivo é relativo', () =
       'American Horror Story 1ª Temporada [2011 DUAL ÁUDIO] 720p PT BR',
       '01 - Pilot.mp4'
     )
+  )
+})
+
+/*
+ * O caso de todo lançamento de filme: um arquivo só. O caminho exposto pelo
+ * WebTorrent é o próprio nome do torrent, sem barra — e era aí que a checagem
+ * por `startsWith(nome + '/')` deixava passar a duplicação.
+ */
+test('não duplica o nome do torrent quando o torrent tem um arquivo só', () => {
+  const torrent = { path: '/tmp', name: 'Filme.2025.1080p.WEB-DL.mkv' }
+  const arquivo = { path: 'Filme.2025.1080p.WEB-DL.mkv', name: 'Filme.2025.1080p.WEB-DL.mkv' }
+
+  assert.equal(
+    caminhoDoArquivo(torrent, arquivo),
+    path.join('/tmp', 'Filme.2025.1080p.WEB-DL.mkv')
+  )
+})
+
+test('remove do nome os caracteres que o store não grava', () => {
+  const torrent = { path: '/tmp', name: 'Episodio 01: O Início.mkv' }
+  const arquivo = { path: 'Episodio 01: O Início.mkv', name: 'Episodio 01: O Início.mkv' }
+
+  assert.equal(caminhoDoArquivo(torrent, arquivo), path.join('/tmp', 'Episodio 01 O Início.mkv'))
+})
+
+test('remove os caracteres reservados também no arquivo de dentro de um pack', () => {
+  const torrent = { path: '/tmp', name: 'Serie 1' }
+  const arquivo = { path: 'Serie 1/01 - Pergunta?.mkv', name: '01 - Pergunta?.mkv' }
+
+  assert.equal(
+    caminhoDoArquivo(torrent, arquivo),
+    path.join('/tmp', 'Serie 1', '01 - Pergunta.mkv')
   )
 })
 
@@ -72,6 +116,29 @@ test('tamanhoDoArquivoEmDisco devolve o tamanho de um arquivo real', () => {
 
 test('tamanhoDoArquivoEmDisco devolve null para um diretório', () => {
   assert.equal(tamanhoDoArquivoEmDisco(os.tmpdir()), null)
+})
+
+/*
+ * O freio da leitura, que só existe no caminho de disco, usa essa mesma régua
+ * para decidir quando liberar a conversão. A retomada não pode exigir mais folga
+ * do que o arquivo tem para dar: com um alvo inalcançável o ffmpeg ficava
+ * pausado (SIGSTOP) até o prazo do buffer inicial estourar — num arquivo menor
+ * que a margem, ou nos últimos megabytes de um filme longo já baixado.
+ */
+test('a retomada do freio nunca pede mais folga do que o arquivo pode dar', () => {
+  const margem = 32 * 1024 * 1024
+  const passo = 16 * 1024 * 1024
+
+  // Arquivo pequeno: o alvo encosta no arquivo e a conversão volta assim que ele
+  // está inteiro em disco.
+  assert.equal(limiteDeRetomada(margem, passo, 1224964), 1224964)
+
+  // Filme longo com download em andamento: o alvo segue sendo a margem + passo.
+  assert.equal(limiteDeRetomada(margem, passo, 3 * 1024 * 1024 * 1024), margem + passo)
+
+  // Arquivo lido até o fim: nada a esperar, mas o valor precisa continuar
+  // distinto de zero — o freio usa zero como "não está pausado".
+  assert.equal(limiteDeRetomada(margem, passo, 0), 1)
 })
 
 /*
