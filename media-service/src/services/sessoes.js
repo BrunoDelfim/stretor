@@ -184,11 +184,32 @@ const TAMANHO_MINIMO_SONDAGEM = 1024 * 1024
 const CARACTERES_RESERVADOS = /[<>:"/\\|?*\u0000-\u001F]/g
 
 /*
- * A janela de leitura existe porque selecionar o arquivo inteiro (prioridade 1)
- * deixava o *picker* do WebTorrent livre para buscar o mais raro primeiro: o
- * download se espalhava pelo filme e a faixa logo à frente do leitor ficava
- * cheia de buracos — a conversão morria de inanição depois dos primeiros
- * segmentos. Aqui mantemos quente só o que vai ser lido agora.
+ * A janela de leitura existe porque o *picker* do WebTorrent, sem prioridade
+ * alguma, ataca o que é mais raro na malha: o download se espalha pelo filme e a
+ * faixa logo à frente do leitor fica cheia de buracos — a conversão morria de
+ * inanição depois dos primeiros segmentos. Aqui mantemos quente só o que vai ser
+ * lido agora.
+ *
+ * O que o leitor ganha com a janela é *fila*, não ordem: a ordem é a da
+ * estratégia do torrent (`sequential`, ver `ESTRATEGIA_PEDACOS`), e a fila só
+ * decide qual trecho é atendido antes. Sem ela o trecho à frente do leitor
+ * ficaria atrás do resto do arquivo na ordem de chegada.
+ *
+ * Vale registrar a armadilha que já custou caro: `arquivo.select(prioridade, de,
+ * ate)` *parece* aceitar uma faixa, mas o `File` do WebTorrent ignora os dois
+ * últimos argumentos e seleciona o arquivo inteiro — faixa de verdade só existe
+ * em `torrent.select(inicio, fim, prioridade)`. Medido: `arquivo.select(6, 100,
+ * 300)` deixou o torrent com uma única seleção, `0-767@8`, o filme todo.
+ *
+ * Com a assinatura errada cada passo de 700 ms reescrevia a fila inteira: a
+ * `deselect` da cauda apagava *todas* as seleções que cobriam o arquivo — o
+ * WebTorrent deixava de estar interessado, os pedidos em voo se perdiam e cada
+ * peer novo repetia a validação de rede, que pede o último pedaço da seleção.
+ * Era a janela sendo desfeita e refeita continuamente.
+ *
+ * A regra que fica: aqui nada é desselecionado. Um `deselect` remove os pedaços
+ * de *todas* as seleções, então soltar a cauda abriria buraco permanente no
+ * arquivo — e o requisito é o arquivo baixar do primeiro ao último pedaço.
  *
  * A antecedência é medida em segundos de mídia, não em bytes fixos: numa fonte
  * lenta uma faixa curta não cobriria nem alguns segundos de vídeo, numa fonte
@@ -198,13 +219,24 @@ const ANTECEDENCIA_SEGUNDOS = 150
 const ANTECEDENCIA_MINIMA_BYTES = 24 * 1024 * 1024
 const ANTECEDENCIA_MAXIMA_BYTES = 256 * 1024 * 1024
 
-/** Quanto da cauda já reproduzida fica selecionada, para um seek curto para trás. */
-const CAUDA_SELECIONADA_BYTES = 8 * 1024 * 1024
+/*
+ * Estratégia de escolha de pedaços, passada ao `cliente.add`.
+ *
+ * `sequential` já é o padrão do WebTorrent 2.8.5 e é o que o sistema quer: dentro
+ * de cada seleção os pedaços são pedidos em ordem crescente, do início do
+ * arquivo para o fim. `rarest` — o outro valor aceito — embaralha a ordem de
+ * propósito (medido com malha local: 763 de 768 pedaços fora de ordem).
+ *
+ * Vai explícito por dois motivos: documenta a intenção no ponto em que ela é
+ * decidida e blinda o serviço caso o padrão da biblioteca mude numa atualização.
+ */
+const ESTRATEGIA_PEDACOS = 'sequential'
 
 /** Faixa imediata: o que o FFmpeg consome nos próximos instantes. */
 const TAMANHO_IMEDIATO_BYTES = 4 * 1024 * 1024
 
 /** Prioridades: o maior valor vence. O índice (`moov`) usa 10 e continua no topo. */
+const PRIORIDADE_INDICE = 10
 const PRIORIDADE_JANELA = 6
 const PRIORIDADE_IMEDIATA = 8
 
@@ -806,13 +838,82 @@ function medirFronteira(janela, torrent, arquivo) {
 }
 
 /**
- * Mantém uma janela móvel de pedaços selecionados logo à frente da leitura.
+ * Traduz uma faixa de bytes do arquivo na faixa de pedaços correspondente.
  *
- * Selecionar o arquivo inteiro com uma prioridade única deixa o *picker* do
- * WebTorrent buscar o mais raro primeiro: o download se espalha e a faixa à
- * frente do leitor fica cheia de buracos — foi assim que a reprodução parou
- * depois dos primeiros segmentos. Aqui priorizamos só o que vai ser lido agora e
- * soltamos a cauda já reproduzida, para a banda atacar o que interessa.
+ * O WebTorrent só aceita faixa de pedaços (`torrent.select(inicio, fim,
+ * prioridade)`); `File.select` não serve, porque ignora a faixa e seleciona o
+ * arquivo inteiro. A conta usa o `offset` do arquivo dentro do torrent — num
+ * pack ele não começa no pedaço zero — e o tamanho de pedaço do torrent, com o
+ * fim preso ao último pedaço existente: índice fora da faixa faz o WebTorrent
+ * descartar a seleção (e o `select` estoura).
+ *
+ * @param {import('webtorrent').Torrent} torrent
+ * @param {import('webtorrent').TorrentFile} arquivo
+ * @param {number} de byte inicial, contado do começo do arquivo
+ * @param {number} ate byte final, contado do começo do arquivo
+ * @returns {[number, number]|null} pedaços `[primeiro, ultimo]`, ou `null` quando
+ *   o torrent ainda não publicou o tamanho de pedaço
+ */
+export function faixaDePecas(torrent, arquivo, de, ate) {
+  const tamanho = torrent?.pieceLength
+  const ultimoPedaco = (torrent?.pieces?.length ?? 0) - 1
+
+  if (!tamanho || ultimoPedaco < 0 || !arquivo) return null
+
+  /*
+   * Os bytes são presos ao arquivo antes de virar pedaço: no fim do episódio a
+   * posição de leitura chega ao último byte, e sem isso a faixa pedida cairia no
+   * primeiro pedaço do arquivo seguinte de um pack — banda gasta num arquivo que
+   * o sistema desselecionou de propósito.
+   */
+  const base = arquivo.offset ?? 0
+  const bytes = Math.max(Number(arquivo.length) || 0, 1)
+  const inicio = Math.max(0, Math.min(de, bytes - 1))
+  const fim = Math.max(inicio + 1, Math.min(ate, bytes))
+
+  const primeiro = Math.min(Math.floor((base + inicio) / tamanho), ultimoPedaco)
+
+  // O byte `fim` já pertence ao trecho seguinte, daí o `- 1`.
+  const ultimo = Math.floor((base + fim - 1) / tamanho)
+
+  return [primeiro, Math.min(Math.max(ultimo, primeiro), ultimoPedaco)]
+}
+
+/**
+ * Pede ao WebTorrent uma faixa do arquivo, em pedaços, com a prioridade dada.
+ *
+ * Toda priorização do sistema passa por aqui: assim só existe um lugar lidando
+ * com a conversão de bytes em pedaços e com o `select` que pode estourar quando
+ * a sessão é encerrada no meio do caminho.
+ *
+ * @returns {boolean} `true` quando a faixa foi aceita
+ */
+function priorizarFaixa(sessao, torrent, arquivo, de, ate, prioridade) {
+  const faixa = faixaDePecas(torrent, arquivo, de, ate)
+
+  if (!faixa) return false
+
+  try {
+    torrent.select(faixa[0], faixa[1], prioridade)
+    return true
+  } catch (erro) {
+    logger.warn(
+      `[sessao ${sessao.id}] falha ao priorizar os pedaços ${faixa[0]}–${faixa[1]}:`,
+      erro.message
+    )
+    return false
+  }
+}
+
+/**
+ * Mantém uma janela móvel de pedaços priorizados logo à frente da leitura.
+ *
+ * O arquivo inteiro já está selecionado com prioridade 1, então o download segue
+ * do começo ao fim por conta da estratégia sequencial; o que a janela faz é furar
+ * a fila: o trecho que o FFmpeg vai ler em seguida recebe prioridade maior e é
+ * atendido antes do resto. Nada é desselecionado — soltar um trecho no WebTorrent
+ * remove os pedaços de *todas* as seleções, e o que ficou fora não volta mais,
+ * deixando buraco permanente no arquivo.
  *
  * @param {object} sessao
  * @param {import('webtorrent').TorrentFile} arquivo
@@ -824,43 +925,28 @@ function iniciarJanela(sessao, arquivo, posicao) {
   let fontePosicao = posicao
 
   const janela = {
-    selecionada: null,
     fronteiraIndice: Math.floor((arquivo.offset ?? 0) / (torrent?.pieceLength || 1)),
     retomada: null,
     comando: null,
   }
 
-  /*
-   * `deselect` só existe nas versões mais recentes do WebTorrent. Sem ele a
-   * janela continua funcionando — apenas não solta a cauda, e o download fica
-   * mais espalhado do que o ideal. Nada quebra.
-   */
-  const podeSoltar = typeof arquivo.deselect === 'function'
-
   const lerPosicao = () => Math.max(0, Math.min(fontePosicao() || 0, arquivo.length))
 
   const deslizar = () => {
     const lida = lerPosicao()
-    const tamanho = tamanhoDaJanela(sessao, arquivo)
+    const ate = Math.min(arquivo.length, lida + tamanhoDaJanela(sessao, arquivo))
 
-    const de = Math.max(0, lida - CAUDA_SELECIONADA_BYTES)
-    const ate = Math.min(arquivo.length, lida + tamanho)
-    const anterior = janela.selecionada
-
-    if (anterior && podeSoltar && de > anterior[0]) {
-      try {
-        arquivo.deselect(anterior[0], Math.min(de, anterior[1]))
-      } catch (erro) {
-        logger.warn(`[sessao ${sessao.id}] falha ao soltar a cauda da janela:`, erro.message)
-      }
-    }
-
-    arquivo.select(PRIORIDADE_JANELA, de, ate)
+    priorizarFaixa(sessao, torrent, arquivo, lida, ate, PRIORIDADE_JANELA)
 
     // A faixa imediata vai com prioridade maior: é o que o FFmpeg lê agora.
-    arquivo.select(PRIORIDADE_IMEDIATA, lida, Math.min(ate, lida + TAMANHO_IMEDIATO_BYTES))
-
-    janela.selecionada = [de, ate]
+    priorizarFaixa(
+      sessao,
+      torrent,
+      arquivo,
+      lida,
+      Math.min(ate, lida + TAMANHO_IMEDIATO_BYTES),
+      PRIORIDADE_IMEDIATA
+    )
   }
 
   /*
@@ -1286,7 +1372,7 @@ async function anteciparCauda(sessao, arquivo, caminho) {
     return false
   }
 
-  arquivo.select(10, mdat.fim, arquivo.length)
+  priorizarFaixa(sessao, sessao.torrent, arquivo, mdat.fim, arquivo.length, PRIORIDADE_INDICE)
 
   logger.info(
     `[sessao ${sessao.id}] índice ainda não visível; antecipando a cauda a partir de ${mdat.fim}`
@@ -1469,11 +1555,11 @@ async function priorizarIndice(sessao, arquivo, caminho) {
   }
 
   /*
-   * `select(prioridade, inicio, fim)` pede ao WebTorrent apenas o intervalo do
-   * índice. A prioridade 10 (acima da do arquivo inteiro, que é 1) garante que
-   * esses bytes sejam pedidos antes de tudo.
+   * A prioridade 10 (acima da do arquivo inteiro, que é 1) põe os pedaços do
+   * índice na frente de tudo. A faixa vai por `torrent.select`: `arquivo.select`
+   * ignoraria o intervalo e selecionaria o filme inteiro, sem priorizar nada.
    */
-  arquivo.select(10, moov.inicio, moov.fim)
+  priorizarFaixa(sessao, sessao.torrent, arquivo, moov.inicio, moov.fim, PRIORIDADE_INDICE)
 
   logger.info(
     `[sessao ${sessao.id}] priorizando o moov (${moov.inicio}–${moov.fim}); convertendo do disco`
@@ -1794,7 +1880,15 @@ async function adicionarTorrent(magnet, timeoutMs = TIMEOUT_METADADOS_MS) {
     return esperarMetadados(existente, timeoutMs)
   }
 
-  return esperarMetadados(cliente.add(magnet, { path: os.tmpdir() }), timeoutMs)
+  /*
+   * `strategy` vai explícito para o torrent inteiro: é o que garante que os
+   * pedaços sejam pedidos do começo ao fim do arquivo, e não no espalhamento do
+   * modo `rarest` (ver `ESTRATEGIA_PEDACOS`).
+   */
+  return esperarMetadados(
+    cliente.add(magnet, { path: os.tmpdir(), strategy: ESTRATEGIA_PEDACOS }),
+    timeoutMs
+  )
 }
 
 /**

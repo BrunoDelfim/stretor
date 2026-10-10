@@ -230,6 +230,13 @@ docker compose logs -f media-service
 # Rodar os testes do serviço
 docker compose exec media-service npm test
 
+# Com o serviço no ar os testes precisam de porta própria: `sessoes.js` cria o
+# cliente WebTorrent já na importação, e o serviço em execução ocupa a
+# `MEDIA_TORRENT_PORT` (51413) — sem isolar, o arquivo morre com `EADDRINUSE`.
+# O cliente também mantém o event loop vivo, daí o `--test-force-exit`.
+docker compose exec media-service sh -lc \
+  'MEDIA_TORRENT_PORT=51414 node --test --test-force-exit --test-concurrency=1 test/'
+
 # Subir em modo watch durante o desenvolvimento
 docker compose exec media-service npm run dev
 ```

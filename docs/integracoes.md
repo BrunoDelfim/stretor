@@ -2344,20 +2344,46 @@ Problemas de ambiente e de streaming encontrados na validação, já tratados:
   porque a playlist nova é outro stream. É uma rede de segurança: no caso
   *Lanterns* ela não salvava porque o stream inteiro era 10-bit — a correção real
   é a profundidade de cor, acima.
-- **Janela de leitura deslizante**: `arquivo.select(1)` mandava o WebTorrent
-  baixar o arquivo inteiro e espalhar os pedidos por todo o filme — como o
-  WebTorrent escolhe pela raridade das peças, a região logo à frente de quem está
-  lendo ficava cheia de buracos e a conversão morria de fome depois do começo.
-  Agora [`iniciarJanela`](../media-service/src/services/sessoes.js:813) mantém uma
-  faixa estreita acompanhando a leitura: uma banda com prioridade 6 e um trecho
-  imediato com prioridade 8, recalculados a cada 700 ms por
-  [`deslizar`](../media-service/src/services/sessoes.js:833). A prioridade fica
+- **Ordem do download: do primeiro ao último pedaço.** O `strategy` vai explícito
+  no [`cliente.add`](../media-service/src/services/sessoes.js:1876)
+  (`ESTRATEGIA_PEDACOS = 'sequential'`). É o padrão do WebTorrent 2.8.5, mas está
+  no código por dois motivos: documenta a intenção no ponto em que ela é decidida
+  e blinda o serviço se o padrão da biblioteca mudar. O outro valor aceito,
+  `rarest`, embaralha de propósito — medido numa malha local, 763 de 768 pedaços
+  fora de ordem (`diag-sequencial.mjs` e `diag-ordem-servico.mjs`, scripts
+  descartáveis em `media-service/tmp/`, pasta fora do versionamento). No modo
+  sequencial o picker percorre cada seleção em ordem crescente
+  (`for (piece = next.from + next.offset; …)`, em
+  `node_modules/webtorrent/lib/torrent.js`), então o arquivo cresce do começo ao
+  fim. A única exceção é do protocolo: um peer recém-conectado dispara
+  `validateWire()`, que pede **o último pedaço da seleção** para testar o enlace —
+  um pedaço por conexão nova, fora de ordem por definição e fora do nosso
+  controle. Medido com o serviço de verdade, semeando o arquivo no próprio
+  container: 260 de 260 pedaços pedidos, na ordem `259, 0, 1, 2, …, 258`.
+- **Janela de leitura deslizante**: `select(1)` sozinho manda o WebTorrent baixar
+  o arquivo inteiro na ordem sequencial, e o trecho logo à frente de quem está
+  lendo fica atrás de todo o resto na fila. Agora
+  [`iniciarJanela`](../media-service/src/services/sessoes.js:896) mantém uma faixa
+  acompanhando a leitura: uma banda com prioridade 6 e um trecho imediato com
+  prioridade 8, recalculados a cada 700 ms por `deslizar`. A prioridade fica
   **abaixo** dos 10 usados para abrir o `moov` e a cauda, então o cabeçalho
   continua ganhando a corrida. O tamanho da faixa sai do
   [`bytesPorSegundo()`](../media-service/src/services/sessoes.js:707) (vazão
   medida do torrent, ou tamanho do arquivo dividido pela duração como
   estimativa); sem vazão estimável, a janela é desligada e o código volta ao
-  `select(1)`.
+  `select(1)`. O que a janela controla é a **fila**, nunca a ordem.
+- **A faixa só vale em `torrent.select(inicio, fim, prioridade)`.** Medido:
+  `arquivo.select(6, 100, 300)` deixa o torrent com uma seleção única,
+  `0-767@8` — o filme inteiro. Até esta correção a janela não existia de fato, e
+  a `deselect` da cauda, que também ignora a faixa, apagava *todas* as seleções
+  que cobriam o arquivo a cada 700 ms: o WebTorrent deixava de estar interessado,
+  os pedidos em voo se perdiam e cada peer novo repetia a validação de rede. A
+  conversão de bytes em pedaços — com o `offset` do arquivo dentro do torrent, que
+  num pack não começa no pedaço zero — é
+  [`faixaDePecas()`](../media-service/src/services/sessoes.js:852), coberta por
+  [`faixa-pecas.test.js`](../media-service/test/faixa-pecas.test.js). Nada é
+  desselecionado nesse caminho: um `deselect` tira os pedaços de *todas* as
+  seleções, e soltar a cauda abriria buraco permanente no arquivo.
 - **Posição de leitura**: a janela precisa saber quanto já foi entregue. No
   caminho de *pipe*, um
   [`Transform`](https://nodejs.org/api/stream.html#class-streamtransform) conta os
