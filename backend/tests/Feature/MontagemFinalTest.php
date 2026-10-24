@@ -75,6 +75,7 @@ class MontagemFinalTest extends TestCase
         // O fallback direto é dublado vazio: estes testes olham a montagem dos
         // torrents, e um caso deles termina com a lista final vazia — sem esta
         // expectativa, o gatilho do `TorrentService` chamaria o método real.
+        $catalogo->shouldReceive('buscarPorIdentificador')->andReturn([]);
         $catalogo->shouldReceive('buscarFallbackDireto')->andReturn([]);
         $catalogo->shouldReceive('reconciliarCenso')->andReturnNull();
         $catalogo->shouldReceive('fecharOrcamento')->andReturnNull();

@@ -6,11 +6,13 @@ import 'plyr/dist/plyr.css'
 
 import { streamingService } from '@/services/streaming'
 import {
+  ESPERA_ENTRE_RODADAS_MS,
   ESPERA_ENTRE_TENTATIVAS_MS,
   ESTAGNACAO_DIRETA_MS,
   ESTAGNACAO_FONTE_MS,
   FIM_REPRODUZIDO,
   INTERVALO_STATUS_SESSAO_MS,
+  MAX_RODADAS_DE_BUSCA,
   TENTATIVAS_FONTE_REDE,
   TIMEOUT_DIRETO_MS,
   TIMEOUT_FONTE_MS,
@@ -1618,6 +1620,10 @@ function aguardarReposicionamento(sessao, minhaGeracao) {
  * Dificilmente o filme terá fonte dublada logo na primeira tentativa, então
  * tentamos uma a uma e só desistimos quando a lista inteira falhar.
  *
+ * O resultado é `{ conectou, mensagem }`. A falha de cada fonte **não** vai para
+ * a tela: o usuário quer o filme, não o relatório da tentativa. Quem decide
+ * quando mostrar a mensagem final é o `iniciar()`, depois de esgotar as rodadas.
+ *
  * A geração que iniciou a busca é repassada a cada espera: se ela mudar (o
  * overlay fechou ou outro filme entrou), este laço se cala em vez de continuar
  * mexendo no estado do player atual.
@@ -1645,7 +1651,7 @@ async function tentarFontes(fontes, minhaGeracao, minhaAbertura, filme) {
   }
 
   for (let indice = 0; indice < fontes.length; indice += 1) {
-    if (cancelado || minhaAbertura !== abertura) return
+    if (cancelado || minhaAbertura !== abertura) return { conectou: false }
 
     const fonte = fontes[indice]
 
@@ -1710,7 +1716,7 @@ async function tentarFontes(fontes, minhaGeracao, minhaAbertura, filme) {
             filme.episodio
           )
 
-        if (cancelado || minhaAbertura !== abertura) return
+        if (cancelado || minhaAbertura !== abertura) return { conectou: false }
 
         sessaoId = sessao.sessao_id
 
@@ -1718,7 +1724,7 @@ async function tentarFontes(fontes, minhaGeracao, minhaAbertura, filme) {
         const resultado = await aguardarFonte(minhaGeracao, fonte)
 
         if (resultado.desfecho === 'pronto') {
-          return
+          return { conectou: true }
         }
 
         if (resultado.desfecho === 'sem_audio_pt') {
@@ -1734,11 +1740,11 @@ async function tentarFontes(fontes, minhaGeracao, minhaAbertura, filme) {
         }
 
         estado.value = 'tentando'
-        mensagem.value = `A fonte não respondeu. Tentando de novo (${tentativa + 1} de ${TENTATIVAS_FONTE_REDE})...`
+        mensagem.value = 'Procurando fonte...'
 
         await new Promise((resolve) => setTimeout(resolve, ESPERA_ENTRE_TENTATIVAS_MS))
 
-        if (cancelado || minhaAbertura !== abertura) return
+        if (cancelado || minhaAbertura !== abertura) return { conectou: false }
       }
     } catch {
       // Fonte indisponível: seguimos para a próxima.
@@ -1746,9 +1752,9 @@ async function tentarFontes(fontes, minhaGeracao, minhaAbertura, filme) {
     }
   }
 
-  if (!cancelado && minhaAbertura === abertura) {
-    erro.value = mensagemDeFalha(desistencias, fontes.length, recusadasPorIdioma)
-    estado.value = 'erro'
+  return {
+    conectou: false,
+    mensagem: mensagemDeFalha(desistencias, fontes.length, recusadasPorIdioma),
   }
 }
 
@@ -2305,54 +2311,104 @@ async function iniciar() {
    */
   const filme = props.filme
 
-  try {
-    const { fontes, mensagem: aviso } = await streamingService.buscarFontes(filme)
+  /*
+   * A busca acontece em rodadas, e o overlay nunca anuncia a falha de uma fonte.
+   *
+   * O usuário não precisa saber que a fonte 3 caiu — ele quer o filme. Cada
+   * rodada busca as fontes e as percorre; se nenhuma conectar, espera um instante
+   * e pergunta de novo, com a tela de "procurando" no ar o tempo todo. O ganho
+   * está nas falhas transitórias (CDN que pisca, conversão que cai na abertura),
+   * que antes exigiam fechar e reabrir o player. A mensagem de erro só aparece
+   * quando todas as rodadas terminaram sem uma fonte sequer conectar.
+   */
+  let motivoFinal = null
 
+  for (let rodada = 1; rodada <= MAX_RODADAS_DE_BUSCA; rodada += 1) {
     if (cancelado || minhaAbertura !== abertura) return
 
-    if (!fontes.length) {
-      // O backend explica o motivo quando a lista volta vazia: "ainda não
-      // disponível em português" é o corte de idioma (nenhum provedor declarou
-      // áudio PT-BR), "nenhum provedor pôde ser consultado" é configuração
-      // faltando. Sem essa distinção o usuário não sabe se o problema é o filme
-      // ou o sistema. O texto local é só a rede de segurança de quando o backend
-      // não manda aviso nenhum.
-      erro.value = aviso || 'Este título ainda não está disponível em português. Assim que sair uma versão dublada ou em dual áudio, ele aparece aqui.'
-      estado.value = 'erro'
-      return
-    }
+    estado.value = 'procurando'
+    mensagem.value = 'Procurando fontes...'
 
-    totalFontes.value = fontes.length
+    let fontes = []
+    let aviso = null
 
-    await tentarFontes(fontes, minhaGeracao, minhaAbertura, filme)
-  } catch (falha) {
-    /*
-     * O `catch` antigo era mudo: qualquer exceção — timeout do axios, falha de
-     * rede, um `TypeError` inesperado — virava a mesma frase genérica, e a causa
-     * real morria aqui. O sintoma que isso escondia: a busca de fontes estoura o
-     * `TIMEOUT_REQUISICAO_MS` (60 s) numa execução a frio, o axios aborta com
-     * `ECONNABORTED` e descarta a resposta que ainda estava a caminho. O DevTools
-     * mostra a resposta chegando (com as fontes), mas o axios já desistiu — e o
-     * usuário lê "não foi possível buscar as fontes" mesmo com o backend tendo
-     * respondido. Registrar a falha no diagnóstico é o que permite distinguir
-     * esse caso de um erro real de rede.
-     */
-    anotarDiagnostico(`falha ao buscar fontes: ${falha?.code || falha?.message || falha}`)
+    try {
+      ({ fontes, mensagem: aviso } = await streamingService.buscarFontes(filme))
+    } catch (falha) {
+      /*
+       * O `catch` antigo era mudo: qualquer exceção — timeout do axios, falha de
+       * rede, um `TypeError` inesperado — virava a mesma frase genérica, e a causa
+       * real morria aqui. O sintoma que isso escondia: a busca de fontes estoura o
+       * `TIMEOUT_REQUISICAO_MS` (60 s) numa execução a frio, o axios aborta com
+       * `ECONNABORTED` e descarta a resposta que ainda estava a caminho. O DevTools
+       * mostra a resposta chegando (com as fontes), mas o axios já desistiu — e o
+       * usuário lê "não foi possível buscar as fontes" mesmo com o backend tendo
+       * respondido. Registrar a falha no diagnóstico é o que permite distinguir
+       * esse caso de um erro real de rede.
+       */
+      anotarDiagnostico(`falha ao buscar fontes: ${falha?.code || falha?.message || falha}`)
 
-    if (!cancelado && minhaAbertura === abertura) {
       /*
        * Timeout merece uma mensagem própria: não é "não consegui buscar", é
        * "busquei, mas demorou mais do que o frontend espera". A diferença muda o
        * que o usuário faz — tentar de novo (o cache já estará quente) em vez de
        * concluir que o sistema está quebrado.
        */
-      erro.value =
+      motivoFinal =
         falha?.code === 'ECONNABORTED'
           ? 'A busca de fontes demorou demais. Tente novamente — da segunda vez o cache responde na hora.'
           : 'Não foi possível buscar as fontes agora. Tente novamente.'
-      estado.value = 'erro'
+
+      if (rodada < MAX_RODADAS_DE_BUSCA && !(await esperarProximaRodada(minhaAbertura))) return
+
+      continue
     }
+
+    if (cancelado || minhaAbertura !== abertura) return
+
+    if (!fontes.length) {
+      /*
+       * O backend explica o motivo quando a lista volta vazia: "ainda não
+       * disponível em português" é o corte de idioma (nenhum provedor declarou
+       * áudio PT-BR), "nenhum provedor pôde ser consultado" é configuração
+       * faltando. O texto local é só a rede de segurança de quando o backend não
+       * manda aviso nenhum. A lista vazia também tem cache curto, então a rodada
+       * seguinte pode achar o que esta não achou.
+       */
+      motivoFinal = aviso || 'Este título ainda não está disponível em português. Assim que sair uma versão dublada ou em dual áudio, ele aparece aqui.'
+
+      if (rodada < MAX_RODADAS_DE_BUSCA && !(await esperarProximaRodada(minhaAbertura))) return
+
+      continue
+    }
+
+    totalFontes.value = fontes.length
+
+    const resultado = await tentarFontes(fontes, minhaGeracao, minhaAbertura, filme)
+
+    if (resultado.conectou) return
+
+    motivoFinal = resultado.mensagem
+
+    if (rodada < MAX_RODADAS_DE_BUSCA && !(await esperarProximaRodada(minhaAbertura))) return
   }
+
+  if (!cancelado && minhaAbertura === abertura) {
+    erro.value = motivoFinal || 'Nenhuma fonte conseguiu conectar. Tente novamente mais tarde.'
+    estado.value = 'erro'
+  }
+}
+
+/**
+ * Espera a próxima rodada, respeitando o fechamento do overlay.
+ *
+ * Devolve `false` quando o fluxo deve parar — overlay fechado ou outro título
+ * aberto. A última rodada não espera nada: a mensagem final já é a resposta.
+ */
+async function esperarProximaRodada(minhaAbertura) {
+  await new Promise((resolve) => setTimeout(resolve, ESPERA_ENTRE_RODADAS_MS))
+
+  return !cancelado && minhaAbertura === abertura
 }
 
 function fechar() {

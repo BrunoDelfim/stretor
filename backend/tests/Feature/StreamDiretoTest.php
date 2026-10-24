@@ -106,6 +106,7 @@ class StreamDiretoTest extends TestCase
     {
         $catalogo = Mockery::mock(CatalogoProvedores::class);
         $catalogo->shouldReceive('buscar')->andReturn($fontes);
+        $catalogo->shouldReceive('buscarPorIdentificador')->andReturn([]);
         $catalogo->shouldReceive('buscarFallbackDireto')->andReturn($diretas);
 
         if ($cascataDispensada) {
@@ -174,6 +175,7 @@ class StreamDiretoTest extends TestCase
     public function test_stream_direto_dispensa_a_cascata_quando_ha_fonte_direta(): void
     {
         $catalogo = Mockery::mock(CatalogoProvedores::class);
+        $catalogo->shouldReceive('buscarPorIdentificador')->andReturn([]);
         $catalogo->shouldReceive('buscarFallbackDireto')->andReturn([$this->fonteDireta('socorro')]);
         $catalogo->shouldReceive('buscar')->never();
         $catalogo->shouldReceive('dispensarCascata')->once()->andReturnNull();
@@ -200,6 +202,7 @@ class StreamDiretoTest extends TestCase
     public function test_cascata_roda_quando_o_direto_volta_vazio(): void
     {
         $catalogo = Mockery::mock(CatalogoProvedores::class);
+        $catalogo->shouldReceive('buscarPorIdentificador')->andReturn([]);
         $catalogo->shouldReceive('buscarFallbackDireto')->andReturn([]);
         $catalogo->shouldReceive('buscar')->once()->andReturn([$this->fonteTorrent('viva')]);
         $catalogo->shouldReceive('dispensarCascata')->never();
@@ -375,6 +378,7 @@ class StreamDiretoTest extends TestCase
     {
         $catalogo = Mockery::mock(CatalogoProvedores::class);
         $catalogo->shouldReceive('buscar')->once()->andReturn([]);
+        $catalogo->shouldReceive('buscarPorIdentificador')->andReturn([]);
         $catalogo->shouldReceive('buscarFallbackDireto')->andReturn([]);
         $catalogo->shouldReceive('reconciliarCenso')->andReturnNull();
         $catalogo->shouldReceive('fecharOrcamento')->andReturnNull();
@@ -404,6 +408,7 @@ class StreamDiretoTest extends TestCase
         // O stream direto roda primeiro, antes da segunda fase da cascata, então a
         // lista de termos dele nasce do traduzido mais o original.
         $catalogo->shouldReceive('ptBrSuficiente')->andReturnFalse();
+        $catalogo->shouldReceive('buscarPorIdentificador')->andReturn([]);
         $catalogo->shouldReceive('buscarFallbackDireto')
             ->once()
             ->andReturnUsing(function (array $titulos) use (&$recebidos): array {
@@ -435,6 +440,7 @@ class StreamDiretoTest extends TestCase
 
         $catalogo = Mockery::mock(CatalogoProvedores::class);
         $catalogo->shouldReceive('buscar')->andReturn([]);
+        $catalogo->shouldReceive('buscarPorIdentificador')->andReturn([]);
         $catalogo->shouldReceive('buscarFallbackDireto')
             ->once()
             ->andReturnUsing(function (array $titulos) use (&$recebidos): array {

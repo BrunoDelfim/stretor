@@ -27,8 +27,8 @@ use Illuminate\Support\Facades\Log;
 class ProvedorTorrentio implements ProvedorTorrents
 {
     use ConsultaComOrcamento;
-    use NormalizaFonte;
     use LeituraStreamStremio;
+    use NormalizaFonte;
 
     public function __construct(
         private readonly OrcamentoBusca $orcamento,
@@ -151,7 +151,7 @@ class ProvedorTorrentio implements ProvedorTorrents
             }
         }
 
-        return array_values($fontes);
+        return $this->sondarDiretas($fontes);
     }
 
     /**

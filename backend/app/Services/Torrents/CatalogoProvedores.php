@@ -5,7 +5,6 @@ namespace App\Services\Torrents;
 use App\Contracts\ProvedorPorLote;
 use App\Contracts\ProvedorTorrents;
 use App\Enums\IdiomaFonte;
-use App\Services\Torrents\TermosBusca;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
@@ -47,7 +46,7 @@ class CatalogoProvedores
      * mudança de comportamento de um provedor para a reconsulta valer já na
      * próxima busca, sem depender de limpar o Redis à mão.
      */
-    private const VERSAO_CACHE = 13;
+    private const VERSAO_CACHE = 14;
 
     /**
      * Provedores do primeiro degrau que buscam **por nome**.
@@ -217,7 +216,7 @@ class CatalogoProvedores
      * @param  array<int, string>  $titulos  Títulos candidatos, em ordem de
      *                                       preferência (traduzido e original)
      * @param  int|null  $temporada  Temporada do episódio, quando a busca é de série
-     * @param  int|null  $episodio   Episódio procurado, quando a busca é de série
+     * @param  int|null  $episodio  Episódio procurado, quando a busca é de série
      * @return array<int, array<string, mixed>>
      */
     public function buscar(
@@ -247,27 +246,12 @@ class CatalogoProvedores
          * entrega o que já recolheu — em vez de estourar o tempo do frontend e
          * não entregar nada.
          *
-         * O relógio é compartilhado com o [`ClienteHttp`] (mesmo singleton), para
-         * que o socorro pelo FlareSolverr também encolha junto com o prazo.
-         *
-         * O canal é fixado em `torrents` antes de abrir: a cascata roda depois do
-         * stream direto, na mesma busca, e sem esta fixação ela leria o prazo do
-         * canal errado — o do stream direto, dimensionado para o FlareSolverr.
+         * A abertura vive em [`abrirOrcamento()`] porque os provedores por
+         * identificador podem ser consultados **antes** da cascata (ver
+         * [`buscarPorIdentificador()`]); nos dois caminhos o relógio precisa ser
+         * o mesmo, e o `abrirSeFechado()` garante que ele não reinicie.
          */
-        $this->orcamento->usarCanal(OrcamentoBusca::CANAL_PADRAO);
-
-        $this->orcamentoAbertoAqui = $this->orcamento->abrirSeFechado(
-            (int) config('services.torrents.orcamento_busca', 45),
-            OrcamentoBusca::CANAL_PADRAO
-        );
-        $this->avisouPrazo = false;
-
-        /*
-         * Provedores que aceitam vários termos numa rodada são consultados uma
-         * única vez, com o degrau inteiro, e depois saem do laço. Sem isto, o
-         * Knaben pagava um POST por termo e a soma dominava a espera.
-         */
-        $this->loteConsumido = [];
+        $this->abrirOrcamento();
 
         /*
          * O primeiro termo é a rodada de abertura, e ela é especial: nela os
@@ -469,6 +453,64 @@ class CatalogoProvedores
     }
 
     /**
+     * Consulta apenas os provedores por identificador (Torrentio e addons
+     * Stremio), antes de qualquer outro canal.
+     *
+     * Eles respondem pelo `imdb_id` — o Torrentio e os addons do protocolo
+     * Stremio devolvem a lista pronta em segundos, sem raspar página e sem
+     * malha para descobrir —, e por isso são a fonte mais barata da busca. O
+     * [`TorrentService`] usa esta chamada para decidir se vale acionar o
+     * scraper web: quando a resposta já tem fonte PT-BR, o canal direto (que
+     * paga duas páginas por episódio) nem é aberto.
+     *
+     * A consulta é a **mesma** da rodada de abertura da cascata, com o mesmo
+     * gate e a mesma marcação de `pt_br`. O cache por provedor faz o caminho
+     * "não achou" sair barato: quando a cascata entra logo depois, ela relê o
+     * mesmo resultado do Redis em vez de perguntar de novo.
+     *
+     * A lista devolvida não passa por `ordenar()` — quem ordena é o chamador,
+     * junto do resto da montagem final.
+     *
+     * @param  array<int, string>  $titulos
+     * @return array<int, array<string, mixed>>
+     */
+    public function buscarPorIdentificador(
+        array $titulos,
+        ?int $ano,
+        ?string $imdbId,
+        ?int $temporada = null,
+        ?int $episodio = null,
+    ): array {
+        $titulo = trim((string) ($titulos[0] ?? ''));
+
+        if ($titulo === '') {
+            return [];
+        }
+
+        $this->inspecoes = 0;
+        $this->packsInspecionados = [];
+        $this->reiniciarCenso();
+        $this->abrirOrcamento();
+
+        if ($this->orcamentoEsgotado()) {
+            return [];
+        }
+
+        $fontes = $this->buscarGrupo(
+            $this->porIdentificador,
+            $titulo,
+            $ano,
+            $imdbId,
+            $temporada,
+            $episodio
+        );
+
+        $this->registrarEtapa('nativos', $titulo, $fontes);
+
+        return $fontes;
+    }
+
+    /**
      * Aciona o provedor de stream direto e devolve o que ele achar.
      *
      * É o **primeiro** método de indexação da busca, e ele não mora dentro da
@@ -657,6 +699,38 @@ class CatalogoProvedores
     private function orcamentoEsgotado(): bool
     {
         return $this->orcamento->esgotado();
+    }
+
+    /**
+     * Abre o relógio da cascata, uma vez por busca.
+     *
+     * O orçamento é um singleton compartilhado com o [`ClienteHttp`] (para o
+     * socorro pelo FlareSolverr encolher junto com o prazo) e com o stream
+     * direto (que tem o canal próprio). O `abrirSeFechado()` é idempotente: a
+     * segunda chamada — a cascata depois da consulta por identificador, por
+     * exemplo — não reinicia o relógio, só confirma que ele está de pé.
+     *
+     * O canal é fixado em `torrents` **antes** de abrir. A cascata pode rodar
+     * depois do stream direto na mesma busca; sem a fixação, ela leria o prazo
+     * do canal errado — o do direto, dimensionado para o FlareSolverr.
+     */
+    private function abrirOrcamento(): void
+    {
+        $this->orcamento->usarCanal(OrcamentoBusca::CANAL_PADRAO);
+
+        $this->orcamentoAbertoAqui = $this->orcamento->abrirSeFechado(
+            (int) config('services.torrents.orcamento_busca', 45),
+            OrcamentoBusca::CANAL_PADRAO
+        );
+
+        $this->avisouPrazo = false;
+
+        /*
+         * Provedores que aceitam vários termos numa rodada são consultados uma
+         * única vez, com o degrau inteiro, e depois saem do laço. Sem isto, o
+         * Knaben pagava um POST por termo e a soma dominava a espera.
+         */
+        $this->loteConsumido = [];
     }
 
     /**

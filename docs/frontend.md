@@ -134,25 +134,28 @@ O botão "Assistir" abre o componente
 em tela cheia que conduz todo o fluxo de reprodução. Ele passa por quatro
 estados visíveis:
 
-1. **Procurando** — busca as fontes de torrent no backend.
-2. **Tentando** — percorre as fontes em ordem ("tentando fonte 2 de 7"), já que
+1. **Procurando** — busca as fontes no backend (identificadores primeiro,
+   scraper web depois).
+2. **Tentando** — percorre as fontes em ordem ("Fonte 2 de 7"), já que
    dificilmente o filme terá fonte dublada logo na primeira tentativa.
 3. **Preparando** — a fonte conectou e o vídeo está sendo convertido; a mensagem
    acompanha o momento (conectando, convertendo o áudio, convertendo o vídeo).
 4. **Reproduzindo** — a playlist está pronta e o player é liberado.
 
-Quando nenhuma fonte sobra, o overlay entra em **erro** com a explicação do que
-houve. A falha de caminho, porém, não chega mais até aí: o laço de fontes insiste
-na **mesma** fonte até `TENTATIVAS_FONTE_REDE` vezes quando o motivo é `rede` — o
-nome não resolveu naquele instante, a conversão caiu na abertura, o CDN recusou por
-um momento. Cada volta é uma sessão nova no media-service, com conexão e resolução
-de nome novas, e o overlay anuncia a insistência na própria mensagem ("A fonte não
-respondeu. Tentando de novo (2 de 3)..."). Antes disso, a única saída era fechar e
-reabrir o episódio — e era exatamente o que o usuário fazia para o vídeo tocar na
-segunda vez. O placar de motivos ganhou o rótulo `rede` (do `motivo=rede` que o
-media-service devolve), com mensagem própria porque a conclusão do usuário é
-outra: não é o lançamento que não tem fonte, é o caminho até ela que falhou
-naquele momento.
+O overlay **não anuncia a falha de cada fonte**. A queda de uma candidata é
+silenciosa: o laço segue para a próxima e a tela continua em "procurando". Quando
+a lista inteira falha, a busca é repetida em até `MAX_RODADAS_DE_BUSCA` rodadas
+(com `ESPERA_ENTRE_RODADAS_MS` entre elas), sempre na mesma tela — o ganho está
+nas falhas transitórias (CDN que pisca, conversão que cai na abertura), que antes
+exigiam fechar e reabrir o episódio. Cada fonte ainda é insistida até
+`TENTATIVAS_FONTE_REDE` vezes quando o motivo é `rede`, mas isso também acontece
+sem texto de erro na tela.
+
+Só depois de esgotar as rodadas o overlay entra em **erro**, com a explicação do
+que houve (`mensagemDeFalha`). O placar de motivos ganhou o rótulo `rede` (do
+`motivo=rede` que o media-service devolve), com mensagem própria porque a
+conclusão do usuário é outra: não é o lançamento que não tem fonte, é o caminho
+até ela que falhou naquele momento.
 
 O player é o **Plyr**, que recebe apenas uma fonte HLS válida
 (`application/x-mpegURL`). Onde o navegador não toca HLS nativamente

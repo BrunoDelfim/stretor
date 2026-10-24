@@ -627,6 +627,18 @@ return [
         'stream_direto_vod_hosts' => $lista(env('TORRENTS_STREAM_DIRETO_VOD_HOSTS'), []),
 
         /*
+         * Provedores por identificador (Torrentio e addons Stremio) na frente da
+         * busca.
+         *
+         * Eles respondem pelo `imdb_id` em segundos e não dependem de raspar
+         * página. Ligado, a busca pergunta a eles **antes** do stream direto:
+         * quando a resposta já traz fonte PT-BR provada, o scraper web (duas
+         * páginas por episódio) e a cascata nem rodam. Desligado, a ordem antiga
+         * volta, com o canal direto na frente.
+         */
+        'identificadores_primeiro' => (bool) env('TORRENTS_IDENTIFICADORES_PRIMEIRO', true),
+
+        /*
          * Bypass do cache de consultas aos provedores. Com isto ligado, a busca
          * ignora a **leitura** do cache e reconsulta o provedor; o resultado novo
          * é gravado por cima, então as chamadas seguintes já veem o valor fresco.

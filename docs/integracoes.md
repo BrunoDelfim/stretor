@@ -363,6 +363,39 @@ A correção tem duas camadas, porque uma só não fecha o buraco:
      brasileiro e 5/5 títulos da amostragem têm faixa `por`). Torrent, agregador
      e embed continuam sob a prova do ffprobe.
 
+#### Stream com `url`: o arquivo pronto do addon
+
+O protocolo Stremio tem dois tipos de stream. O primeiro é o torrent, com
+`infoHash`; o segundo é o **arquivo pronto**, com `url`. Até então só o primeiro
+era lido: a
+[`normalizarStream()`](../backend/app/Services/Torrents/LeituraStreamStremio.php:28)
+devolvia `null` quando não havia hash, e o link de vídeo que o addon entregou era
+descartado antes de chegar ao player. É o mesmo formato que o contrato da fonte
+direta aceita (`.mp4`/`.m3u8`), e o caminho que não depende de malha nem de conta
+paga.
+
+A leitura vive em
+[`normalizarStreamDireto()`](../backend/app/Services/Torrents/LeituraStreamStremio.php:142):
+a extensão é lida **do caminho** — um `.mp4` com `?token=...` continua sendo
+arquivo —, o título vem do `behaviorHints.filename` ou do rótulo, e o idioma
+segue a mesma classificação do torrent. Isso importa porque o corte
+`somente_pt_br_ou_legendado` só deixa passar dublado/dual: um link direto sem
+prova de idioma cairia na reserva e seria descartado na montagem.
+
+O que **não** vira fonte: link sem extensão de vídeo. Redirecionador de embed,
+proxy do addon e entrega de serviço pago (`real-debrid.com/d/...`,
+`/resolve/...`) são recusados por
+[`urlDeVideo()`](../backend/app/Services/Torrents/LeituraStreamStremio.php:194),
+porque o `prepararSessaoDireta()` do media-service exige uma extensão conhecida —
+aceitá-los aqui só produziria uma sessão que morre na primeira checagem. O
+Stretor não depende de serviço pago para entregar conteúdo.
+
+Os links diretos que entram passam pela sonda de arquivo antes do cache
+([`sondarDiretas()`](../backend/app/Services/Torrents/LeituraStreamStremio.php:354)),
+no máximo três por consulta: o addon costuma repetir o mesmo arquivo em vários
+mirrors, e sondar todos gastaria o orçamento da cascata com o que o player
+resolveria em uma tentativa.
+
 #### Os trackers PT-BR nativos saem do ar com frequência — e hoje não sobrou nenhum
 
 Vale registrar o diagnóstico que motivou a mudança acima: os dois trackers
@@ -2740,10 +2773,16 @@ o ressuscita. O **stream direto** cobre esse cenário — o equivalente ao
 comportamento de apps como Lumigo/Stremio, que buscam um link de vídeo pronto
 (MP4 ou HLS) em vez de uma malha P2P.
 
-Hoje ele é um **método de indexação**, e o **primeiro** deles: abre a busca e,
-quando acha, a encerra. A cascata de torrents só roda se o stream direto voltar
-vazio — perguntar aos trackers depois de ter uma URL que toca na hora só atrasaria
-a exibição, que é justamente o que o método existe para evitar.
+Hoje ele é um **método de indexação**, mas já não é o primeiro a ser perguntado.
+Os provedores por identificador — Torrentio e addons Stremio — respondem pelo
+`imdb_id` em segundos, sem raspar página, e por isso abrem a busca
+(`TORRENTS_IDENTIFICADORES_PRIMEIRO`, ligado por padrão). Quando a resposta já
+traz fonte PT-BR provada, o stream direto e a cascata de torrents nem rodam:
+abrir duas páginas por episódio para achar o que o addon já entregou seria gastar
+o orçamento com o que o usuário não espera. Quando não traz — ou traz só idioma
+não provado —, o fluxo antigo continua: o stream direto pergunta ao acervo web e,
+se ele voltar vazio, a cascata entra. Em qualquer caminho, o primeiro método que
+**entrega** responde pela busca.
 
 #### O provedor direto é um método, não um degrau da cascata
 
@@ -3465,6 +3504,31 @@ como se não existisse, deixando a cascata correr. A sonda é propositalmente
 descartar uma fonte boa é maior do que o de deixar passar uma morta — essa o
 FFmpeg corrige adiante. A chave `stream_direto_sondar_url` desliga a conferência
 sem desligar o passo zero.
+
+**A conta expirada: o `403` que o cabeçalho não explica.** A sonda de cabeçalho
+tinha um ponto cego que apareceu no acervo inteiro: o `nixplay.lat` (o CDN deste
+provedor) passou a responder `403` com o corpo `Conta expirada.` para todo
+título, porque a conta que assina as URLs venceu. O `HEAD` devolve `403` **sem
+corpo** — indistinguível do anti-hotlink, que recusa o método mas serve o arquivo
+—, e o `403` estava de fora da lista de mortos justamente para não perder a fonte
+boa. O resultado: o passo zero aceitava o link, a busca dispensava a cascata e
+todo título do acervo recebia o mesmo endereço morto.
+
+A correção separa os dois casos **pelo corpo**, sem transformar a sonda em um
+download. Quando o cabeçalho devolve `403`, `405` ou `500`,
+[`ClienteHttp::arquivoServido()`](../backend/app/Services/Torrents/ClienteHttp.php:508)
+faz um `GET` com `Range` e `stream` e lê só o primeiro kilobyte
+([`amostrarArquivo()`](../backend/app/Services/Torrents/ClienteHttp.php:360)). Se
+o `Content-Type` é de vídeo, ou os bytes começam com `ftyp`/`#EXTM3U`/`ID3`, a
+fonte está viva; se o texto traz uma marca de conta sem acesso (`conta expirada`,
+`credenciais inválidas`, `account expired`, entre outras), a URL é recusada e a
+cascata volta a ser consultada. O `stream` não é detalhe: um CDN que ignore o
+`Range` devolveria o MP4 inteiro, e um `GET` comum o bufferizaria na memória do
+backend.
+
+A mesma régua vale para os addons Stremio que devolvem `url` (veja *Stream com
+`url`*), e a chave `stream_direto_sondar_url` desliga as duas sem desligar o
+passo zero.
 
 **O muro do CDN: o `403` sem `User-Agent`.** Resolvida a URL, faltava a segunda
 metade — o media-service conseguir *lê-la*. O CDN do provedor recusa quem não se

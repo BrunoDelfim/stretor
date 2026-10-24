@@ -56,8 +56,7 @@ class ClienteHttp
          * em nada quando o host da requisição não está na lista de portões.
          */
         private readonly ?PasseCloudflare $passe = null,
-    ) {
-    }
+    ) {}
 
     /**
      * O serviço do passe, resolvido pelo container quando não foi injetado.
@@ -157,7 +156,7 @@ class ClienteHttp
     /**
      * Faz um GET, tentando direto e caindo para o FlareSolverr em caso de bloqueio.
      *
-     * @param  array<string, mixed>  $consulta   Parâmetros de query string
+     * @param  array<string, mixed>  $consulta  Parâmetros de query string
      * @param  array<string, string>  $cabecalhos  Cabeçalhos extras (ex.: a chave da API do Brave)
      */
     public function get(
@@ -330,6 +329,310 @@ class ClienteHttp
 
             return null;
         }
+    }
+
+    /**
+     * Lê o começo do arquivo, com o cabeçalho junto, para conferir o que o CDN
+     * está servindo de fato.
+     *
+     * O `HEAD` da sonda acima resolve a maioria dos casos, mas tem um ponto cego
+     * que só o corpo denuncia: o CDN que responde `403` para **todo** acesso do
+     * arquivo, com uma mensagem de texto no lugar do vídeo. A conta do provedor
+     * expirou e o endereço continua lá, "vivo" pelo cabeçalho — foi assim que o
+     * `nixplay.lat` entregou `Conta expirada.` para o player com a busca
+     * dispensando a cascata. Só o corpo separa um `403` de anti-hotlink (a fonte
+     * está boa, falta cabeçalho) de um `403` de conta sem acesso (a fonte morreu).
+     *
+     * A leitura é **parcial e em streaming** pelo mesmo motivo de segurança:
+     * um CDN que ignore o `Range` devolveria o MP4 inteiro, e um `GET` comum do
+     * Laravel bufferizaria tudo na memória do backend. Com `stream`, o Guzzle
+     * entrega um fluxo e nós lemos só os primeiros bytes, fechando a conexão em
+     * seguida. O `Range` continua sendo enviado porque, quando respeitado, evita
+     * até o começo do download.
+     *
+     * Como a sonda de cabeçalho, esta não passa pelo FlareSolverr e não tem
+     * passe: o alvo é um CDN de arquivo, não um site com desafio.
+     *
+     * @return array{status: int, tipo: string, corpo: string}|null `null` quando a
+     *                                                              leitura não pôde ser feita (sem orçamento, conexão que não completou)
+     */
+    public function amostrarArquivo(string $url, int $bytes = 1024, ?int $timeout = null): ?array
+    {
+        $bytes = max(64, $bytes);
+
+        $timeout = $this->tempoDisponivel($timeout ?? 5);
+
+        if ($timeout <= 0) {
+            return null;
+        }
+
+        try {
+            $resposta = $this->requisicao(null, $timeout)
+                ->withHeaders(['Range' => 'bytes=0-'.($bytes - 1)])
+                ->withOptions(['stream' => true])
+                ->get($url);
+        } catch (\Throwable $excecao) {
+            Log::debug('Cliente HTTP: leitura do arquivo não completou.', [
+                'url' => $url,
+                'erro' => $excecao->getMessage(),
+            ]);
+
+            return null;
+        }
+
+        /*
+         * A leitura é defensiva: um fluxo que já nasceu fechado ou que falha no
+         * primeiro `read()` não pode derrubar a busca. Nesse caso a amostra sai
+         * vazia, e quem classifica trata vazio como "não sei" — a mesma postura
+         * da sonda de cabeçalho.
+         */
+        $corpo = '';
+
+        try {
+            $fluxo = $resposta->toPsrResponse()->getBody();
+
+            if ($fluxo->isReadable()) {
+                $corpo = (string) $fluxo->read($bytes);
+            }
+
+            $fluxo->close();
+        } catch (\Throwable $excecao) {
+            Log::debug('Cliente HTTP: amostra do arquivo ilegível.', [
+                'url' => $url,
+                'erro' => $excecao->getMessage(),
+            ]);
+        }
+
+        return [
+            'status' => $resposta->status(),
+            'tipo' => strtolower(trim((string) $resposta->header('Content-Type'))),
+            'corpo' => $corpo,
+        ];
+    }
+
+    /**
+     * Status que significam "não há arquivo servido atrás desta URL".
+     *
+     * O `404`/`410` são definitivos: o servidor diz que o caminho não existe.
+     * O `503` entra porque é o que o CDN do provedor devolve quando a origem
+     * atrás dele está fora — e ele, diferente dos outros, muda de ideia, por isso
+     * leva uma segunda leitura antes de condenar (ver [`arquivoServido()`]).
+     *
+     * @var array<int, int>
+     */
+    private const STATUS_DE_ARQUIVO_MORTO = [404, 410, 503];
+
+    /**
+     * Status que o cabeçalho não decide, e por isso levam uma leitura do corpo.
+     *
+     * São as recusas ambíguas: o `403` do anti-hotlink (a URL está boa, falta o
+     * `Referer`) e o `403` da conta sem acesso (a URL está morta) chegam iguais
+     * no cabeçalho. O `405` é o CDN que não aceita `HEAD`, e o `500` é a origem
+     * que tropeça — nos dois casos o `GET` pode servir o arquivo.
+     *
+     * @var array<int, int>
+     */
+    private const STATUS_SUSPEITOS = [403, 405, 500];
+
+    /**
+     * Frases que o CDN escreve no lugar do vídeo quando a conta do provedor não
+     * tem mais acesso.
+     *
+     * O `nixplay.lat` devolve `Conta expirada.` em texto puro com status `403`
+     * para todo o acervo; a mesma rota com a credencial trocada devolve
+     * `Credenciais inválidas.`. Nenhuma das duas é o arquivo, e entregar a URL
+     * ao player só trocava o momento da falha: o media-service reclamava depois,
+     * na conversão, e a cascata nunca era consultada.
+     *
+     * As frases saem normalizadas (minúsculas e sem acento) na comparação, e a
+     * lista é curta de propósito: só o que afirma, de forma explícita, que o
+     * acesso é da **conta** — status de arquivo continua sendo assunto do
+     * cabeçalho.
+     *
+     * @var array<int, string>
+     */
+    private const MARCAS_DE_CONTA_SEM_ACESSO = [
+        'conta expirada',
+        'conta suspensa',
+        'conta bloqueada',
+        'conta desativada',
+        'conta cancelada',
+        'assinatura expirada',
+        'plano expirado',
+        'plano vencido',
+        'credenciais invalidas',
+        'invalid credentials',
+        'account expired',
+        'account suspended',
+        'expired account',
+        'subscription expired',
+    ];
+
+    /**
+     * Teto da leitura do corpo, em bytes.
+     *
+     * A mensagem de conta sem acesso vem nos primeiros bytes, e o cabeçalho de
+     * um MP4 (`ftyp`) também. Um kilobyte cobre os dois casos e mantém a leitura
+     * no custo de um round-trip.
+     */
+    private const AMOSTRA_DA_SONDA = 1024;
+
+    /** Espera antes da segunda leitura de um `503`, em microssegundos. */
+    private const PAUSA_NO_503_MICROSSEGUNDOS = 400000;
+
+    /**
+     * Confere se há mesmo um arquivo servido atrás da URL — e não uma página de
+     * recusa.
+     *
+     * É a política da sonda num lugar só, porque duas famílias de fonte precisam
+     * dela: o provedor endereçável por id (a URL que o espelho devolve) e os
+     * addons Stremio (o `url` que eles devolvem). As duas chegam com o mesmo
+     * problema — uma URL de `.mp4`/`.m3u8` que pode estar morta — e merecem a
+     * mesma régua.
+     *
+     * O caminho é: cabeçalho primeiro, corpo só quando o cabeçalho não decide.
+     * Um `HEAD` que devolve vídeo encerra a conferência; um `403`/`405`/`500`
+     * ambíguo pede a leitura de [`amostrarArquivo()`] para separar anti-hotlink
+     * de conta sem acesso.
+     *
+     * A postura continua **tímida**: só condena com prova. Qualquer desfecho
+     * que não seja a marca explícita de conta sem acesso (ou o `404`/`410`)
+     * vale como fonte viva, porque o custo de derrubar uma fonte boa é maior
+     * que o de deixar o FFmpeg reclamar adiante.
+     *
+     * Desligada por `stream_direto_sondar_url`, devolve `true` de cara — é o
+     * comportamento de antes da sonda, para poder desligá-la sem desligar o
+     * resto.
+     */
+    public function arquivoServido(string $url, ?int $timeout = null): bool
+    {
+        if (! (bool) config('services.torrents.stream_direto_sondar_url', true)) {
+            return true;
+        }
+
+        $timeout ??= 5;
+
+        $status = $this->sondarArquivo($url, $timeout);
+
+        if ($status === 503 && $this->orcamentoDisponivel()) {
+            usleep(self::PAUSA_NO_503_MICROSSEGUNDOS);
+
+            $status = $this->sondarArquivo($url, $timeout);
+        }
+
+        if ($status !== null && in_array($status, self::STATUS_DE_ARQUIVO_MORTO, true)) {
+            Log::debug('Sonda de arquivo: o cabeçalho confirmou que o arquivo não existe.', [
+                'url' => $url,
+                'status' => $status,
+            ]);
+
+            return false;
+        }
+
+        if ($status === null || ! in_array($status, self::STATUS_SUSPEITOS, true)) {
+            return true;
+        }
+
+        $amostra = $this->amostrarArquivo($url, self::AMOSTRA_DA_SONDA, $timeout);
+
+        if ($amostra === null) {
+            return true;
+        }
+
+        if (in_array($amostra['status'], self::STATUS_DE_ARQUIVO_MORTO, true)) {
+            Log::debug('Sonda de arquivo: a leitura confirmou que o arquivo não existe.', [
+                'url' => $url,
+                'status' => $amostra['status'],
+            ]);
+
+            return false;
+        }
+
+        if ($this->pareceVideo($amostra)) {
+            return true;
+        }
+
+        if ($this->contaSemAcesso($amostra['corpo'])) {
+            Log::warning('Sonda de arquivo: a fonte respondeu conta sem acesso; ela é descartada.', [
+                'url' => $url,
+                'status' => $amostra['status'],
+                'tipo' => $amostra['tipo'],
+                'amostra' => mb_substr(trim($amostra['corpo']), 0, 120),
+            ]);
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Diz se a amostra tem cara de arquivo de vídeo, e não de página de erro.
+     *
+     * São duas provas independentes: o `Content-Type` que o CDN declarou e a
+     * assinatura dos primeiros bytes. A segunda existe porque há CDN que serve
+     * MP4 como `application/octet-stream` — e um `#EXTM3U` de HLS como texto.
+     *
+     * @param  array{status: int, tipo: string, corpo: string}  $amostra
+     */
+    private function pareceVideo(array $amostra): bool
+    {
+        $tipo = $amostra['tipo'];
+
+        if (str_starts_with($tipo, 'video/')
+            || str_contains($tipo, 'mpegurl')
+            || str_contains($tipo, 'octet-stream')) {
+            return true;
+        }
+
+        $inicio = substr($amostra['corpo'], 0, 64);
+
+        // `ftyp` mora no offset 4 dos MP4/MOV (depois do tamanho da caixa).
+        return str_contains($inicio, 'ftyp')
+            || stripos($inicio, '#EXTM3U') === 0
+            || stripos($inicio, 'ID3') === 0;
+    }
+
+    /**
+     * Procura, no começo do corpo, uma das frases de conta sem acesso.
+     *
+     * A comparação é normalizada (minúsculas e sem acento) porque o CDN pode
+     * variar a grafia, e o recorte é curto porque a mensagem é curta — varrer o
+     * corpo inteiro só gastaria CPU com o que não é texto de erro.
+     */
+    private function contaSemAcesso(string $corpo): bool
+    {
+        if (trim($corpo) === '') {
+            return false;
+        }
+
+        $texto = mb_strtolower(mb_substr($corpo, 0, 2048));
+
+        $texto = strtr($texto, [
+            'á' => 'a', 'à' => 'a', 'â' => 'a', 'ã' => 'a',
+            'é' => 'e', 'ê' => 'e', 'í' => 'i',
+            'ó' => 'o', 'ô' => 'o', 'õ' => 'o',
+            'ú' => 'u', 'ü' => 'u', 'ç' => 'c',
+        ]);
+
+        foreach (self::MARCAS_DE_CONTA_SEM_ACESSO as $marca) {
+            if (str_contains($texto, $marca)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Diz se ainda há orçamento para uma segunda leitura.
+     *
+     * O `503` é o único status que oscila o suficiente para merecer releitura;
+     * quando o prazo da busca acabou, insistir só gastaria o que não existe.
+     */
+    private function orcamentoDisponivel(): bool
+    {
+        return ! $this->orcamento->esgotado();
     }
 
     /**

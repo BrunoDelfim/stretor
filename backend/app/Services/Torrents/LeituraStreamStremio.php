@@ -2,6 +2,8 @@
 
 namespace App\Services\Torrents;
 
+use Illuminate\Support\Facades\Log;
+
 /**
  * Leitura dos streams do protocolo Stremio.
  *
@@ -20,6 +22,27 @@ namespace App\Services\Torrents;
 trait LeituraStreamStremio
 {
     /**
+     * Extensões que o media-service aceita como fonte direta.
+     *
+     * É a mesma lista do [`ResolvedorVod::EXTENSOES`] e do `EXTENSOES_DIRETAS`
+     * do serviço de mídia. O `.mpd` fica de fora: o media-service o conhece, mas
+     * o caminho da fonte direta já o mediu como não tocável, e oferecer um link
+     * que morre na primeira checagem é pior que descartá-lo aqui.
+     *
+     * @var array<int, string>
+     */
+    private const EXTENSOES_DIRETAS = ['.mp4', '.m4v', '.webm', '.mkv', '.mov', '.m3u8'];
+
+    /**
+     * Quantos links diretos, por consulta, passam pela sonda de arquivo.
+     *
+     * O addon pode devolver vários mirrors do mesmo vídeo. O primeiro punhado já
+     * prova se a família de links está viva; sondar o resto gastaria o orçamento
+     * da busca com o que o player resolveria em uma tentativa.
+     */
+    private const MAX_SONDAS = 3;
+
+    /**
      * Converte um stream do addon no contrato do sistema.
      *
      * @param  array<string, mixed>  $stream
@@ -29,8 +52,20 @@ trait LeituraStreamStremio
     {
         $hash = strtolower(trim((string) ($stream['infoHash'] ?? '')));
 
+        /*
+         * Nem todo stream do protocolo é um torrent. O `url` é o campo que os
+         * addons usam para entregar **arquivo de vídeo pronto** — o `.mp4` ou o
+         * `.m3u8` de um CDN, sem passar por malha. É o formato que apps como o
+         * Stremio reproduzem direto, e o mesmo que o contrato da fonte direta
+         * aceita; por isso ele é lido aqui, e não descartado.
+         *
+         * O link pago fica de fora por construção: `real-debrid.com/d/...` e
+         * proxies do gênero não terminam numa extensão de vídeo e são recusados
+         * por [`urlDeVideo()`]. O Stretor não depende de serviço pago para
+         * entregar conteúdo.
+         */
         if ($hash === '') {
-            return null;
+            return $this->normalizarStreamDireto($stream, $titulo);
         }
 
         $rotulo = (string) ($stream['title'] ?? '');
@@ -95,6 +130,93 @@ trait LeituraStreamStremio
         }
 
         return $fonte;
+    }
+
+    /**
+     * Converte um stream com `url` numa fonte direta (MP4/HLS).
+     *
+     * O addon que devolve `url` está dizendo "toque este arquivo", e é o mesmo
+     * contrato que o stream direto usa: o player cria a sessão pela URL e o
+     * media-service converte para HLS. O que separa uma fonte útil de uma
+     * armadilha é a extensão — um embed, uma página de player ou um link de
+     * serviço pago não têm vídeo no fim e são recusados por [`urlDeVideo()`].
+     *
+     * O nome segue a mesma leitura do caminho de torrent: o arquivo
+     * (`behaviorHints.filename`) é o melhor título e o mais confiável para a
+     * numeração; o release vive na primeira linha do rótulo.
+     *
+     * @param  array<string, mixed>  $stream
+     * @return array<string, mixed>|null
+     */
+    protected function normalizarStreamDireto(array $stream, string $titulo): ?array
+    {
+        $url = $this->urlDeVideo((string) ($stream['url'] ?? ''));
+
+        if ($url === null) {
+            return null;
+        }
+
+        $rotulo = (string) ($stream['title'] ?? '');
+        $nomeDoStream = (string) ($stream['name'] ?? '');
+        $arquivo = (string) ($stream['behaviorHints']['filename'] ?? '');
+        $release = $this->nomeDoRotulo($rotulo, $nomeDoStream);
+
+        $nome = $this->limparTexto($arquivo ?: $release ?: $nomeDoStream ?: $titulo);
+
+        /*
+         * O idioma é lido do nome do arquivo **e** do release. Um episódio dentro
+         * de um pacote pode se chamar só "S01E01.mkv", com a tag ("Dublado",
+         * "DUAL") no nome do torrent — o mesmo motivo que justifica os dois nomes
+         * no caminho de torrent.
+         */
+        $textoIdioma = trim($nome.' '.$release);
+
+        $fonte = $this->montarFonteDireta([
+            'url' => $url,
+            'titulo' => $nome,
+            'tamanho_bytes' => $this->tamanhoDoRotulo($rotulo),
+            'idioma' => $this->idiomaDoNome($textoIdioma),
+            'idioma_titulo' => $textoIdioma,
+        ], $this->identificador(), $this->rotulo());
+
+        $release = $this->limparTexto($release);
+
+        if ($release !== '' && $release !== $nome) {
+            $fonte['release'] = $release;
+        }
+
+        return $fonte;
+    }
+
+    /**
+     * Valida a URL de vídeo do addon e devolve a forma canônica.
+     *
+     * A extensão é lida **do caminho**, não da URL inteira: um `.mp4` com
+     * `?token=...` na query continua sendo um arquivo, e olhar a URL completa
+     * faria o token esconder a extensão.
+     *
+     * Devolve `null` para o que não é arquivo de vídeo — página de embed,
+     * redirecionador, link de serviço de entrega paga. O serviço de mídia exige
+     * uma extensão em `EXTENSOES_DIRETAS`; aceitar o resto aqui só produziria uma
+     * sessão que morre na primeira checagem.
+     */
+    protected function urlDeVideo(string $url): ?string
+    {
+        $url = trim($url);
+
+        if ($url === '' || ! preg_match('#^https?://#i', $url)) {
+            return null;
+        }
+
+        $caminho = strtolower((string) parse_url($url, PHP_URL_PATH));
+
+        foreach (self::EXTENSOES_DIRETAS as $extensao) {
+            if (str_ends_with($caminho, $extensao)) {
+                return $url;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -216,5 +338,60 @@ trait LeituraStreamStremio
         }
 
         return '';
+    }
+
+    /**
+     * Passa os links diretos pela sonda de arquivo antes de virarem oferta.
+     *
+     * O link de addon é a fonte mais volátil que o sistema recebe: um CDN
+     * gratuito pode sumir, trocar de conta ou passar a responder uma página de
+     * erro com status enganoso. É também a mais barata de conferir — um `HEAD` e,
+     * quando o cabeçalho não decide, um kilobyte de corpo. Por isso a peneira
+     * roda aqui, antes do cache: o link morto não é gravado e não chega ao
+     * player.
+     *
+     * O teto de [`MAX_SONDAS`] existe para o addon que devolve dezenas de
+     * mirrors do mesmo arquivo: sondar todos gastaria o orçamento da cascata com
+     * o que o player resolveria em uma tentativa. O excedente passa intacto, e
+     * o frontend o trata como sempre — tentar e seguir adiante.
+     *
+     * Desligada por `stream_direto_sondar_url`, a lista volta como veio.
+     *
+     * @param  array<array-key, array<string, mixed>>  $fontes
+     * @return array<int, array<string, mixed>>
+     */
+    protected function sondarDiretas(array $fontes): array
+    {
+        if (! (bool) config('services.torrents.stream_direto_sondar_url', true)) {
+            return array_values($fontes);
+        }
+
+        $sondadas = 0;
+        $mantidas = [];
+
+        foreach ($fontes as $chave => $fonte) {
+            if (($fonte['tipo'] ?? '') !== 'direto' || $sondadas >= self::MAX_SONDAS) {
+                $mantidas[$chave] = $fonte;
+
+                continue;
+            }
+
+            $sondadas++;
+
+            $url = (string) ($fonte['stream'] ?? '');
+
+            if ($url === '' || ! app(ClienteHttp::class)->arquivoServido($url)) {
+                Log::info('Addon Stremio: link direto descartado pela sonda.', [
+                    'provedor' => $this->identificador(),
+                    'url' => $url,
+                ]);
+
+                continue;
+            }
+
+            $mantidas[$chave] = $fonte;
+        }
+
+        return array_values($mantidas);
     }
 }

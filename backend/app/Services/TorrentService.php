@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Enums\IdiomaFonte;
 use App\Enums\TipoMidia;
 use App\Services\Torrents\BuscaLegendas;
 use App\Services\Torrents\CatalogoProvedores;
@@ -10,7 +11,6 @@ use App\Services\Torrents\PalavrasChave;
 use App\Services\Torrents\TermosBusca;
 use App\Services\Torrents\TesteDeFontes;
 use App\Support\MensagensTorrent;
-use App\Enums\IdiomaFonte;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -93,8 +93,7 @@ class TorrentService
          * título volta na frente da fila.
          */
         private readonly ?FontesReproduzidas $reproduzidas = null,
-    ) {
-    }
+    ) {}
 
     /**
      * Fontes disponíveis para um título, já ordenadas por prioridade.
@@ -160,43 +159,72 @@ class TorrentService
         // Guardamos TODAS as fontes diretas (inclusive as de idioma original):
         // as PT-BR respondem pela busca; as demais viram matéria-prima do
         // fallback legendado, quando nenhum provedor tiver áudio em português.
-        $todasDiretas = $this->buscarPeloStreamDireto($titulo, $ano, $imdbId, $tituloOriginal, $temporada, $episodio, $tmdbId, $titulos);
+        $todasDiretas = [];
 
         /*
-         * O corte de idioma roda **na busca**, e não só na montagem final.
+         * Os provedores por identificador abrem a busca, quando a promoção está
+         * ligada.
          *
-         * A lista direta não passa por `ordenar()` — ela substitui o resultado
-         * antes disso —, então sem esta barreira uma fonte direta de idioma não
-         * declarado (o `original` que a página não etiquetou) entrava como
-         * resposta, dispensava a cascata e mandava para o player um áudio que o
-         * usuário não pediu. O idioma só aparecia como problema na preparação da
-         * exibição, quando o estrago já estava feito: a cascata de torrents nunca
-         * era ouvida naquele título.
-         *
-         * Com o filtro aqui, o critério é o mesmo da cascata — só áudio PT-BR
-         * provado (dublado ou dual) responde pela busca. Uma fonte direta sem
-         * PT-BR declarado é descartada, e a busca segue para o próximo provedor,
-         * exatamente como se o direto tivesse voltado vazio. É o que permite ao
-         * fallback de torrents achar o dublado que o acervo web não tinha.
+         * Eles respondem pelo `imdb_id` em segundos, sem raspar página, e são a
+         * fonte mais barata que existe. Antes, o scraper web vinha primeiro e,
+         * quando ele voltava vazio, a cascata só era ouvida depois de gastar o
+         * orçamento do canal direto; com a promoção, o addon tem a primeira
+         * chance e o scraper fica como o socorro do que ele não tem. Se a
+         * resposta tiver fonte PT-BR provada, os dois canais caros nem abrem.
          */
-        $diretas = array_values(array_filter(
-            $todasDiretas,
+        $porIdentificador = $this->buscarPelosIdentificadores($titulo, $ano, $imdbId, $temporada, $episodio);
+
+        $porIdentificador = array_values(array_filter(
+            $porIdentificador,
             fn (array $fonte): bool => $this->ePtBr($fonte)
         ));
 
-        /*
-         * Com a fonte direta em PT-BR na mão, a cascata é dispensada — e o censo
-         * dos provedores de torrent é zerado junto, pela mesma razão que o
-         * relatório existe: sem isso ele mostraria os números e as fontes da
-         * busca anterior como se fossem desta, e a cobertura diria que os
-         * trackers entregaram o que foi, na verdade, achado no acervo web.
-         */
-        if ($diretas !== []) {
-            $this->catalogo->dispensarCascata();
+        if ($porIdentificador !== []) {
+            $titulos = array_values(array_filter(
+                [$titulo, trim((string) $tituloOriginal)],
+                fn (string $termo): bool => $termo !== ''
+            ));
 
-            $fontes = $diretas;
+            $fontes = $this->ordenar($porIdentificador, $temporada, $episodio, $titulo, $tituloOriginal);
         } else {
-            $fontes = $this->buscarPelosTorrents($titulo, $ano, $imdbId, $tituloOriginal, $temporada, $episodio, $episodioDeSerie, $titulos);
+            $todasDiretas = $this->buscarPeloStreamDireto($titulo, $ano, $imdbId, $tituloOriginal, $temporada, $episodio, $tmdbId, $titulos);
+
+            /*
+             * O corte de idioma roda **na busca**, e não só na montagem final.
+             *
+             * A lista direta não passa por `ordenar()` — ela substitui o resultado
+             * antes disso —, então sem esta barreira uma fonte direta de idioma não
+             * declarado (o `original` que a página não etiquetou) entrava como
+             * resposta, dispensava a cascata e mandava para o player um áudio que o
+             * usuário não pediu. O idioma só aparecia como problema na preparação da
+             * exibição, quando o estrago já estava feito: a cascata de torrents nunca
+             * era ouvida naquele título.
+             *
+             * Com o filtro aqui, o critério é o mesmo da cascata — só áudio PT-BR
+             * provado (dublado ou dual) responde pela busca. Uma fonte direta sem
+             * PT-BR declarado é descartada, e a busca segue para o próximo provedor,
+             * exatamente como se o direto tivesse voltado vazio. É o que permite ao
+             * fallback de torrents achar o dublado que o acervo web não tinha.
+             */
+            $diretas = array_values(array_filter(
+                $todasDiretas,
+                fn (array $fonte): bool => $this->ePtBr($fonte)
+            ));
+
+            /*
+             * Com a fonte direta em PT-BR na mão, a cascata é dispensada — e o censo
+             * dos provedores de torrent é zerado junto, pela mesma razão que o
+             * relatório existe: sem isso ele mostraria os números e as fontes da
+             * busca anterior como se fossem desta, e a cobertura diria que os
+             * trackers entregaram o que foi, na verdade, achado no acervo web.
+             */
+            if ($diretas !== []) {
+                $this->catalogo->dispensarCascata();
+
+                $fontes = $diretas;
+            } else {
+                $fontes = $this->buscarPelosTorrents($titulo, $ano, $imdbId, $tituloOriginal, $temporada, $episodio, $episodioDeSerie, $titulos);
+            }
         }
 
         /*
@@ -326,6 +354,51 @@ class TorrentService
         }
 
         return $this->ordenar($fontes, $temporada, $episodio, $titulo, $tituloOriginal);
+    }
+
+    /**
+     * Consulta os provedores por identificador antes do scraper web.
+     *
+     * O Torrentio e os addons Stremio respondem pelo `imdb_id` — não dependem do
+     * termo de busca nem de abrir página —, então são a consulta mais barata da
+     * busca e a primeira que deve ter chance. O resultado volta cru: quem aplica
+     * o corte de idioma e a ordenação é o [`fontes()`], junto do resto da
+     * montagem.
+     *
+     * Desligada por `identificadores_primeiro`, a busca volta à ordem antiga, com
+     * o canal direto na frente.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function buscarPelosIdentificadores(
+        string $titulo,
+        ?int $ano,
+        ?string $imdbId,
+        ?int $temporada,
+        ?int $episodio,
+    ): array {
+        if (! (bool) config('services.torrents.identificadores_primeiro', true)) {
+            return [];
+        }
+
+        if (trim($titulo) === '') {
+            return [];
+        }
+
+        Log::debug('Busca de torrents: acionando os provedores por identificador.', [
+            'titulo' => $titulo,
+            'imdb_id' => $imdbId,
+            'temporada' => $temporada,
+            'episodio' => $episodio,
+        ]);
+
+        $fontes = $this->catalogo->buscarPorIdentificador([$titulo], $ano, $imdbId, $temporada, $episodio);
+
+        Log::debug('Busca de torrents: identificadores devolveram.', [
+            'fontes' => count($fontes),
+        ]);
+
+        return $fontes;
     }
 
     /**
@@ -751,7 +824,7 @@ class TorrentService
      *
      * @param  array<int, array<string, mixed>>  $fontes
      * @param  int|null  $temporada  Temporada pedida, quando a busca é de série
-     * @param  int|null  $episodio   Episódio pedido, quando a busca é de série
+     * @param  int|null  $episodio  Episódio pedido, quando a busca é de série
      * @return array<int, array<string, mixed>>
      */
     private function ordenar(
@@ -828,8 +901,7 @@ class TorrentService
             return true;
         }));
 
-        $porMerito = fn (array $a, array $b): int
-            => $this->chaveDeOrdem($a, $ordemProvedores) <=> $this->chaveDeOrdem($b, $ordemProvedores);
+        $porMerito = fn (array $a, array $b): int => $this->chaveDeOrdem($a, $ordemProvedores) <=> $this->chaveDeOrdem($b, $ordemProvedores);
 
         $ptBr = [];
         $reserva = [];

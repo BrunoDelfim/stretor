@@ -94,27 +94,6 @@ class ResolvedorVod
     private const EXTENSOES = ['.mp4', '.m4v', '.webm', '.mkv', '.mov', '.m3u8'];
 
     /**
-     * Status que significam "não há arquivo servido atrás desta URL".
-     *
-     * O `404`/`410` são definitivos: o servidor diz que o caminho não existe.
-     * O `503` entra porque é o que o CDN do provedor devolve quando a origem
-     * atrás dele está fora — e ele, diferente dos outros, muda de ideia, por isso
-     * leva uma segunda leitura antes de condenar (ver [`arquivoVivo()`]).
-     *
-     * De propósito não estão aqui `403`, `405` nem `500`: um host que recusa o
-     * `HEAD` ou bota a CDN em manutenção continuaria apto a entregar o arquivo
-     * por `GET`, e condenar nesses casos perderia fonte boa — o preço do falso
-     * negativo (busca sem o título) é maior que o do falso positivo (o FFmpeg
-     * reclama adiante, como reclamava antes da sonda).
-     *
-     * @var array<int, int>
-     */
-    private const STATUS_DE_ARQUIVO_MORTO = [404, 410, 503];
-
-    /** Espera antes da segunda leitura de um `503`, em microssegundos. */
-    private const PAUSA_NO_503_MICROSSEGUNDOS = 400000;
-
-    /**
      * Teto da sonda, em segundos.
      *
      * Um `HEAD` bem-sucedido volta em menos de um segundo; o teto existe para o
@@ -127,8 +106,7 @@ class ResolvedorVod
     public function __construct(
         private readonly OrcamentoBusca $orcamento,
         private readonly ClienteHttp $cliente,
-    ) {
-    }
+    ) {}
 
     /**
      * O resolvedor está ligado.
@@ -325,45 +303,28 @@ class ResolvedorVod
     /**
      * Diz se o CDN está servindo o arquivo por trás da URL, ou se a API mentiu.
      *
-     * Duas leituras no máximo: a primeira, e uma segunda só quando o status é
-     * `503` — o único que oscila (a origem atrás do CDN pode estar piscando).
-     * O `404` é resposta de quem sabe que o caminho não existe, e repetir pergunta
-     * a mesma certeza; o `null` (sonda que não completou) não condena ninguém,
-     * porque uma falha de caminho não é prova de que o arquivo não exista.
+     * A política mora no [`ClienteHttp::arquivoServido()`], porque os addons
+     * Stremio passam pela mesma conferência quando devolvem um link direto. Aqui
+     * fica só a ponte: o `$host` entra no log para apontar qual espelho entregou
+     * a fonte recusada.
      *
-     * Desligada pela configuração, devolve `true` de cara — é o comportamento de
+     * Desligada pela configuração, a resposta é `true` — é o comportamento de
      * antes da sonda, para poder desligar este passo sem desligar o passo zero.
      *
      * @param  string  $host  espelho consultado, só para o log apontar quem mentiu
      */
     private function arquivoVivo(string $url, string $host): bool
     {
-        if (! (bool) config('services.torrents.stream_direto_sondar_url', true)) {
-            return true;
-        }
+        $vivo = $this->cliente->arquivoServido($url, self::TEMPO_DA_SONDA_SEGUNDOS);
 
-        $status = $this->cliente->sondarArquivo($url, self::TEMPO_DA_SONDA_SEGUNDOS);
-        $sondagens = 1;
-
-        if ($status === 503 && $this->temOrcamento()) {
-            usleep(self::PAUSA_NO_503_MICROSSEGUNDOS);
-
-            $status = $this->cliente->sondarArquivo($url, self::TEMPO_DA_SONDA_SEGUNDOS);
-            $sondagens = 2;
-        }
-
-        if ($status !== null && in_array($status, self::STATUS_DE_ARQUIVO_MORTO, true)) {
-            Log::debug('Stream direto: VOD apontou para um arquivo morto; a busca segue adiante.', [
+        if (! $vivo) {
+            Log::debug('Stream direto: o VOD apontou para uma fonte sem arquivo; a busca segue adiante.', [
                 'host' => $host,
                 'url' => $url,
-                'status' => $status,
-                'sondagens' => $sondagens,
             ]);
-
-            return false;
         }
 
-        return true;
+        return $vivo;
     }
 
     /**

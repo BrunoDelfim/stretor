@@ -116,6 +116,27 @@ export const TENTATIVAS_FONTE_REDE = 3
 export const ESPERA_ENTRE_TENTATIVAS_MS = 1500
 
 /**
+ * Quantas rodadas de busca o overlay faz antes de mostrar a falha.
+ *
+ * O overlay não anuncia a queda de uma fonte: ele continua procurando. Quando a
+ * lista inteira falha, a busca é repetida — cada rodada é uma sessão nova por
+ * fonte, e a falha transitória (CDN que pisca, conversão que cai na abertura) se
+ * resolve sozinha. O teto existe para o caso ruim: sem ele, um título sem fonte
+ * nenhuma deixaria o usuário num spinner eterno, sem saber que o problema é o
+ * acervo.
+ */
+export const MAX_RODADAS_DE_BUSCA = 3
+
+/**
+ * Espera entre duas rodadas de busca, em ms.
+ *
+ * Curta pelo mesmo motivo da espera entre tentativas: o blip que motiva a
+ * repetição dura segundos. Tempo demais só adiaria a reprodução quando a fonte
+ * já estivesse saudável de novo.
+ */
+export const ESPERA_ENTRE_RODADAS_MS = 1500
+
+/**
  * Tempo máximo aguardando o Plyr emitir o evento `ready`, em ms.
  *
  * O Plyr pode montar sem disparar o evento (elemento já controlado, erro

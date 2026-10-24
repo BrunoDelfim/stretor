@@ -92,6 +92,7 @@ class FontesReproduzidasTest extends TestCase
     {
         $catalogo = Mockery::mock(CatalogoProvedores::class);
         $catalogo->shouldReceive('buscar')->andReturn($fontes);
+        $catalogo->shouldReceive('buscarPorIdentificador')->andReturn([]);
         $catalogo->shouldReceive('buscarFallbackDireto')->andReturn([]);
         $catalogo->shouldReceive('reconciliarCenso')->andReturnNull();
         $catalogo->shouldReceive('fecharOrcamento')->andReturnNull();

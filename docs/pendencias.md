@@ -52,3 +52,41 @@ caso "S04E28 → `... - 87.mkv`", coberto pelo teste
    deslocamento da numeração absoluta nunca é calculado e o pack cai no fallback.
    Registrar no log qual pasta foi considerada da temporada ajuda a fechar isso
    quando o pack real estiver em mãos.
+
+## Link direto sem extensão de vídeo fica de fora
+
+**Observado ao ligar o suporte a `url` dos addons Stremio.** O protocolo permite
+que o stream seja um arquivo pronto, e é assim que vários addons entregam vídeo
+sem torrent. Só entra o que termina em `.mp4`, `.m4v`, `.webm`, `.mkv`, `.mov`
+ou `.m3u8` **no caminho**. Ficam de fora:
+
+- redirecionador de embed e página de player;
+- proxy do próprio addon (`/resolve/...`);
+- entrega de serviço pago (`real-debrid.com/d/...`, `alldebrid.com/...`).
+
+O motivo é o contrato do
+[`prepararSessaoDireta()`](../media-service/src/services/sessoes.js:549): ele
+exige uma extensão em `EXTENSOES_DIRETAS` e recusa o resto com
+`formato_desconhecido`. Aceitar no backend um link que morre na primeira checagem
+só trocaria o momento da falha.
+
+**Para abrir esse caminho** seria preciso o media-service sondar a URL com
+`ffprobe` e aceitar quando o `Content-Type` for vídeo, mesmo sem extensão. É
+mudança de outro escopo (custo de sondagem e risco de confundir página com
+arquivo) e **não** inclui serviço pago: o Stretor não deve depender de conta de
+entrega para funcionar.
+
+## O fallback do espelho por id (`redeflixapi.store`) não é consumido
+
+O espelho endereçável por id tem um endpoint de saúde
+(`POST /wp-json/api/v1/player-resolve`) que, quando o arquivo principal morre,
+responde `mode: embed_fallback` apontando para
+`https://redeflixapi.store/filme/{tmdb}`. No diagnóstico da conta expirada do
+`nixplay.lat` (2026-10-24), esse host respondia `HTTP 520` — e o próprio espelho
+não tinha para onde cair.
+
+O Stretor **não** consome esse fallback: ele devolve uma página de embed, não um
+arquivo, e o [`ResolvedorEmbed`](../backend/app/Services/Torrents/ResolvedorEmbed.php:1)
+só percorre cadeias de receita conhecida. Se o host voltar, vale reavaliar com
+uma sonda manual antes de escrever qualquer cadeia nova.
+

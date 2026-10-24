@@ -3,6 +3,7 @@
 namespace Tests\Unit;
 
 use App\Services\Torrents\ResolvedorVod;
+use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
@@ -277,5 +278,115 @@ class ResolvedorVodTest extends TestCase
 
         $this->assertNotNull($resolvido);
         $this->assertSame(self::URL_EPISODIO, $resolvido['url']);
+    }
+
+    /**
+     * A conta expirada do CDN: o cabeçalho diz `403` e o corpo diz o motivo.
+     *
+     * É o caso que originou a leitura do corpo. O espelho afirma `native`, o
+     * `HEAD` devolve `403` e o `GET` devolve `Conta expirada.` no lugar do MP4.
+     * Aceitar esse link fazia a busca dispensar a cascata para **todo** título do
+     * acervo, e o player só descobria o problema na conversão.
+     */
+    public function test_conta_expirada_no_cdn_recusa_o_link(): void
+    {
+        $this->comHosts(['https://vizer.autos']);
+
+        Http::fake(function (Request $pedido) {
+            if (str_contains($pedido->url(), 'wp-json/api/v1/player')) {
+                return Http::response($this->respostaNativa(self::URL_FILME));
+            }
+
+            if ($pedido->method() === 'HEAD') {
+                return Http::response('', 403);
+            }
+
+            return Http::response('Conta expirada.', 403, ['Content-Type' => 'text/html; charset=UTF-8']);
+        });
+
+        $this->assertNull($this->resolvedor()->resolver('550', null, null, 10));
+    }
+
+    /**
+     * O `403` do anti-hotlink não condena: o `GET` serve o vídeo.
+     *
+     * É a razão de a sonda não tratar `403` como morto no cabeçalho. Aqui o
+     * `HEAD` é recusado (o CDN não aceita o método), mas o `GET` devolve os
+     * primeiros bytes de um MP4 — a fonte está viva e precisa continuar.
+     */
+    public function test_head_recusado_mas_arquivo_servido_mantem_a_fonte(): void
+    {
+        $this->comHosts(['https://vizer.autos']);
+
+        Http::fake(function (Request $pedido) {
+            if (str_contains($pedido->url(), 'wp-json/api/v1/player')) {
+                return Http::response($this->respostaNativa(self::URL_FILME));
+            }
+
+            if ($pedido->method() === 'HEAD') {
+                return Http::response('', 403);
+            }
+
+            return Http::response(
+                "\x00\x00\x00\x18ftypmp42",
+                206,
+                ['Content-Type' => 'video/mp4']
+            );
+        });
+
+        $resolvido = $this->resolvedor()->resolver('550', null, null, 10);
+
+        $this->assertNotNull($resolvido);
+        $this->assertSame(self::URL_FILME, $resolvido['url']);
+    }
+
+    /**
+     * Corpo sem marca conhecida segue a timidez: não condena.
+     *
+     * Um `403` de manutenção, um HTML de WAF ou uma amostra vazia não provam que
+     * a conta morreu. Quem decide adiante é o FFmpeg, e o custo de derrubar uma
+     * fonte boa é maior que o de deixar passar uma morta.
+     */
+    public function test_recusa_sem_marca_de_conta_mantem_a_fonte(): void
+    {
+        $this->comHosts(['https://vizer.autos']);
+
+        Http::fake(function (Request $pedido) {
+            if (str_contains($pedido->url(), 'wp-json/api/v1/player')) {
+                return Http::response($this->respostaNativa(self::URL_FILME));
+            }
+
+            if ($pedido->method() === 'HEAD') {
+                return Http::response('', 403);
+            }
+
+            return Http::response('<html><body>Acesso restrito</body></html>', 403, ['Content-Type' => 'text/html']);
+        });
+
+        $this->assertNotNull($this->resolvedor()->resolver('550', null, null, 10));
+    }
+
+    /**
+     * Cabeçalho saudável não paga a leitura do corpo.
+     *
+     * A amostra só é pedida quando o `HEAD` não decide; um `200` com
+     * `Content-Type` de vídeo encerra a conferência ali.
+     */
+    public function test_cabecalho_saudavel_nao_le_o_corpo(): void
+    {
+        $this->comHosts(['https://vizer.autos']);
+
+        Http::fake(function (Request $pedido) {
+            if (str_contains($pedido->url(), 'wp-json/api/v1/player')) {
+                return Http::response($this->respostaNativa(self::URL_FILME));
+            }
+
+            return Http::response('', 200, ['Content-Type' => 'video/mp4']);
+        });
+
+        $this->assertNotNull($this->resolvedor()->resolver('550', null, null, 10));
+
+        Http::assertNotSent(fn (Request $pedido): bool => $pedido->method() === 'GET'
+            && str_contains($pedido->url(), 'cdn.test'));
     }
 }

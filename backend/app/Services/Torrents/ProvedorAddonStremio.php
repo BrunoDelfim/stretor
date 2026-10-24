@@ -31,8 +31,8 @@ use Illuminate\Support\Facades\Http;
 class ProvedorAddonStremio implements ProvedorTorrents
 {
     use ConsultaComOrcamento;
-    use NormalizaFonte;
     use LeituraStreamStremio;
+    use NormalizaFonte;
 
     public function __construct(
         private readonly OrcamentoBusca $orcamento,
@@ -152,7 +152,7 @@ class ProvedorAddonStremio implements ProvedorTorrents
             }
         }
 
-        return array_values($fontes);
+        return $this->sondarDiretas($fontes);
     }
 
     /**
