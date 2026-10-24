@@ -88,7 +88,7 @@ class SegundaTentativaTest extends TestCase
 
         // Estes testes olham as fases de título, não o fallback: o stream direto
         // devolve vazio para que a lista final reflita só o que a cascata juntou.
-        $catalogo->shouldReceive('buscarPorIdentificador')->andReturn([]);
+        $catalogo->shouldReceive('buscarDiretasDeAddons')->andReturn([]);
         $catalogo->shouldReceive('buscarFallbackDireto')->andReturn([]);
 
         $catalogo->shouldReceive('ptBrSuficiente')->andReturnUsing(

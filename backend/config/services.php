@@ -627,16 +627,17 @@ return [
         'stream_direto_vod_hosts' => $lista(env('TORRENTS_STREAM_DIRETO_VOD_HOSTS'), []),
 
         /*
-         * Provedores por identificador (Torrentio e addons Stremio) na frente da
-         * busca.
+         * Addons Stremio na frente, mas só o que eles entregam como **arquivo
+         * pronto** (`url`).
          *
-         * Eles respondem pelo `imdb_id` em segundos e não dependem de raspar
-         * página. Ligado, a busca pergunta a eles **antes** do stream direto:
-         * quando a resposta já traz fonte PT-BR provada, o scraper web (duas
-         * páginas por episódio) e a cascata nem rodam. Desligado, a ordem antiga
-         * volta, com o canal direto na frente.
+         * O link direto não depende de malha e é a resposta mais barata que
+         * existe; por isso ele ganha a primeira chance. O que o addon devolve
+         * como torrent não passa por aqui — torrent é o último degrau da busca,
+         * e forçá-lo na frente estava trocando o Pobreflix e os agregadores web
+         * por um magnet. O resultado da consulta fica em cache, então a cascata
+         * relê o mesmo addon sem pagar outra requisição.
          */
-        'identificadores_primeiro' => (bool) env('TORRENTS_IDENTIFICADORES_PRIMEIRO', true),
+        'addons_diretos_primeiro' => (bool) env('TORRENTS_ADDONS_DIRETOS_PRIMEIRO', true),
 
         /*
          * Bypass do cache de consultas aos provedores. Com isto ligado, a busca

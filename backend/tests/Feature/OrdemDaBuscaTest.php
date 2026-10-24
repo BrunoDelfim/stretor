@@ -9,13 +9,16 @@ use Mockery;
 use Tests\TestCase;
 
 /**
- * Trava a ordem da busca: identificadores primeiro, scraper web depois.
+ * Trava a ordem da busca: **arquivo pronto primeiro, torrent por último**.
  *
- * O Torrentio e os addons Stremio respondem pelo `imdb_id` em segundos, sem
- * raspar página; o stream direto paga duas páginas por episódio. Quando a
- * consulta barata já traz fonte PT-BR provada, abrir o canal direto e a cascata
- * só atrasaria o vídeo. Quando ela não traz — ou traz só idioma não provado —,
- * a ordem antiga continua valendo.
+ * O addon Stremio abre a fila, mas só com o que ele entrega como `url` (`.mp4`
+ * ou `.m3u8`) — o mesmo contrato da fonte direta. O scraper web (Pobreflix e
+ * agregadores) vem em seguida, e a cascata de torrents fica por último: malha
+ * depende de seeders e o usuário espera menos por um link que já está pronto.
+ *
+ * Promover o Torrentio para a frente do scraper foi um erro: ele entrega
+ * *torrent*, e o efeito era o Pobreflix nunca ser consultado quando havia um
+ * magnet. Estes testes impedem a volta desse atalho.
  *
  * O catálogo é substituído por um dublê; nada aqui toca em rede ou banco.
  */
@@ -29,50 +32,30 @@ class OrdemDaBuscaTest extends TestCase
     }
 
     /**
-     * Uma fonte de torrent PT-BR, como o Torrentio devolve.
+     * Uma fonte direta, como o addon ou o scraper devolve.
      *
      * @return array<string, mixed>
      */
-    private function fonteIdentificador(string $idioma = 'pt-BR'): array
-    {
+    private function fonteDireta(
+        string $idioma = 'pt-BR',
+        string $provedor = 'stream_direto',
+        string $id = 'direta-scraper',
+        string $url = 'https://exemplo.test/filme.mp4',
+    ): array {
         return [
-            'id' => str_repeat('b', 40),
-            'tipo' => 'torrent',
-            'titulo' => 'Filme Raro Dublado 1080p',
-            'qualidade' => '1080P',
-            'idioma' => $idioma,
-            'idioma_rotulo' => $idioma,
-            'tamanho' => '1,4 GB',
-            'seeds' => 12,
-            'peers' => 1,
-            'magnet' => 'magnet:?xt=urn:btih:'.str_repeat('b', 40),
-            'stream' => '',
-            'provedor' => 'torrentio',
-            'provedor_rotulo' => 'Torrentio',
-        ];
-    }
-
-    /**
-     * Uma fonte direta PT-BR, como o scraper devolve.
-     *
-     * @return array<string, mixed>
-     */
-    private function fonteDireta(): array
-    {
-        return [
-            'id' => 'direta-1',
+            'id' => $id,
             'tipo' => 'direto',
             'titulo' => 'Filme Raro Dublado',
             'qualidade' => '1080P',
-            'idioma' => 'pt-BR',
-            'idioma_rotulo' => 'Dublado',
+            'idioma' => $idioma,
+            'idioma_rotulo' => $idioma,
             'tamanho' => null,
             'seeds' => 1,
             'peers' => 0,
             'magnet' => '',
-            'stream' => 'https://exemplo.test/filme.mp4',
-            'provedor' => 'stream_direto',
-            'provedor_rotulo' => 'Stream direto',
+            'stream' => $url,
+            'provedor' => $provedor,
+            'provedor_rotulo' => $provedor === 'addon_stremio' ? 'Addon Stremio' : 'Stream direto',
         ];
     }
 
@@ -81,12 +64,16 @@ class OrdemDaBuscaTest extends TestCase
         return new TorrentService($catalogo, new OrcamentoBusca);
     }
 
-    public function test_identificadores_com_pt_br_dispensam_scraper_e_cascata(): void
+    public function test_addon_com_link_direto_pt_br_dispensa_scraper_e_cascata(): void
     {
         $catalogo = Mockery::mock(CatalogoProvedores::class);
-        $catalogo->shouldReceive('buscarPorIdentificador')->once()->andReturn([$this->fonteIdentificador()]);
+        $catalogo->shouldReceive('buscarDiretasDeAddons')->once()->andReturn([
+            $this->fonteDireta('pt-BR', 'addon_stremio', 'direta-addon', 'https://cdn.test/addon.mp4'),
+        ]);
         $catalogo->shouldReceive('buscarFallbackDireto')->never();
         $catalogo->shouldReceive('buscar')->never();
+        // O censo do addon é a prova da resposta; limpar apagaria a linha.
+        $catalogo->shouldReceive('dispensarCascata')->never();
         $catalogo->shouldReceive('reconciliarCenso')->andReturnNull();
         $catalogo->shouldReceive('fecharOrcamento')->andReturnNull();
         $catalogo->shouldReceive('temDublado')->andReturn(true);
@@ -94,19 +81,22 @@ class OrdemDaBuscaTest extends TestCase
         $fontes = $this->servico($catalogo)->fontes('Filme Raro', 2024, 'tt1234567');
 
         $this->assertCount(1, $fontes);
-        $this->assertSame('torrentio', $fontes[0]['provedor']);
+        $this->assertSame('addon_stremio', $fontes[0]['provedor']);
+        $this->assertSame('https://cdn.test/addon.mp4', $fontes[0]['stream']);
     }
 
     /**
-     * Identificador de idioma não provado não encerra a busca.
+     * Link direto de idioma não provado não encerra a busca.
      *
      * O corte de idioma é o mesmo da cascata: sem PT-BR provado, a fonte não
      * responde pela busca — e o scraper precisa ter a chance que tinha antes.
      */
-    public function test_identificador_sem_pt_br_deixa_o_scraper_rodar(): void
+    public function test_addon_sem_pt_br_deixa_o_scraper_rodar(): void
     {
         $catalogo = Mockery::mock(CatalogoProvedores::class);
-        $catalogo->shouldReceive('buscarPorIdentificador')->once()->andReturn([$this->fonteIdentificador('original')]);
+        $catalogo->shouldReceive('buscarDiretasDeAddons')->once()->andReturn([
+            $this->fonteDireta('original', 'addon_stremio', 'direta-addon', 'https://cdn.test/addon.mp4'),
+        ]);
         $catalogo->shouldReceive('buscarFallbackDireto')->once()->andReturn([$this->fonteDireta()]);
         $catalogo->shouldReceive('buscar')->never();
         $catalogo->shouldReceive('dispensarCascata')->once()->andReturnNull();
@@ -117,13 +107,16 @@ class OrdemDaBuscaTest extends TestCase
         $fontes = $this->servico($catalogo)->fontes('Filme Raro', 2024, 'tt1234567');
 
         $this->assertCount(1, $fontes);
-        $this->assertSame('https://exemplo.test/filme.mp4', $fontes[0]['stream']);
+        $this->assertSame('stream_direto', $fontes[0]['provedor']);
     }
 
-    public function test_identificadores_vazios_mantem_a_ordem_antiga(): void
+    /**
+     * Sem arquivo pronto no addon, o scraper vem antes da cascata de torrents.
+     */
+    public function test_sem_link_direto_o_scraper_vem_antes_da_cascata(): void
     {
         $catalogo = Mockery::mock(CatalogoProvedores::class);
-        $catalogo->shouldReceive('buscarPorIdentificador')->once()->andReturn([]);
+        $catalogo->shouldReceive('buscarDiretasDeAddons')->once()->andReturn([]);
         $catalogo->shouldReceive('buscarFallbackDireto')->once()->andReturn([]);
         $catalogo->shouldReceive('buscar')->once()->andReturn([]);
         $catalogo->shouldReceive('dispensarCascata')->never();
@@ -131,17 +124,15 @@ class OrdemDaBuscaTest extends TestCase
         $catalogo->shouldReceive('fecharOrcamento')->andReturnNull();
         $catalogo->shouldReceive('temDublado')->andReturn(true);
 
-        $fontes = $this->servico($catalogo)->fontes('Filme Raro', 2024, 'tt1234567');
-
-        $this->assertSame([], $fontes);
+        $this->assertSame([], $this->servico($catalogo)->fontes('Filme Raro', 2024, 'tt1234567'));
     }
 
-    public function test_chave_desligada_nao_consulta_identificadores(): void
+    public function test_chave_desligada_comeca_no_scraper(): void
     {
-        config()->set('services.torrents.identificadores_primeiro', false);
+        config()->set('services.torrents.addons_diretos_primeiro', false);
 
         $catalogo = Mockery::mock(CatalogoProvedores::class);
-        $catalogo->shouldReceive('buscarPorIdentificador')->never();
+        $catalogo->shouldReceive('buscarDiretasDeAddons')->never();
         $catalogo->shouldReceive('buscarFallbackDireto')->once()->andReturn([]);
         $catalogo->shouldReceive('buscar')->once()->andReturn([]);
         $catalogo->shouldReceive('reconciliarCenso')->andReturnNull();

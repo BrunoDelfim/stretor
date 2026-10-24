@@ -134,8 +134,9 @@ O botão "Assistir" abre o componente
 em tela cheia que conduz todo o fluxo de reprodução. Ele passa por quatro
 estados visíveis:
 
-1. **Procurando** — busca as fontes no backend (identificadores primeiro,
-   scraper web depois).
+1. **Procurando** — busca as fontes no backend na ordem da resposta: link direto
+   do addon Stremio, scraper web (Pobreflix e agregadores) e, por último, os
+   torrents.
 2. **Tentando** — percorre as fontes em ordem ("Fonte 2 de 7"), já que
    dificilmente o filme terá fonte dublada logo na primeira tentativa.
 3. **Preparando** — a fonte conectou e o vídeo está sendo convertido; a mensagem

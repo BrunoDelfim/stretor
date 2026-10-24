@@ -396,6 +396,13 @@ no máximo três por consulta: o addon costuma repetir o mesmo arquivo em vário
 mirrors, e sondar todos gastaria o orçamento da cascata com o que o player
 resolveria em uma tentativa.
 
+Essa etapa roda **antes do scraper web** e dos torrents
+(`TORRENTS_ADDONS_DIRETOS_PRIMEIRO`, ligado por padrão) e só considera fontes do
+tipo `direto`. O que o mesmo addon devolveu como `infoHash` não entra aqui: ele
+fica para a cascata de torrents, que é o último degrau da busca — promover o
+Torrentio para a frente do Pobreflix fazia o agregador web nunca ser consultado
+quando havia um magnet.
+
 #### Os trackers PT-BR nativos saem do ar com frequência — e hoje não sobrou nenhum
 
 Vale registrar o diagnóstico que motivou a mudança acima: os dois trackers
@@ -2773,16 +2780,15 @@ o ressuscita. O **stream direto** cobre esse cenário — o equivalente ao
 comportamento de apps como Lumigo/Stremio, que buscam um link de vídeo pronto
 (MP4 ou HLS) em vez de uma malha P2P.
 
-Hoje ele é um **método de indexação**, mas já não é o primeiro a ser perguntado.
-Os provedores por identificador — Torrentio e addons Stremio — respondem pelo
-`imdb_id` em segundos, sem raspar página, e por isso abrem a busca
-(`TORRENTS_IDENTIFICADORES_PRIMEIRO`, ligado por padrão). Quando a resposta já
-traz fonte PT-BR provada, o stream direto e a cascata de torrents nem rodam:
-abrir duas páginas por episódio para achar o que o addon já entregou seria gastar
-o orçamento com o que o usuário não espera. Quando não traz — ou traz só idioma
-não provado —, o fluxo antigo continua: o stream direto pergunta ao acervo web e,
-se ele voltar vazio, a cascata entra. Em qualquer caminho, o primeiro método que
-**entrega** responde pela busca.
+Hoje ele é um **método de indexação**, mas não é mais o primeiro a ser
+perguntado. A ordem da busca é: **link direto do addon Stremio → scraper web →
+torrents**. O addon abre a fila só quando entrega **arquivo pronto** (`url` de
+`.mp4`/`.m3u8`), que toca sem malha e responde pelo `imdb_id` em segundos; o
+scraper vem em seguida, com os agregadores (Pobreflix e companhia) e os embeds; e
+a cascata de torrents fica por último, porque malha depende de seeders e o
+usuário espera menos por um link que já está pronto. Quando um dos canais
+diretos entrega fonte PT-BR provada, os seguintes nem rodam. A promoção do
+stream com `url` é a chave `TORRENTS_ADDONS_DIRETOS_PRIMEIRO`, ligada por padrão.
 
 #### O provedor direto é um método, não um degrau da cascata
 

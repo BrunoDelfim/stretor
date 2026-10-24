@@ -162,32 +162,36 @@ class TorrentService
         $todasDiretas = [];
 
         /*
-         * Os provedores por identificador abrem a busca, quando a promoção está
-         * ligada.
+         * A ordem da busca é a ordem da resposta: **arquivo pronto primeiro,
+         * torrent por último**.
          *
-         * Eles respondem pelo `imdb_id` em segundos, sem raspar página, e são a
-         * fonte mais barata que existe. Antes, o scraper web vinha primeiro e,
-         * quando ele voltava vazio, a cascata só era ouvida depois de gastar o
-         * orçamento do canal direto; com a promoção, o addon tem a primeira
-         * chance e o scraper fica como o socorro do que ele não tem. Se a
-         * resposta tiver fonte PT-BR provada, os dois canais caros nem abrem.
+         * O addon Stremio abre a fila porque pode devolver um `.mp4`/`.m3u8` de
+         * CDN — o mesmo contrato da fonte direta, que toca sem malha — e responde
+         * por `imdb_id` sem raspar página. O scraper web vem em seguida, com os
+         * agregadores (Pobreflix e companhia) e os embeds: é caro, mas é a fonte
+         * que o torrent não cobre. A cascata de torrents fica por último, que é
+         * o lugar dela — malha depende de seeders e o usuário espera menos por
+         * ela do que por um link que já está pronto.
          */
-        $porIdentificador = $this->buscarPelosIdentificadores($titulo, $ano, $imdbId, $temporada, $episodio);
+        $todasDiretas = $this->buscarDiretasDosAddons($titulo, $ano, $imdbId, $temporada, $episodio);
 
-        $porIdentificador = array_values(array_filter(
-            $porIdentificador,
+        $diretas = array_values(array_filter(
+            $todasDiretas,
             fn (array $fonte): bool => $this->ePtBr($fonte)
         ));
 
-        if ($porIdentificador !== []) {
-            $titulos = array_values(array_filter(
-                [$titulo, trim((string) $tituloOriginal)],
-                fn (string $termo): bool => $termo !== ''
-            ));
+        // Marca se o scraper web chegou a rodar. Só nesse caso o censo dos
+        // provedores de torrent é zerado quando uma fonte direta responde — a
+        // resposta do addon é registrada no censo normal e precisa sobreviver.
+        $doScraper = false;
 
-            $fontes = $this->ordenar($porIdentificador, $temporada, $episodio, $titulo, $tituloOriginal);
-        } else {
-            $todasDiretas = $this->buscarPeloStreamDireto($titulo, $ano, $imdbId, $tituloOriginal, $temporada, $episodio, $tmdbId, $titulos);
+        if ($diretas === []) {
+            $doScraper = true;
+
+            $todasDiretas = array_merge(
+                $todasDiretas,
+                $this->buscarPeloStreamDireto($titulo, $ano, $imdbId, $tituloOriginal, $temporada, $episodio, $tmdbId, $titulos)
+            );
 
             /*
              * O corte de idioma roda **na busca**, e não só na montagem final.
@@ -210,21 +214,31 @@ class TorrentService
                 $todasDiretas,
                 fn (array $fonte): bool => $this->ePtBr($fonte)
             ));
+        }
 
+        if ($diretas !== []) {
             /*
              * Com a fonte direta em PT-BR na mão, a cascata é dispensada — e o censo
              * dos provedores de torrent é zerado junto, pela mesma razão que o
              * relatório existe: sem isso ele mostraria os números e as fontes da
              * busca anterior como se fossem desta, e a cobertura diria que os
              * trackers entregaram o que foi, na verdade, achado no acervo web.
+             *
+             * Quando quem respondeu foi o addon, o censo dele é preservado: a
+             * limpeza apagaria justamente a linha que explica a resposta.
              */
-            if ($diretas !== []) {
+            if ($doScraper) {
                 $this->catalogo->dispensarCascata();
-
-                $fontes = $diretas;
-            } else {
-                $fontes = $this->buscarPelosTorrents($titulo, $ano, $imdbId, $tituloOriginal, $temporada, $episodio, $episodioDeSerie, $titulos);
             }
+
+            $titulos = array_values(array_filter(
+                [$titulo, trim((string) $tituloOriginal)],
+                fn (string $termo): bool => $termo !== ''
+            ));
+
+            $fontes = $diretas;
+        } else {
+            $fontes = $this->buscarPelosTorrents($titulo, $ano, $imdbId, $tituloOriginal, $temporada, $episodio, $episodioDeSerie, $titulos);
         }
 
         /*
@@ -357,27 +371,28 @@ class TorrentService
     }
 
     /**
-     * Consulta os provedores por identificador antes do scraper web.
+     * Consulta os addons Stremio por **link direto**, antes do scraper web.
      *
-     * O Torrentio e os addons Stremio respondem pelo `imdb_id` — não dependem do
-     * termo de busca nem de abrir página —, então são a consulta mais barata da
-     * busca e a primeira que deve ter chance. O resultado volta cru: quem aplica
-     * o corte de idioma e a ordenação é o [`fontes()`], junto do resto da
-     * montagem.
+     * O addon é o único provedor que pode devolver um `.mp4`/`.m3u8` de CDN — o
+     * mesmo contrato da fonte direta —, e responde pelo `imdb_id` sem raspar
+     * página. É a consulta mais barata da busca e a primeira que deve ter chance;
+     * os torrents ficam para o fim. Só as fontes do tipo `direto` voltam daqui:
+     * o que o addon devolveu como torrent não é perdido, ele entra na cascata
+     * normal (e o resultado já está em cache).
      *
-     * Desligada por `identificadores_primeiro`, a busca volta à ordem antiga, com
-     * o canal direto na frente.
+     * Desligada por `addons_diretos_primeiro`, a busca começa no scraper web,
+     * como antes.
      *
      * @return array<int, array<string, mixed>>
      */
-    private function buscarPelosIdentificadores(
+    private function buscarDiretasDosAddons(
         string $titulo,
         ?int $ano,
         ?string $imdbId,
         ?int $temporada,
         ?int $episodio,
     ): array {
-        if (! (bool) config('services.torrents.identificadores_primeiro', true)) {
+        if (! (bool) config('services.torrents.addons_diretos_primeiro', true)) {
             return [];
         }
 
@@ -385,16 +400,16 @@ class TorrentService
             return [];
         }
 
-        Log::debug('Busca de torrents: acionando os provedores por identificador.', [
+        Log::debug('Busca: acionando os addons Stremio por link direto.', [
             'titulo' => $titulo,
             'imdb_id' => $imdbId,
             'temporada' => $temporada,
             'episodio' => $episodio,
         ]);
 
-        $fontes = $this->catalogo->buscarPorIdentificador([$titulo], $ano, $imdbId, $temporada, $episodio);
+        $fontes = $this->catalogo->buscarDiretasDeAddons([$titulo], $ano, $imdbId, $temporada, $episodio);
 
-        Log::debug('Busca de torrents: identificadores devolveram.', [
+        Log::debug('Busca: addons devolveram links diretos.', [
             'fontes' => count($fontes),
         ]);
 

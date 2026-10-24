@@ -176,6 +176,16 @@ class CatalogoProvedores
      */
     private ProvedorStreamDireto $streamDireto;
 
+    /**
+     * Addon Stremio — o único provedor que pode entregar **arquivo pronto**
+     * (`url`) além de torrent.
+     *
+     * Guardado à parte porque a busca pergunta a ele sozinho, antes do scraper:
+     * o link direto que ele devolve não depende de malha e não deve esperar os
+     * torrents.
+     */
+    private ProvedorAddonStremio $addonStremio;
+
     public function __construct(
         ProvedorTrackersBr $trackersBr,
         ProvedorApibay $apibay,
@@ -191,6 +201,7 @@ class CatalogoProvedores
     ) {
         $this->primarios = [$trackersBr, $apibay, $knaben, $bt4g];
         $this->porIdentificador = [$torrentio, $addonStremio];
+        $this->addonStremio = $addonStremio;
         $this->streamDireto = $streamDireto;
 
         // A ordem do relatório é a ordem da cascata: os por identificador abrem, os
@@ -248,7 +259,7 @@ class CatalogoProvedores
          *
          * A abertura vive em [`abrirOrcamento()`] porque os provedores por
          * identificador podem ser consultados **antes** da cascata (ver
-         * [`buscarPorIdentificador()`]); nos dois caminhos o relógio precisa ser
+         * [`buscarDiretasDeAddons()`]); nos dois caminhos o relógio precisa ser
          * o mesmo, e o `abrirSeFechado()` garante que ele não reinicie.
          */
         $this->abrirOrcamento();
@@ -453,28 +464,27 @@ class CatalogoProvedores
     }
 
     /**
-     * Consulta apenas os provedores por identificador (Torrentio e addons
-     * Stremio), antes de qualquer outro canal.
+     * Consulta apenas o addon Stremio e devolve o que for **arquivo pronto**
+     * (`url`), antes do scraper e dos torrents.
      *
-     * Eles respondem pelo `imdb_id` — o Torrentio e os addons do protocolo
-     * Stremio devolvem a lista pronta em segundos, sem raspar página e sem
-     * malha para descobrir —, e por isso são a fonte mais barata da busca. O
-     * [`TorrentService`] usa esta chamada para decidir se vale acionar o
-     * scraper web: quando a resposta já tem fonte PT-BR, o canal direto (que
-     * paga duas páginas por episódio) nem é aberto.
+     * O addon é o único provedor que pode entregar link direto além de torrent:
+     * o stream com `url` é um `.mp4`/`.m3u8` de CDN, que toca sem malha. Por
+     * isso ele ganha a chance antes do scraper — é mais barato (uma resposta por
+     * `imdb_id`) e não depende de raspar página —, e os torrents ficam para o
+     * fim, que é onde eles pertencem.
      *
-     * A consulta é a **mesma** da rodada de abertura da cascata, com o mesmo
-     * gate e a mesma marcação de `pt_br`. O cache por provedor faz o caminho
-     * "não achou" sair barato: quando a cascata entra logo depois, ela relê o
-     * mesmo resultado do Redis em vez de perguntar de novo.
+     * A consulta roda uma vez e o resultado fica em cache: quando a cascata
+     * entrar depois, o mesmo addon é relido do Redis, e só os streams com
+     * `infoHash` (torrents) entram naquela etapa. Nada é perdido, e nada é
+     * perguntado duas vezes fora do cache.
      *
-     * A lista devolvida não passa por `ordenar()` — quem ordena é o chamador,
-     * junto do resto da montagem final.
+     * A lista devolvida é **só de fontes diretas** — o corte por tipo mora aqui
+     * para o chamador não precisar repetir a regra.
      *
      * @param  array<int, string>  $titulos
      * @return array<int, array<string, mixed>>
      */
-    public function buscarPorIdentificador(
+    public function buscarDiretasDeAddons(
         array $titulos,
         ?int $ano,
         ?string $imdbId,
@@ -483,7 +493,7 @@ class CatalogoProvedores
     ): array {
         $titulo = trim((string) ($titulos[0] ?? ''));
 
-        if ($titulo === '') {
+        if ($titulo === '' || ! $this->addonStremio->disponivel()) {
             return [];
         }
 
@@ -497,7 +507,7 @@ class CatalogoProvedores
         }
 
         $fontes = $this->buscarGrupo(
-            $this->porIdentificador,
+            [$this->addonStremio],
             $titulo,
             $ano,
             $imdbId,
@@ -505,9 +515,14 @@ class CatalogoProvedores
             $episodio
         );
 
-        $this->registrarEtapa('nativos', $titulo, $fontes);
+        $diretas = array_values(array_filter(
+            $fontes,
+            fn (array $fonte): bool => ($fonte['tipo'] ?? '') === 'direto'
+        ));
 
-        return $fontes;
+        $this->registrarEtapa('nativos', $titulo, $diretas);
+
+        return $diretas;
     }
 
     /**

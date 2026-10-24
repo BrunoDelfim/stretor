@@ -90,7 +90,7 @@ class LegendasFallbackTest extends TestCase
     {
         $catalogo = Mockery::mock(CatalogoProvedores::class);
         $catalogo->shouldReceive('buscar')->andReturn($fontesCatalogo);
-        $catalogo->shouldReceive('buscarPorIdentificador')->andReturn([]);
+        $catalogo->shouldReceive('buscarDiretasDeAddons')->andReturn([]);
         $catalogo->shouldReceive('buscarFallbackDireto')->andReturn($diretas);
         $catalogo->shouldReceive('ptBrSuficiente')->andReturnFalse();
         $catalogo->shouldReceive('temDublado')->andReturnFalse();
