@@ -376,4 +376,80 @@ class BuscaAgregadoresTest extends TestCase
         );
         Http::assertNothingSent();
     }
+
+    /**
+     * A busca do `pobreflixtv.democrat` não é uma página: é um XHR que devolve
+     * `{"html": "..."}`. Ler o corpo cru entregaria `{` no lugar de um link, e o
+     * agregador pareceria vazio sem ter sido — foi o que manteve o acervo dele
+     * fora da cascata mesmo com o site no ar e com o filme publicado.
+     */
+    public function test_busca_em_json_le_o_html_do_campo(): void
+    {
+        $endereco = 'https://www.pobreflixtv.democrat/filmes/online/homem-aranha-um-novo-dia-dublado-74844/';
+
+        Http::fake([
+            'www.pobreflixtv.democrat/*' => Http::response(json_encode([
+                'html' => '<a href="'.$endereco.'" title="Assistir Homem-Aranha: Um Novo Dia">'
+                    .'<h3>Homem-Aranha: Um Novo Dia</h3></a>',
+            ])),
+            '*' => Http::response(''),
+        ]);
+
+        $paginas = app(BuscaAgregadores::class)->buscar(['Homem-Aranha: Um Novo Dia']);
+
+        $this->assertContains($endereco, $paginas);
+
+        // O endpoint responde JSON em vez da casca da página só com o cabeçalho
+        // que o navegador manda.
+        Http::assertSent(function ($requisicao) {
+            return str_contains($requisicao->url(), 'do=buscarContent')
+                && $requisicao->hasHeader('X-Requested-With', 'XMLHttpRequest');
+        });
+    }
+
+    /**
+     * JSON sem o campo combinado é resposta de erro, e não "acervo vazio": o
+     * censo precisa distinguir as duas para não culpar o catálogo por um
+     * endpoint que mudou de contrato.
+     */
+    public function test_busca_em_json_sem_o_campo_marca_sem_resposta(): void
+    {
+        Http::fake([
+            'www.pobreflixtv.democrat/*' => Http::response('{"erro":"desconhecido"}'),
+            '*' => Http::response(''),
+        ]);
+
+        $servico = app(BuscaAgregadores::class);
+
+        $this->assertSame([], $servico->buscar(['Homem-Aranha: Um Novo Dia']));
+
+        $this->assertSame(
+            'sem_resposta',
+            $this->linhaDoCenso($servico, 'pobreflixtv.democrat')['situacao']
+        );
+    }
+
+    /**
+     * O conteúdo do site mora em `/filmes/online/` (e no par `/series/online/`),
+     * não em `/series/` como no domínio anterior. O padrão precisa cobrir os
+     * dois: o mesmo acervo publica filme e série, e o teste trava o filme — o
+     * caso que o usuário estava tentando assistir.
+     */
+    public function test_conteudo_do_pobreflixtv_novo_e_reconhecido(): void
+    {
+        $links = $this->invocar(
+            'links',
+            '<a href="/filmes/online/homem-aranha-um-novo-dia-dublado-74844/">Filme</a>'
+                .'<a href="/series/online/round-6-dublado-123/">Série</a>'
+                .'<a href="/filmes/">Catálogo</a>',
+            'https://www.pobreflixtv.democrat/index.php?app=videobox&module=video&controller=index&do=buscarContent&q=x',
+            'pobreflixtv.democrat',
+            '#^/(?:filmes|series)/online/#'
+        );
+
+        $this->assertSame([
+            'https://www.pobreflixtv.democrat/filmes/online/homem-aranha-um-novo-dia-dublado-74844/',
+            'https://www.pobreflixtv.democrat/series/online/round-6-dublado-123/',
+        ], array_keys($links));
+    }
 }

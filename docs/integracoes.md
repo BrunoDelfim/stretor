@@ -382,13 +382,17 @@ segue a mesma classificação do torrent. Isso importa porque o corte
 `somente_pt_br_ou_legendado` só deixa passar dublado/dual: um link direto sem
 prova de idioma cairia na reserva e seria descartado na montagem.
 
-O que **não** vira fonte: link sem extensão de vídeo. Redirecionador de embed,
-proxy do addon e entrega de serviço pago (`real-debrid.com/d/...`,
-`/resolve/...`) são recusados por
-[`urlDeVideo()`](../backend/app/Services/Torrents/LeituraStreamStremio.php:194),
-porque o `prepararSessaoDireta()` do media-service exige uma extensão conhecida —
-aceitá-los aqui só produziria uma sessão que morre na primeira checagem. O
-Stretor não depende de serviço pago para entregar conteúdo.
+O que **não** vira fonte no addon: link sem extensão de vídeo no caminho.
+Redirecionador de embed, proxy do addon e entrega de serviço pago
+(`real-debrid.com/d/...`, `/resolve/...`) são recusados por
+[`urlDeVideo()`](../backend/app/Services/Torrents/LeituraStreamStremio.php:194).
+Aqui a exigência continua de propósito: o addon devolve o mesmo arquivo em vários
+mirrors, e sondar cada um para descobrir o formato gastaria o orçamento da busca.
+O media-service **já sabe** descobrir o formato pela origem (ver a seção sobre o
+link direto sem extensão em [pendências](pendencias.md))
+— quem abre esse caminho é a cadeia do scraper, que só resolve um player por vez,
+depois de a página provar que é sobre o título. O Stretor não depende de serviço
+pago para entregar conteúdo.
 
 Os links diretos que entram passam pela sonda de arquivo antes do cache
 ([`sondarDiretas()`](../backend/app/Services/Torrents/LeituraStreamStremio.php:354)),
@@ -3017,20 +3021,85 @@ o episódio mora, pergunta direto à **busca interna** dos agregadores de vídeo
 cujo resultado já é a página do título. É o mesmo caminho do usuário — em vez de
 googlar "assistir X", digita X na busca do próprio site.
 
-A lista é curta e por conhecimento de causa — hoje, o `verpobreflix.net` e o
-`superflixapi.quest`, nesta ordem. Cada agregador declara onde a busca mora
-(`/search?q=`, `/pesquisar?s=`) e qual padrão de caminho identifica o conteúdo na
-página de resultado (`/series/`, `/(serie|filme)/<id>`). O domínio serve de âncora —
-só links do próprio site entram, o que descarta menu, rodapé e link patrocinado sem
-precisar de lista negra. O resultado do verpobreflix é a ficha da série, e o provedor
-desce dali para a página do episódio pelo caminho que já existia.
+A lista é curta e por conhecimento de causa — hoje, o `pobreflixtv.democrat`, o
+`verpobreflix.net` e o `superflixapi.quest`, nesta ordem. Cada agregador declara
+onde a busca mora (`/search?q=`, `/pesquisar?s=`, `do=buscarContent&q=`) e qual
+padrão de caminho identifica o conteúdo na página de resultado (`/filmes/online/`,
+`/series/`, `/(serie|filme)/<id>`). O domínio serve de âncora — só links do próprio
+site entram, o que descarta menu, rodapé e link patrocinado sem precisar de lista
+negra. O resultado do verpobreflix é a ficha da série, e o provedor desce dali para
+a página do episódio pelo caminho que já existia.
 
-O `verpobreflix.net` vem primeiro porque entrega o embed de onde o `plenoflu` resolve
-o `master.m3u8` sem depender do passe do Cloudflare. O `superflixapi.quest` é o
-segundo caminho para o mesmo acervo — indexa pelo id do TMDB, o que dispensa a busca
-por nome —, mas a página do episódio dele só abre com o passe configurado
-(`services.torrents.passe_cloudflare_*`). Como o provedor para no primeiro agregador
-que rende, o segundo só custa quando o primeiro não rendeu nada.
+O `pobreflixtv.democrat` vem primeiro porque é o acervo atual do Pobreflix e o único
+cujo player já foi percorrido até o arquivo (o StreamTape do videobox — ver a
+subseção seguinte). O `verpobreflix.net` é o mesmo acervo no domínio anterior: fica
+como segunda tentativa, porque domínio de Pobreflix roda a cada bloqueio e, quando
+está fora, custa uma requisição. O `superflixapi.quest` é o terceiro caminho —
+indexa pelo id do TMDB, o que dispensa a busca por nome —, mas a página do episódio
+dele só abre com o passe configurado (`services.torrents.passe_cloudflare_*`). Como
+o provedor para no primeiro agregador que rende, os seguintes só custam quando o
+anterior não rendeu nada.
+
+##### A busca do `pobreflixtv.democrat` é um XHR, não uma página
+
+O `/buscar/` do site é uma casca com o campo de pesquisa: o resultado é injetado
+pelo JavaScript, que consulta
+`index.php?app=videobox&module=video&controller=index&do=buscarContent&q=...` e
+recebe `{"html": "..."}`. Baixar a página devolve a casca e **zero links** — o
+sintoma que fez o site parecer fora do acervo mesmo com o filme publicado.
+
+O agregador declara isso na própria entrada (`'json' => 'html'`) e o
+[`BuscaAgregadores`](../backend/app/Services/Torrents/BuscaAgregadores.php:1)
+pede o mesmo endpoint que o navegador pede, com `X-Requested-With:
+XMLHttpRequest`, e lê o campo `html` da resposta. JSON sem o campo é tratado como
+`sem_resposta` (contrato quebrado), e não como "acervo vazio".
+
+##### O player do videobox: o vídeo só existe depois do JavaScript
+
+A página do título do `pobreflixtv.democrat` chega com um `<div id="view"
+data-video-id="74844">` **vazio**. Não há `<video>`, não há iframe, não há URL em
+`data-*`: quem monta o player é o script da página, que pede ao próprio site
+`?app=videobox&module=video&controller=view&do=playerData&id=74844`. A resposta é
+um JSON com os servidores daquele id:
+
+```json
+{"players":[{"label":"StreamTape","url":"https://streamtape.com/e/"}],
+ "servers_dub":"mixdrop=...&streamtape=...&byse=...&doodstream=...",
+ "servers_leg":"...", "current_audio":"Dublado"}
+```
+
+O [`LeitorVideobox`](../backend/app/Services/Torrents/LeitorVideobox.php:1) percorre
+essa cadeia: lê o id, pede os servidores, tira o áudio **dublado** (`servers_leg`
+é o original com legenda e não pode ser entregue como dublado) e atravessa o
+servidor escolhido. Hoje só o **StreamTape** tem receita: o embed publica um
+`get_video` com expiração e token, e o token **não** está no HTML — está numa
+concatenação de JavaScript com `substring()`:
+
+```js
+document.getElementById('robotlink').innerHTML = '//streamtape.com/get_vid'
+  + ('xcdeo?id=...&token=jHCummFk8DfS').substring(2).substring(1);
+```
+
+Os valores soltos nos `div`s (`botlink`, `ideoolink`) são iscas, com token
+inválido. O leitor monta a expressão de verdade (literais + `substring` em ordem),
+confirma com uma leitura de dois bytes que a origem devolve vídeo — o token falso
+responde `200` com um JSON de erro, e só o `Content-Type`/`ftyp` separa — e entrega
+a URL do `get_video`, não o redirecionamento final (o token vale para o IP de quem
+pediu, e o endereço final muda a cada consulta).
+
+Como o player da página é uma **declaração** e não uma URL, o
+[`ExtratorVideo::temMidia()`](../backend/app/Services/Torrents/ExtratorVideo.php:372)
+passou a aceitar `data-video-id` junto da marca `videobox` como prova de mídia — e
+o [`ProvedorStreamDireto`](../backend/app/Services/Torrents/ProvedorStreamDireto.php:1)
+passou a tentar o resolvedor também quando o extrator **achou** URLs e nenhuma
+passou no filtro de relevância. Era o caso desta página: o `<link rel="manifest"
+href="/manifest.webm">` do `<head>` entrava como se fosse filme, e a lista não
+vazia encerrava o fluxo antes de o player ser consultado. Medido depois da
+correção: **2,9 s** do título à fonte direta, com a cascata encerrada no primeiro
+agregador.
+
+Os outros três servidores (MixDrop, DoodStream, Byse) ainda não têm receita — ver
+[pendências](pendencias.md).
 
 A relevância pelo título é conferida **na hora da busca**, sobre o slug do link —
 e não só lá na frente, sobre a página aberta. A página de resultado costuma vir
@@ -3135,10 +3204,10 @@ sua própria blindagem:
 Ou seja: a API do `plenoflu.com` é um **catálogo de embeds**, não uma fonte de
 vídeo. Ela economiza a etapa de raspar a página do agregador, mas entrega
 exatamente o que o contrato da fonte direta recusa — uma URL de player, não um
-`.mp4`/`.m3u8`. O [`prepararSessaoDireta()`](../media-service/src/services/sessoes.js:506)
-do media-service exige uma extensão em `EXTENSOES_DIRETAS` e rejeita o resto com
-`formato_desconhecido`; oferecer um embed como fonte só produziria uma sessão
-que morre na primeira checagem.
+`.mp4`/`.m3u8`. O [`prepararSessaoDireta()`](../media-service/src/services/sessoes.js:549)
+do media-service precisa de um arquivo de vídeo: um embed é uma **página**, e a
+sonda de formato devolve `formato_desconhecido` ao receber `text/html`; oferecer um
+embed como fonte só produziria uma sessão que morre na primeira checagem.
 
 **A conclusão prática, revista depois:** integrar a API do `plenoflu.com` sozinha
 moveria o problema um degrau adiante — de "achar a página" para "achar o player"

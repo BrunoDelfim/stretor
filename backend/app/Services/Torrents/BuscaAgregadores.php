@@ -74,22 +74,52 @@ class BuscaAgregadores
      *
      * A **ordem** é a da cascata: os agregadores são percorridos um por vez, de
      * cima para baixo, e o primeiro que render uma fonte encerra a busca — o
-     * seguinte nem chega a ser perguntado. O `verpobreflix.net` vem primeiro
-     * porque é o acervo cuja página carrega o vídeo de verdade (o embed do
-     * `plenoflu.com`), que a extração resolve sem passe nenhum. O superflix vem
-     * logo depois: a busca dele é a mais direta, indexada por id do TMDB, mas a
-     * página do episódio é fechada pelo Cloudflare e só abre com o passe
-     * configurado — é o mesmo acervo por outro caminho, com um degrau a mais.
+     * seguinte nem chega a ser perguntado. O `pobreflixtv.democrat` vem primeiro
+     * porque é o acervo cuja página carrega o vídeo de verdade e cujo player já
+     * foi percorrido até o arquivo (o StreamTape do videobox). O
+     * `verpobreflix.net` é o mesmo acervo no domínio anterior: fica como segunda
+     * tentativa, porque domínio de Pobreflix roda a cada bloqueio e não custa mais
+     * que uma requisição quando está fora. O superflix vem depois: a busca dele é
+     * a mais direta, indexada por id do TMDB, mas a página do episódio é fechada
+     * pelo Cloudflare e só abre com o passe configurado — é o mesmo acervo por
+     * outro caminho, com um degrau a mais.
+     *
+     * A chave opcional `json` diz que a busca responde em JSON e o HTML do
+     * resultado está num campo dele; a chave `cabecalhos` leva os cabeçalhos que
+     * o endpoint exige. As duas nasceram do `pobreflixtv.democrat`, cuja busca é
+     * um XHR (`do=buscarContent`) que devolve `{"html": "..."}`.
      *
      * O `tokyvideo.com` chegou a estar aqui e saiu: a busca dele é montada por
      * JavaScript, então o HTML estático de `/search?q=` só traz a lista de vídeos
      * populares da barra lateral — nenhuma pista do termo pedido, e zero
      * ocorrência do título nos bytes baixados. A regra passa a ser essa: só entra
-     * agregador cujo resultado de busca esteja no HTML que se baixa sem navegador.
+     * agregador cujo resultado de busca esteja no HTML que se baixa sem navegador
+     * — ou no JSON do endpoint que o navegador consulta.
      *
-     * @var array<string, array{busca: string, conteudo: string, episodio?: string, atributos?: array<int, string>}>
+     * @var array<string, array{busca: string, conteudo: string, episodio?: string, atributos?: array<int, string>, json?: string, cabecalhos?: array<string, string>}>
      */
     private const AGREGADORES = [
+        /*
+         * O `pobreflixtv.democrat` é a casa atual do acervo que o
+         * `verpobreflix.net` publicava. Os domínios do Pobreflix rodam a cada
+         * bloqueio, mas a estrutura é a mesma família e a busca mora no próprio
+         * site — o que muda é só o endereço.
+         *
+         * A busca dele não é uma página: o `/buscar` é uma casca com o campo e o
+         * JavaScript é quem consulta `do=buscarContent` e injeta o HTML na tela.
+         * Pedir a página devolveria zero links; o que funciona é pedir o mesmo
+         * endpoint que o navegador pede, com `X-Requested-With`, e ler o campo
+         * `html` da resposta — por isso a chave `json`.
+         *
+         * O conteúdo mora em `/filmes/online/<slug>-<id>/` (e no par
+         * `/series/online/...`), o que separa a ficha do menu e do rodapé.
+         */
+        'pobreflixtv.democrat' => [
+            'busca' => 'https://www.pobreflixtv.democrat/index.php?app=videobox&module=video&controller=index&do=buscarContent&q={termo}',
+            'conteudo' => '#^/(?:filmes|series)/online/#',
+            'json' => 'html',
+            'cabecalhos' => ['X-Requested-With' => 'XMLHttpRequest'],
+        ],
         'verpobreflix.net' => [
             'busca' => 'https://www.verpobreflix.net/search?q={termo}',
             'conteudo' => '#^/series/#',
@@ -312,13 +342,49 @@ class BuscaAgregadores
     }
 
     /**
+     * Extrai o HTML da busca, quando o agregador responde em JSON.
+     *
+     * A busca de alguns agregadores não é uma página: a rota que o navegador
+     * abre é só a casca, e o resultado chega por um endpoint que devolve
+     * `{"html": "..."}`. Ler o corpo cru nesse caso entregaria `{` no lugar de
+     * um link, e a busca pareceria vazia sem ter sido.
+     *
+     * Agregador sem a chave `json` devolve o próprio corpo — é o caso da maioria,
+     * cuja busca já é HTML.
+     *
+     * @param  array{busca: string, conteudo: string, json?: string}  $agregador
+     */
+    private function corpoDaResposta(string $corpo, array $agregador): ?string
+    {
+        $campo = (string) ($agregador['json'] ?? '');
+
+        if ($campo === '') {
+            return $corpo;
+        }
+
+        $dados = json_decode($corpo, true);
+
+        if (! is_array($dados) || ! is_string($dados[$campo] ?? null)) {
+            /*
+             * O site também responde JSON quando a busca volta vazia, mas com o
+             * campo presente e o HTML mínimo. O `null` fica reservado para a
+             * resposta que não tem contrato nenhum — a página de erro ou o
+             * desafio do Cloudflare disfarçado de 200.
+             */
+            return null;
+        }
+
+        return (string) $dados[$campo];
+    }
+
+    /**
      * Consulta a busca interna de um agregador e devolve os links de conteúdo.
      *
      * O `$temporada` e o `$episodio` entram aqui, e não no laço de quem chama,
      * porque é o **agregador** que sabe como descer da ficha para o episódio: a
      * receita mora na declaração dele, junto do padrão de busca.
      *
-     * @param  array{busca: string, conteudo: string, episodio?: string}  $agregador
+     * @param  array{busca: string, conteudo: string, episodio?: string, json?: string, cabecalhos?: array<string, string>}  $agregador
      * @return array<int, string>
      */
     private function consultar(
@@ -327,13 +393,18 @@ class BuscaAgregadores
         string $titulo,
         ?int $temporada = null,
         ?int $episodio = null,
-    ): array
-    {
+    ): array {
         $url = str_replace('{termo}', rawurlencode($titulo), $agregador['busca']);
         $teto = (int) config('services.torrents.stream_direto_tempo_limite', 8);
 
         try {
-            $resposta = $this->cliente->get($url, [], $this->navegador(), $teto);
+            $resposta = $this->cliente->get(
+                $url,
+                [],
+                $this->navegador(),
+                $teto,
+                $agregador['cabecalhos'] ?? []
+            );
         } catch (\Throwable $excecao) {
             $this->marcarSituacao($dominio, 'erro');
 
@@ -357,8 +428,27 @@ class BuscaAgregadores
             return [];
         }
 
+        $corpo = $this->corpoDaResposta((string) $resposta->body(), $agregador);
+
+        if ($corpo === null) {
+            /*
+             * Um agregador que responde JSON sem o campo combinado é o mesmo caso
+             * de uma busca vazia: ele respondeu, mas não entregou resultado. A
+             * distinção entre `sem_resposta` e isto é o que evita culpar a rede
+             * por um endpoint que mudou de contrato.
+             */
+            $this->marcarSituacao($dominio, 'sem_resposta');
+
+            Log::warning('Stream direto: busca do agregador sem o campo esperado.', [
+                'dominio' => $dominio,
+                'campo' => $agregador['json'] ?? '',
+            ]);
+
+            return [];
+        }
+
         $links = $this->links(
-            (string) $resposta->body(),
+            $corpo,
             $url,
             $dominio,
             $agregador['conteudo'],
@@ -724,4 +814,3 @@ class BuscaAgregadores
         return (bool) config('services.torrents.stream_direto_filtro_adulto', true);
     }
 }
-

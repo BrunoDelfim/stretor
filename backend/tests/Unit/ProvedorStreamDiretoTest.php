@@ -395,12 +395,12 @@ class ProvedorStreamDiretoTest extends TestCase
         $censo = app(ProvedorStreamDireto::class)->censoDosAgregadores();
 
         $this->assertSame(
-            ['verpobreflix.net', 'superflixapi.quest'],
+            ['pobreflixtv.democrat', 'verpobreflix.net', 'superflixapi.quest'],
             array_column($censo, 'agregador'),
             'O censo precisa listar todos os agregadores declarados, na ordem da declaração.'
         );
         $this->assertSame(
-            ['nao_consultado', 'nao_consultado'],
+            ['nao_consultado', 'nao_consultado', 'nao_consultado'],
             array_column($censo, 'situacao'),
             'Sem varredura, nenhum agregador pode aparecer como consultado.'
         );

@@ -53,28 +53,79 @@ caso "S04E28 → `... - 87.mkv`", coberto pelo teste
    Registrar no log qual pasta foi considerada da temporada ajuda a fechar isso
    quando o pack real estiver em mãos.
 
-## Link direto sem extensão de vídeo fica de fora
+## Link direto sem extensão de vídeo — resolvido no media-service
 
 **Observado ao ligar o suporte a `url` dos addons Stremio.** O protocolo permite
 que o stream seja um arquivo pronto, e é assim que vários addons entregam vídeo
-sem torrent. Só entra o que termina em `.mp4`, `.m4v`, `.webm`, `.mkv`, `.mov`
-ou `.m3u8` **no caminho**. Ficam de fora:
+sem torrent. Até 2026-10-25, o `prepararSessaoDireta()` exigia uma extensão em
+`EXTENSOES_DIRETAS` **no caminho** e recusava o resto com `formato_desconhecido`.
 
-- redirecionador de embed e página de player;
-- proxy do próprio addon (`/resolve/...`);
-- entrega de serviço pago (`real-debrid.com/d/...`, `alldebrid.com/...`).
+Isso virou bloqueio real quando o Pobreflix passou a ser resolvido pelo
+StreamTape: o arquivo é servido por
+`https://streamtape.com/get_video?id=...&token=...`, e nem esse endereço nem o
+redirecionamento final (um caminho de CDN com o nome do filme) terminam em
+`.mp4`. Eram 1,6 GB de MP4 recusados por causa do texto do link.
 
-O motivo é o contrato do
-[`prepararSessaoDireta()`](../media-service/src/services/sessoes.js:549): ele
-exige uma extensão em `EXTENSOES_DIRETAS` e recusa o resto com
-`formato_desconhecido`. Aceitar no backend um link que morre na primeira checagem
-só trocaria o momento da falha.
+**O que mudou:** o media-service passou a descobrir o formato **pela origem**
+quando a URL não declara extensão — uma requisição de dois bytes com `Range`,
+lendo o `Content-Type` (`video/mp4`, `application/vnd.apple.mpegurl`...) e, se o
+servidor não declarar tipo, a assinatura dos primeiros bytes (`ftyp` = MP4,
+`#EXTM3U` = HLS). A leitura é cancelada no primeiro bloco: se o servidor ignorar
+o `Range`, o filme inteiro não é baixado. Validado no container: `ffprobe` abriu
+o StreamTape (`h264` 720p + `aac`) e a sessão direta foi para `convertendo` com a
+playlist publicada.
 
-**Para abrir esse caminho** seria preciso o media-service sondar a URL com
-`ffprobe` e aceitar quando o `Content-Type` for vídeo, mesmo sem extensão. É
-mudança de outro escopo (custo de sondagem e risco de confundir página com
-arquivo) e **não** inclui serviço pago: o Stretor não deve depender de conta de
-entrega para funcionar.
+O que **continua** de fora, e por decisão de produto:
+
+- entrega de serviço pago (`real-debrid.com/d/...`, `alldebrid.com/...`) — o
+  Stretor não deve depender de conta de entrega;
+- redirecionador de embed e página de player — são páginas, não arquivos; o
+  [`ResolvedorEmbed`](../backend/app/Services/Torrents/ResolvedorEmbed.php:1)
+  percorre apenas cadeias de receita conhecida.
+
+No addon Stremio, a extensão no caminho **continua** sendo exigida
+([`urlDeVideo()`](../backend/app/Services/Torrents/LeituraStreamStremio.php:194)):
+ali não há como sondar cada link sem gastar o orçamento da busca, e o addon
+entrega o mesmo arquivo em vários mirrors. Quem abre o caminho sem extensão é a
+cadeia do scraper, que já provou a relevância da página antes de resolver o
+player.
+
+## Os outros servidores do videobox (MixDrop, DoodStream, Byse)
+
+**Observado em 2026-10-25, na página real do filme.** O `pobreflixtv.democrat`
+declara quatro servidores dublados para o mesmo título, e só o **StreamTape** é
+percorrido hoje — ele responde a um `GET` com `Range` e o token sai de uma
+concatenação de JavaScript no HTML. Os outros três exigem trabalho próprio:
+
+- **MixDrop** (`mixdrop.top/e/<id>`) publica o endereço dentro de um script
+  empacotado (`eval(function(p,a,c,k,e,d)...)`); falta um desempacotador de
+  produção que devolva o `wurl`.
+- **DoodStream** (`playmogo.com/e/<id>`) entrega por `pass_md5`, com token de
+  sessão e `Referer` do embed; a primeira sondagem devolveu "File not found" com
+  o `Referer` certo, então falta entender qual cookie o endpoint espera.
+- **Byse** (`bysebuho.com/e/<id>`) é uma SPA: o HTML tem 1,6 KB e um
+  `<script type="module">`, e o vídeo só existe depois de a aplicação chamar a
+  API interna.
+
+**Para abrir esse caminho**, o desenho é o mesmo do StreamTape: uma receita por
+host dentro do [`LeitorVideobox`](../backend/app/Services/Torrents/LeitorVideobox.php:1),
+sempre com confirmação por sonda — nunca por posição de token no HTML. Enquanto
+não houver receita, o servidor é registrado no log como visto e recusado, e a
+fonte sai do StreamTape (que hoje é quem entrega o dublado).
+
+## A descida para o episódio no videobox não existe
+
+**Observado no mesmo diagnóstico.** O `pobreflixtv.democrat` separa filme
+(`/filmes/online/...`) e série (`/series/online/...`), mas a **página da série**
+não é a do episódio: a lista de episódios chega por um XHR próprio
+(`do=episodesList&id=...`), e o `playerData` do id da série não devolve
+`servers_dub`. O agregador é reconhecido na busca e a página passa na prova de
+mídia, mas o leitor devolve `null` — e a busca segue para o agregador seguinte,
+como deve ser.
+
+**Para abrir esse caminho**, o leitor precisa montar o id do episódio a partir de
+`data-temp`/`data-ep` (ou ler `do=episodesList`) antes de pedir o `playerData`.
+Nada disso foi exercitado com uma série real ainda; o caso medido foi filme.
 
 ## O fallback do espelho por id (`redeflixapi.store`) não é consumido
 

@@ -22,6 +22,7 @@ import {
 } from './hls.js'
 import { logger } from '../utils/logger.js'
 import { contemIndicioPtBr } from '../utils/idiomas.js'
+import { EXTENSOES_DIRETAS, extensaoPelaAmostra, extensaoPeloTipo } from '../utils/formato-fonte.js'
 
 /**
  * Gerenciador de sessões de reprodução.
@@ -387,14 +388,19 @@ export function criarSessao({ magnet, filmeId, temporada = null, episodio = null
 }
 
 /**
- * Extensões de vídeo que o provedor direto pode entregar.
- *
- * Diferente do torrent, aqui não há malha nem escolha de arquivo: a URL já
- * aponta para o vídeo. A extensão serve só para decidir como o FFmpeg lê a
- * entrada — um `.m3u8` é uma playlist HLS (o FFmpeg a segue sozinho) e os
- * demais são arquivos progressivos.
+ * Tempo máximo da sondagem que descobre o formato de uma fonte sem extensão.
  */
-const EXTENSOES_DIRETAS = ['.mp4', '.m4v', '.webm', '.mkv', '.mov', '.m3u8', '.mpd']
+const TEMPO_SONDAGEM_FORMATO_MS = 8000
+
+/**
+ * Agente da sondagem de formato.
+ *
+ * Os CDNs de embed conferem o agente antes de servir o arquivo: o mesmo
+ * `get_video` que abre para um navegador responde erro para um cliente que se
+ * anuncia como biblioteca. A sonda se apresenta como o backend se apresenta.
+ */
+const AGENTE_DE_SONDAGEM =
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
 
 /**
  * Quantas vezes a conversão de uma fonte direta é aberta antes de condená-la.
@@ -547,12 +553,12 @@ async function conferirNomeDaFonte(sessao) {
  * pode conseguir ler o que o ffprobe não conseguiu.
  */
 async function prepararSessaoDireta(sessao) {
-  const extensao = extensaoDaUrl(sessao.url)
+  const extensao = await extensaoDaFonte(sessao.url)
 
-  if (!EXTENSOES_DIRETAS.includes(extensao)) {
+  if (!extensao) {
     throw erroDaFonte(
       'formato_desconhecido',
-      `O link direto não aponta para um formato de vídeo reconhecido (${extensao || 'sem extensão'}).`
+      `O link direto não aponta para um formato de vídeo reconhecido (${extensaoDaUrl(sessao.url) || 'sem extensão'}).`
     )
   }
 
@@ -723,6 +729,100 @@ async function prepararSessaoDireta(sessao) {
  * (`.../video.mp4?token=abc`), e `path.extname` os incluiria no resultado. O
  * caminho é isolado antes para que a extensão saia limpa.
  */
+/**
+ * Descobre a extensão de uma fonte direta.
+ *
+ * A URL é a primeira resposta, e a mais barata: quando termina em `.mp4` ou
+ * `.m3u8`, não há por que perguntar nada a ninguém. Quando não termina — o caso
+ * dos links de embed resolvidos (`/get_video?id=...`), cujo redirecionamento
+ * final também não tem sufixo —, a extensão vem da **origem**, lida numa
+ * requisição de dois bytes. Sem essa segunda chance, a fonte era recusada antes
+ * de o FFmpeg ter a oportunidade de abri-la.
+ *
+ * @param {string} url
+ * @returns {Promise<string>} extensão reconhecida, ou `''`
+ */
+async function extensaoDaFonte(url) {
+  const daUrl = extensaoDaUrl(url)
+
+  if (EXTENSOES_DIRETAS.includes(daUrl)) return daUrl
+
+  return extensaoPelaOrigem(url)
+}
+
+/**
+ * Pergunta à origem qual é o formato da fonte que não declarou extensão.
+ *
+ * A leitura é **parcial e cancelada**: pedimos dois bytes com `Range` e, quando
+ * o servidor ignora o cabeçalho e começa a mandar o arquivo inteiro, lemos só o
+ * primeiro pedaço e fechamos o fluxo. Baixar o filme para descobrir que ele é
+ * um MP4 é exatamente o que esta sonda existe para evitar.
+ *
+ * @param {string} url
+ * @returns {Promise<string>} extensão reconhecida, ou `''`
+ */
+async function extensaoPelaOrigem(url) {
+  const controle = new AbortController()
+  const prazo = setTimeout(() => controle.abort(), TEMPO_SONDAGEM_FORMATO_MS)
+
+  try {
+    const resposta = await fetch(url, {
+      headers: { Range: 'bytes=0-1', 'User-Agent': AGENTE_DE_SONDAGEM },
+      redirect: 'follow',
+      signal: controle.signal,
+    })
+
+    if (!resposta.ok) {
+      logger.warn(`sonda de formato: a origem respondeu ${resposta.status} para ${url}`)
+
+      await resposta.body?.cancel?.().catch(() => {})
+
+      return ''
+    }
+
+    const porTipo = extensaoPeloTipo(resposta.headers.get('content-type'))
+
+    if (porTipo) {
+      await resposta.body?.cancel?.().catch(() => {})
+
+      return porTipo
+    }
+
+    return extensaoPelaAmostra(await lerAmostraDaFonte(resposta))
+  } catch (erro) {
+    logger.warn(`sonda de formato não concluiu para ${url}: ${erro.message}`)
+
+    return ''
+  } finally {
+    clearTimeout(prazo)
+  }
+}
+
+/**
+ * Lê o primeiro pedaço do corpo e encerra a conexão.
+ *
+ * Um `arrayBuffer()` aqui seria perigoso: se o servidor ignorasse o `Range`, a
+ * promessa só resolveria depois do filme inteiro baixado — e a memória do
+ * container iria junto. O leitor entrega o primeiro bloco e o `cancel()` fecha o
+ * fluxo.
+ *
+ * @param {Response} resposta
+ * @returns {Promise<Buffer>}
+ */
+async function lerAmostraDaFonte(resposta) {
+  if (!resposta.body) return Buffer.alloc(0)
+
+  const leitor = resposta.body.getReader()
+
+  try {
+    const { value } = await leitor.read()
+
+    return Buffer.from(value ?? new Uint8Array())
+  } finally {
+    await leitor.cancel().catch(() => {})
+  }
+}
+
 function extensaoDaUrl(url) {
   try {
     const caminho = new URL(url).pathname

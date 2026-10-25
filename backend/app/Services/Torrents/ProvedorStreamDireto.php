@@ -757,26 +757,6 @@ class ProvedorStreamDireto implements ProvedorTorrents
          */
         $urls = $this->extrator->extrair($corpo);
 
-        if ($urls === []) {
-            /*
-             * Sem arquivo na página, o embed conhecido ainda pode levar a um. É
-             * onde entra o [`ResolvedorEmbed`]: quando o agregador só embute o
-             * player de terceiro — o `plenoflu.com`, no caso do
-             * `verpobreflix.net` —, o vídeo mora do outro lado do iframe, e a
-             * cadeia até ele se percorre sem navegador (o `master.m3u8` assinado
-             * que o FirePlayer devolve é a prova disso).
-             */
-            $resolvido = $this->resolvedor->resolver($corpo, $pagina, $teto);
-
-            if ($resolvido !== null) {
-                return $this->fonteResolvida($resolvido, $titulo, $pagina);
-            }
-
-            Log::debug('Stream direto: página sem arquivo de vídeo extraível.', ['pagina' => $pagina]);
-
-            return [];
-        }
-
         /*
          * Cada link de vídeo passa por duas barreiras antes de virar fonte.
          *
@@ -818,7 +798,30 @@ class ProvedorStreamDireto implements ProvedorTorrents
         ));
 
         if ($urls === []) {
-            Log::debug('Stream direto: página não tinha vídeo aproveitável.', ['pagina' => $pagina]);
+            /*
+             * Sem arquivo aproveitável na página, o player embutido ainda pode
+             * levar a um. É onde entra o [`ResolvedorEmbed`]: quando o agregador
+             * só embute o player de terceiro — o `plenoflu.com`, no caso do
+             * `verpobreflix.net`, ou o videobox do `pobreflixtv.democrat` —, o
+             * vídeo mora do outro lado, e a cadeia até ele se percorre sem
+             * navegador (o `master.m3u8` assinado do FirePlayer e o MP4 do
+             * StreamTape são a prova disso).
+             *
+             * A tentativa vale também quando o extrator **achou** URLs e nenhuma
+             * passou no filtro. Antes, a lista não vazia encerrava o fluxo: a
+             * página do `pobreflixtv.democrat` publica um `<link rel="manifest"
+             * href="/manifest.webm">`, e o `.webm` do manifest entrava como se
+             * fosse filme. A página certa era descartada por "não tinha vídeo
+             * aproveitável" — com o vídeo a uma requisição de distância, no
+             * player que o filtro nunca chegou a consultar.
+             */
+            $resolvido = $this->resolvedor->resolver($corpo, $pagina, $teto);
+
+            if ($resolvido !== null) {
+                return $this->fonteResolvida($resolvido, $titulo, $pagina);
+            }
+
+            Log::debug('Stream direto: página sem arquivo de vídeo aproveitável.', ['pagina' => $pagina]);
 
             return [];
         }

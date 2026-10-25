@@ -110,6 +110,7 @@ class ResolvedorEmbed
     public function __construct(
         private readonly OrcamentoBusca $orcamento,
         private readonly ClienteHttp $cliente,
+        private readonly LeitorVideobox $videobox,
     ) {
     }
 
@@ -150,6 +151,19 @@ class ResolvedorEmbed
          */
         if (! $this->disponivel() || $teto <= 0 || ! $this->temTempoParaConsulta($teto)) {
             return null;
+        }
+
+        /*
+         * O player do videobox vem primeiro porque a página não tem iframe nem
+         * arquivo: o vídeo só existe depois de o JavaScript perguntar ao endpoint
+         * do site quais servidores atendem aquele id. Sem esta leitura, a página
+         * do `pobreflixtv.democrat` — que tem o filme — parecia vazia, e o
+         * agregador era descartado por "sem prova de mídia".
+         */
+        $videobox = $this->videobox->resolver($html, $referer, $teto);
+
+        if ($videobox !== null) {
+            return $videobox;
         }
 
         foreach ($this->embedsDoPlenoflu($html) as $embed) {

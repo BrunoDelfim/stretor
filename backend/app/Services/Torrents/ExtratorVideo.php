@@ -403,7 +403,31 @@ class ExtratorVideo
          * a página seria descartada por "sem prova de mídia" mesmo com o player
          * a um atributo de distância.
          */
-        return $this->temEmbedEmAtributo($html);
+        return $this->temEmbedEmAtributo($html) || $this->temPlayerVideobox($html);
+    }
+
+    /**
+     * Diz se a página declara um player do "videobox" (Invision Community).
+     *
+     * É o caso do `pobreflixtv.democrat`: o HTML chega com
+     * `<div id="view" data-video-id="74844">` vazio, e quem monta o player é o
+     * JavaScript da página, consultando um endpoint do próprio site. Não há
+     * iframe, não há `data-src` com URL e não há arquivo — só o id do vídeo. Sem
+     * reconhecer essa declaração, a página legítima caía em "sem prova de mídia"
+     * (e, antes dela, numa renderização de navegador que também não acha player,
+     * porque o player depende do clique do usuário).
+     *
+     * A prova só vale com a marca do `videobox` no HTML junto do atributo: um
+     * `data-video-id` solto aparece em widget de enquete e em tema de fórum, e
+     * aceitá-lo faria qualquer ficha de fórum passar por página de vídeo.
+     */
+    private function temPlayerVideobox(string $html): bool
+    {
+        if (stripos($html, 'videobox') === false) {
+            return false;
+        }
+
+        return (bool) preg_match('#data-video-id\s*=\s*["\']\d+["\']#i', $html);
     }
 
     /**
