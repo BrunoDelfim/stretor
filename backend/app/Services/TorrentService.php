@@ -360,7 +360,10 @@ class TorrentService
             if ($faseOriginal !== []) {
                 $fontes = $this->mesclarFontes(
                     $fontes,
-                    $this->catalogo->buscar($faseOriginal, $ano, $imdbId, $temporada, $episodio)
+                    // O censo é acumulado entre as duas fases: o relatório que o
+                    // usuário vê precisa mostrar tudo o que foi perguntado, e não
+                    // só o que a última fase (muitas vezes sem tempo) fez.
+                    $this->catalogo->buscar($faseOriginal, $ano, $imdbId, $temporada, $episodio, reiniciarCenso: false)
                 );
 
                 $titulos = array_merge($titulos, $faseOriginal);
@@ -650,6 +653,18 @@ class TorrentService
     private function valeSegundaTentativa(array $fontes, string $titulo, ?string $tituloOriginal): bool
     {
         if (! config('services.torrents.titulo_original_segunda_tentativa', true)) {
+            return false;
+        }
+
+        /*
+         * Sem tempo, a segunda fase não começa. Ela existe para achar o release
+         * pelo nome internacional, e uma rodada que nasce sem orçamento só
+         * produziria `nao_consultado` em todos os provedores — foi o que fez um
+         * relatório dizer que ninguém tinha sido perguntado, quando a primeira
+         * fase havia recolhido 26 fontes. O que já veio fica; o resto é conversa
+         * para a próxima busca.
+         */
+        if ($this->orcamento->esgotado()) {
             return false;
         }
 

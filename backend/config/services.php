@@ -276,10 +276,18 @@ return [
          * Quando a cascata entra — o stream direto voltou vazio —, este orçamento
          * **soma** ao dela; quem impede a soma de estourar o tempo do frontend é o
          * `tempo_total_busca`: cada canal é aberto com o menor prazo entre o seu e
-         * o teto global. O valor padrão cobre a descida (série → episódio) com
-         * folga para o FlareSolverr de cada página.
+         * o teto global.
+         *
+         * O padrão é **30 s**, e não os 45 de antes. Medido no acervo real: um
+         * título que o scraper não tem gastava até 41 s varrendo termos, agregador
+         * e motor (com renderização do FlareSolverr pelo caminho) e deixava a
+         * cascata com o que sobrava dos 55 s — quando ela recolhia 26 fontes, boa
+         * parte do trabalho era jogada fora por falta de tempo para a segunda fase
+         * e para a peneira de malha. Trinta segundos ainda cobrem as duas
+         * renderizações de uma série (listagem + episódio) e devolvem metade do
+         * teto global para quem responde em milissegundos.
          */
-        'stream_direto_orcamento' => (int) env('TORRENTS_STREAM_DIRETO_ORCAMENTO', 45),
+        'stream_direto_orcamento' => (int) env('TORRENTS_STREAM_DIRETO_ORCAMENTO', 30),
 
         /*
          * Teto, em segundos, da busca inteira — os dois métodos de indexação

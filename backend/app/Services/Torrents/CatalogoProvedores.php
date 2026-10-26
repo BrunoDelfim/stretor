@@ -236,6 +236,7 @@ class CatalogoProvedores
         ?string $imdbId,
         ?int $temporada = null,
         ?int $episodio = null,
+        bool $reiniciarCenso = true,
     ): array {
         $fontes = [];
 
@@ -246,7 +247,20 @@ class CatalogoProvedores
          */
         $this->inspecoes = 0;
         $this->packsInspecionados = [];
-        $this->reiniciarCenso();
+
+        /*
+         * O censo é da **busca**, não da chamada. A busca de um título pode ter
+         * duas fases — o título traduzido e o original —, e cada uma chama este
+         * método; zerar aqui fazia o relatório mostrar só a última. Era o que
+         * acontecia com um episódio em que o Torrentio respondeu 26 fontes na
+         * primeira fase e o relatório final dizia `nao_consultado` para todos os
+         * provedores, porque a segunda fase chegou sem orçamento e não perguntou
+         * nada. Quem chama a segunda fase passa `false`; quem começa uma busca
+         * nova fica com o padrão.
+         */
+        if ($reiniciarCenso) {
+            $this->reiniciarCenso();
+        }
 
         /*
          * O orçamento da busca inteira é aberto aqui, no primeiro passo. Cada

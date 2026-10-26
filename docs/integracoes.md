@@ -1328,6 +1328,22 @@ depois de `ordenar()`: ela zera `na_lista` e recontá-lo a partir da lista que
 realmente saiu. Assim o censo passa a refletir a lista, e não a cascata — um
 provedor só é `com_fonte` se a fonte dele sobreviveu até o fim.
 
+##### O censo é da busca, não da chamada
+
+A busca de um título pode ter **duas fases** — o título traduzido e o original —, e
+cada uma chama `CatalogoProvedores::buscar()`. O censo era zerado no início de cada
+chamada, então o relatório final mostrava apenas a segunda fase. Foi o que aconteceu
+com "Donas de Casa Desesperadas" S01E01: o Torrentio respondeu **26 fontes** (uma em
+PT-BR) na primeira fase e a cobertura devolveu `nao_consultado` para todos, porque a
+segunda fase começou sem orçamento e não perguntou nada. O usuário lê o relatório e
+conclui que o torrent nem foi consultado — quando ele foi o único que respondeu.
+
+Agora `buscar()` recebe `reiniciarCenso` (padrão `true`) e
+[`buscarPelosTorrents()`](../backend/app/Services/TorrentService.php:338) passa
+`false` na segunda fase: o censo acumula. Junto disso, a segunda fase **não começa**
+com o orçamento esgotado — uma rodada que nasceria sem tempo só produziria
+`nao_consultado` e poluiria o relatório.
+
 A linha do `stream_direto` carrega ainda a chave `agregadores`, com o censo de cada
 agregador de vídeo que ele consultou: é o único provedor com um nível abaixo dele.
 Os demais devolvem essa chave vazia. O desenho está em
@@ -2844,11 +2860,19 @@ entram já montadas e **não** passam por `ordenar()`: elas são devolvidas como
 sem passar pela ordenação que espera magnet.
 
 O stream direto abre o **próprio orçamento** (`TORRENTS_STREAM_DIRETO_ORCAMENTO`,
-padrão 45 s) porque o custo dele é de outra ordem: uma renderização de navegador por
-página, de 10 a 15 s, e são necessárias duas no mínimo (a listagem e a página do
+padrão **30 s**) porque o custo dele é de outra ordem: uma renderização de navegador
+por página, de 10 a 15 s, e são necessárias duas no mínimo (a listagem e a página do
 episódio). Quando a cascata também roda — o caso em que o direto voltou vazio —, o
 que impede os dois prazos de somarem além do que o frontend espera é o teto global
 (`TORRENTS_TEMPO_TOTAL_BUSCA`), que corta cada canal em `abrir()`.
+
+O padrão era 45 s e caiu para 30 s depois de uma medição no acervo real: um título
+que o scraper **não** tem gastava até 41 s varrendo termos, agregadores e motor (com
+renderização do FlareSolverr pelo caminho) e deixava a cascata com o que sobrava dos
+55 s. O efeito era cruel — a cascata recolhia 26 fontes do Torrentio e a segunda
+fase entrava sem orçamento, então o relatório dizia `nao_consultado` para todos os
+provedores e o usuário concluía que nada tinha sido perguntado. Com 30 s, o mesmo
+título agora gasta ~26 s no direto e a cascata tem tempo de rodar as duas fases.
 
 ##### O corte de idioma roda na busca, e não só na montagem
 
@@ -4373,7 +4397,7 @@ TORRENTS_STREAM_DIRETO_INTERVALO_MAX=1200
 TORRENTS_STREAM_DIRETO_MAX_PAGINAS=6
 TORRENTS_STREAM_DIRETO_MAX_FONTES=2
 TORRENTS_STREAM_DIRETO_TEMPO_LIMITE=8
-TORRENTS_STREAM_DIRETO_ORCAMENTO=45
+TORRENTS_STREAM_DIRETO_ORCAMENTO=30
 TORRENTS_STREAM_DIRETO_MIN_PALAVRAS_CHAVE=2
 TORRENTS_STREAM_DIRETO_FILTRO_ADULTO=true
 TORRENTS_STREAM_DIRETO_BUSCA_DIRETA=true

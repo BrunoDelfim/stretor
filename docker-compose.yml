@@ -207,7 +207,7 @@ services:
       # evita que os espelhos de um vídeo só encham a lista.
       - TORRENTS_STREAM_DIRETO_MAX_FONTES=${TORRENTS_STREAM_DIRETO_MAX_FONTES:-2}
       - TORRENTS_STREAM_DIRETO_TEMPO_LIMITE=${TORRENTS_STREAM_DIRETO_TEMPO_LIMITE:-10}
-      - TORRENTS_STREAM_DIRETO_ORCAMENTO=${TORRENTS_STREAM_DIRETO_ORCAMENTO:-45}
+      - TORRENTS_STREAM_DIRETO_ORCAMENTO=${TORRENTS_STREAM_DIRETO_ORCAMENTO:-30}
       # Sondagem de existência do arquivo (HEAD): antes de aceitar o que o espelho
       # entregou, o backend confirma por cabeçalho que o CDN está servindo algo.
       # Desligada, o valor padrão `true` de `config/services.php` mantém o fluxo
