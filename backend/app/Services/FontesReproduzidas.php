@@ -126,6 +126,57 @@ class FontesReproduzidas
         return $fonte;
     }
 
+    /**
+     * Apaga o histórico de fontes comprovadas.
+     *
+     * O histórico é uma conveniência, e é isso que este método lembra: apagá-lo
+     * não perde nada — a próxima busca redescobre as fontes e volta a gravar o
+     * que reproduzir. O que ele resolve é o caso de um resultado antigo continuar
+     * na frente da fila depois de uma correção na busca (o magnet que tocou ontem,
+     * por exemplo), sem esperar prazo nenhum: o histórico não expira, só tem teto
+     * por título.
+     *
+     * Sem filtro, apaga tudo. Com `$tipo` e `$tmdbId`, só aquele título; com
+     * temporada e episódio, só aquele episódio. Devolve quantas linhas saíram,
+     * para quem chama dizer o que fez.
+     */
+    public function limpar(
+        ?TipoMidia $tipo = null,
+        ?int $tmdbId = null,
+        ?int $temporada = null,
+        ?int $episodio = null,
+    ): int {
+        $consulta = FonteReproduzida::query();
+
+        if ($tipo !== null) {
+            $consulta->where('tipo', $tipo->value);
+        }
+
+        if ($tmdbId !== null) {
+            $consulta->where('tmdb_id', $tmdbId);
+        }
+
+        if ($temporada !== null) {
+            $consulta->where('temporada', $temporada);
+        }
+
+        if ($episodio !== null) {
+            $consulta->where('episodio', $episodio);
+        }
+
+        $apagadas = $consulta->delete();
+
+        Log::info('Histórico de fontes comprovadas limpo.', [
+            'tipo' => $tipo?->value,
+            'tmdb_id' => $tmdbId,
+            'temporada' => $temporada,
+            'episodio' => $episodio,
+            'apagadas' => $apagadas,
+        ]);
+
+        return $apagadas;
+    }
+
     /** Consulta base do título — o mesmo recorte usado para gravar e para podar. */
     private function doTitulo(TipoMidia $tipo, int $tmdbId, int $temporada, int $episodio): Builder
     {

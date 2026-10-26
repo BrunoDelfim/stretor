@@ -1481,6 +1481,14 @@ Três detalhes de desenho:
   por isso o `fonte_id`, o `magnet` e o `stream` são validados antes de virar
   histórico.
 
+O histórico **não distingue tipo de fonte**: ele devolve o que tocou por último,
+seja um magnet ou um link direto. É o preço do atalho — se um magnet do Torrentio
+serviu o título ontem e hoje a busca achou um StreamTape melhor, o magnet salvo
+continua vindo primeiro até sair do histórico (ele não expira; só tem teto por
+título). Para forçar a redescoberta, o comando
+[`fontes:limpar`](comandos.md#fonteslimpar--apaga-os-links-comprovados) apaga o
+histórico inteiro ou só o de um título/episódio.
+
 Chaves: `TORRENTS_FONTES_SALVAS` e `TORRENTS_FONTES_SALVAS_MAX`.
 
 #### A paciência com a peça se mede pelo progresso, não pelo relógio

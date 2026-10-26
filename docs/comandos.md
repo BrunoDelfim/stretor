@@ -142,6 +142,36 @@ páginas). Em desenvolvimento, nada dispara sozinho (`VERIFICACAO_AGENDADA=false
 no VPS, ligue essa chave para o agendador cuidar da rotina diária no horário de
 `VERIFICACAO_HORARIO`.
 
+#### `fontes:limpar` — apaga os links comprovados
+
+A busca guarda a fonte que reproduziu inteira e a coloca na frente da fila na
+próxima abertura do mesmo título. É o que faz a segunda sessão começar sem
+tentativa-e-erro — e o que faz um magnet antigo continuar aparecendo primeiro
+mesmo depois de a busca aprender a achar um link direto melhor. O histórico não
+expira; só tem teto por título.
+
+```bash
+# Histórico inteiro (todos os títulos e episódios)
+docker compose exec backend php artisan fontes:limpar
+
+# Só um título
+docker compose exec backend php artisan fontes:limpar --tmdb=969681
+
+# Só um episódio
+docker compose exec backend php artisan fontes:limpar --tmdb=1399 --temporada=2 --episodio=5
+```
+
+| Opção | Para que serve |
+|-------|----------------|
+| `--tmdb=ID` | Limita ao título |
+| `--tipo=filme\|serie` | Limita ao tipo (sem isso, os dois) |
+| `--temporada=N` | Temporada do episódio (exige `--tmdb` e `--episodio`) |
+| `--episodio=N` | Episódio (exige `--tmdb` e `--temporada`) |
+
+Não se perde nada: a próxima busca redescobre as fontes e o que reproduzir volta a
+ser gravado. O cache de **resposta dos provedores** (30 min, Redis) é outro: para
+ele, `TORRENTS_CACHE_BYPASS=true` ou `make cache-clear`.
+
 #### `fontes:status` — só leitura, não toca em tracker
 
 Diz quantas páginas já estão prontas, quanto já foi indexado e como terminou a
