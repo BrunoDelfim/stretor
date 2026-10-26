@@ -227,4 +227,249 @@ class LeitorVideoboxTest extends TestCase
 
         $this->assertNull($metodo->invoke($leitor, "'https://streamtape.com/e/abc'"));
     }
+
+    /*
+     * ------------------------------------------------------------------
+     * Série: a ficha não serve vídeo, o episódio serve.
+     * ------------------------------------------------------------------
+     *
+     * O `playerData` da ficha (`/series/online/...`) vem com `servers_dub` vazio,
+     * e era por isso que série caía na cascata de torrents mesmo com o acervo no
+     * site: a página existia, provava ser o título, e não entregava arquivo. O
+     * caminho até o episódio é o `episodesList&season=`, que devolve a URL de cada
+     * episódio da temporada.
+     */
+
+    private const SERIE = 'https://www.pobreflixtv.democrat/series/online/round-6-dublado-1102/';
+
+    private const EPISODIO = 'https://www.pobreflixtv.democrat/episodios/online/round-6-2x2-dublado-1104/';
+
+    private const PLAYER_DATA_SERIE = 'https://www.pobreflixtv.democrat/index.php?app=videobox&module=video&controller=view&do=playerData&id=1102';
+
+    private const PLAYER_DATA_EPISODIO = 'https://www.pobreflixtv.democrat/index.php?app=videobox&module=video&controller=view&do=playerData&id=1104';
+
+    private const EPISODES_LIST = 'https://www.pobreflixtv.democrat/index.php?app=videobox&module=video&controller=view&do=episodesList&id=1102&season=2';
+
+    /** A ficha da série: player vazio, sem numeração de episódio. */
+    private function paginaDaSerie(): string
+    {
+        return '<html><head><base href="https://www.pobreflixtv.democrat/"></head><body>'
+            .'<div id="view" data-video-id="1102" data-tmdb-id="93405" data-temp="" data-ep=""></div>'
+            .'<button data-season="2">Temporada 2</button>'
+            .'<script src="/uploads/javascript_videobox/front.js"></script>'
+            .'</body></html>';
+    }
+
+    /** A página do episódio, com a numeração preenchida. */
+    private function paginaDoEpisodio(): string
+    {
+        return '<html><head><base href="https://www.pobreflixtv.democrat/"></head><body>'
+            .'<div id="view" data-video-id="1104" data-tmdb-id="93405" data-temp="2" data-ep="2"></div>'
+            .'<script src="/uploads/javascript_videobox/front.js"></script>'
+            .'</body></html>';
+    }
+
+    /**
+     * O JSON do `episodesList` da temporada 2, como o site o devolve.
+     *
+     * O primeiro episódio tem URL diferente do segundo de propósito: o teste
+     * prova que o leitor escolhe pelo número, e não pela posição na lista.
+     */
+    private function listaDaTemporada(): string
+    {
+        return (string) json_encode([
+            'canEdit' => '',
+            'episodes' => [
+                ['number' => '1', 'title' => 'Pão e loteria', 'url' => 'https://www.pobreflixtv.democrat/episodios/online/round-6-2x1-dublado-45685/'],
+                ['number' => '2', 'title' => 'Adeus, verão', 'url' => self::EPISODIO],
+                ['number' => '3', 'title' => 'Um passo à frente', 'url' => 'https://www.pobreflixtv.democrat/episodios/online/round-6-2x3-dublado-45686/'],
+            ],
+        ]);
+    }
+
+    /** O player da página do episódio declara o StreamTape dublado. */
+    private function dadosDoEpisodio(): string
+    {
+        return (string) json_encode([
+            'players' => [
+                ['label' => 'StreamTape', 'url' => 'https://streamtape.com/e/'],
+            ],
+            'servers_dub' => 'mixdrop=pj96zr73i80odw&amp;streamtape=g2YjDDG4vAfxLe',
+            'servers_leg' => '',
+            'is_episode' => '1',
+            'current_audio' => 'Dublado',
+        ]);
+    }
+
+    /**
+     * A ficha não tem servidor, o episódio tem: o leitor desce e devolve o vídeo.
+     */
+    public function test_serie_desce_para_a_pagina_do_episodio(): void
+    {
+        Http::fake([
+            self::EPISODES_LIST => Http::response($this->listaDaTemporada(), 200, ['Content-Type' => 'application/json']),
+            self::PLAYER_DATA_SERIE => Http::response($this->dadosDoPlayer(false), 200, ['Content-Type' => 'application/json']),
+            self::PLAYER_DATA_EPISODIO => Http::response($this->dadosDoEpisodio(), 200, ['Content-Type' => 'application/json']),
+            'https://streamtape.com/e/*' => Http::response($this->embedStreamtape()),
+            'https://streamtape.com/get_video*' => Http::response('....ftypisom', 206, ['Content-Type' => 'video/mp4']),
+            '*' => Http::response($this->paginaDoEpisodio()),
+        ]);
+
+        $resolvido = $this->leitor()->resolver($this->paginaDaSerie(), self::SERIE, 10, 2, 2);
+
+        $this->assertNotNull($resolvido);
+        $this->assertSame('dublado', $resolvido['idioma']);
+        $this->assertStringContainsString('token='.self::TOKEN_BOM, $resolvido['url']);
+
+        // A descida aconteceu: a lista da temporada foi pedida e a página do
+        // episódio foi aberta — nessa ordem.
+        Http::assertSent(fn ($requisicao) => str_contains($requisicao->url(), 'do=episodesList'));
+        Http::assertSent(fn ($requisicao) => $requisicao->url() === self::EPISODIO);
+    }
+
+    /**
+     * Episódio que não existe na temporada não vira fonte — e não abre página
+     * nenhuma: a lista é a única fonte de verdade sobre o que o acervo tem.
+     */
+    public function test_serie_sem_o_episodio_pedido_devolve_null(): void
+    {
+        Http::fake([
+            self::EPISODES_LIST => Http::response($this->listaDaTemporada(), 200, ['Content-Type' => 'application/json']),
+            self::PLAYER_DATA_SERIE => Http::response($this->dadosDoPlayer(false), 200, ['Content-Type' => 'application/json']),
+            '*' => Http::response('não deveria abrir episódio nenhum'),
+        ]);
+
+        $this->assertNull($this->leitor()->resolver($this->paginaDaSerie(), self::SERIE, 10, 2, 7));
+
+        Http::assertNotSent(fn ($requisicao) => str_contains($requisicao->url(), 'episodios/online'));
+    }
+
+    /**
+     * A página do episódio **não** desce de novo.
+     *
+     * Nela os `data-temp`/`data-ep` vêm preenchidos; servidor vazio ali significa
+     * acervo sem vídeo. Sem essa guarda, o leitor pediria a lista da temporada a
+     * partir do id do episódio, receberia uma lista vazia e gastaria duas
+     * requisições para chegar ao mesmo `null`.
+     */
+    public function test_pagina_de_episodio_sem_servidor_nao_desce_de_novo(): void
+    {
+        Http::fake([
+            self::PLAYER_DATA_EPISODIO => Http::response($this->dadosDoPlayer(false), 200, ['Content-Type' => 'application/json']),
+            '*' => Http::response('nada mais deveria ser pedido'),
+        ]);
+
+        $this->assertNull($this->leitor()->resolver($this->paginaDoEpisodio(), self::EPISODIO, 10, 2, 2));
+
+        Http::assertNotSent(fn ($requisicao) => str_contains($requisicao->url(), 'do=episodesList'));
+    }
+
+    /**
+     * Sem temporada e episódio no pedido, a ficha é tratada como qualquer página
+     * sem servidor: `null`, sem consulta extra. É o caso do fluxo de filme
+     * aberto numa página de série por engano da busca.
+     */
+    public function test_serie_sem_numeracao_no_pedido_nao_desce(): void
+    {
+        Http::fake([
+            self::PLAYER_DATA_SERIE => Http::response($this->dadosDoPlayer(false), 200, ['Content-Type' => 'application/json']),
+            '*' => Http::response('nada mais deveria ser pedido'),
+        ]);
+
+        $this->assertNull($this->leitor()->resolver($this->paginaDaSerie(), self::SERIE, 10));
+
+        Http::assertNotSent(fn ($requisicao) => str_contains($requisicao->url(), 'do=episodesList'));
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * MixDrop: o segundo servidor, e o que salva o episódio quando o
+     * espelho do StreamTape já foi apagado ("Video not found!").
+     * ------------------------------------------------------------------
+     */
+
+    /** O MP4 que o MixDrop publica, como ele aparece depois de desempacotado. */
+    private const MP4_MIXDROP = 'https://a-delivery44.mxcontent.net/v2/abc.mp4?s=token&e=exp';
+
+    /**
+     * Um script empacotado no formato do packer clássico.
+     *
+     * O dicionário é montado à mão e o corpo só usa índices: é exatamente o que
+     * o `p.a.c.k.e.r` produz. Depois de desempacotado, vira
+     * `MDCore.wurl="//a-delivery44.mxcontent.net/v2/abc.mp4?s=token&e=exp";`.
+     *
+     * A URL do fixture não tem dígito solto de propósito: o packer troca
+     * **todo** token pelo número correspondente, e um `1` no meio da query
+     * seria confundido com o índice 1 (é o mesmo cuidado que os scripts reais
+     * tomam, escondendo a query atrás de letras).
+     */
+    private function scriptDoMixdrop(): string
+    {
+        return '<html><body><script>eval(function(p,a,c,k,e,d){e=function(c){return c};'
+            ."if(!''.replace(/^/,String)){while(c--){d[c]=k[c]||c}k=[function(e){return d[e]}];"
+            ."e=function(){return'\\\\w+'};c=1};while(c--){if(k[c]){p=p.replace(new RegExp('\\\\b'+e(c)+'\\\\b','g'),k[c])}}"
+            ."return p}('0.1=\"2\";',62,3,'MDCore|wurl|//a-delivery44.mxcontent.net/v2/abc.mp4?s=token&e=exp'.split('|'),0,{}))"
+            .'</script></body></html>';
+    }
+
+    /**
+     * Sem StreamTape no player, o MixDrop responde pelo episódio.
+     *
+     * É o caso real do acervo: o site declara os quatro servidores, mas o espelho
+     * do StreamTape daquele episódio já foi apagado. Antes o leitor devolvia
+     * `null` e a série caía na cascata de torrents; agora ele tenta o próximo
+     * servidor com receita e entrega o MP4 do CDN.
+     */
+    public function test_mixdrop_entrega_o_mp4_quando_o_streamtape_nao_tem(): void
+    {
+        $dados = (string) json_encode([
+            'players' => [
+                ['label' => 'MixDrop', 'url' => 'https://mixdrop.top/e/'],
+            ],
+            'servers_dub' => 'mixdrop=abc123',
+            'servers_leg' => '',
+            'current_audio' => 'Dublado',
+        ]);
+
+        Http::fake([
+            self::PLAYER_DATA => Http::response($dados, 200, ['Content-Type' => 'application/json']),
+            'https://mixdrop.top/e/*' => Http::response($this->scriptDoMixdrop()),
+            'https://a-delivery44.mxcontent.net/*' => Http::response('....ftypisom', 206, ['Content-Type' => 'video/mp4']),
+            '*' => Http::response('resposta não esperada'),
+        ]);
+
+        $resolvido = $this->leitor()->resolver($this->pagina(), self::PAGINA, 10);
+
+        $this->assertNotNull($resolvido);
+        $this->assertSame(self::MP4_MIXDROP, $resolvido['url']);
+        $this->assertSame('dublado', $resolvido['idioma']);
+    }
+
+    /**
+     * O desempacotador só age quando reconhece o packer.
+     *
+     * Uma página que apenas mencione `eval(function(` faria o leitor procurar um
+     * `.mp4` dentro de lixo — e o `null` é o que mantém o erro no log em vez de
+     * virar fonte quebrada.
+     */
+    public function test_desempacotador_ignora_pagina_sem_packer(): void
+    {
+        $metodo = new \ReflectionMethod($this->leitor(), 'desempacotar');
+        $metodo->setAccessible(true);
+
+        $this->assertNull($metodo->invoke($this->leitor(), '<html>eval(function( nada aqui</html>'));
+        $this->assertNull($metodo->invoke($this->leitor(), '<html>página limpa</html>'));
+    }
+
+    /** O endereço relativo (`//cdn`) do MixDrop sai como `https://`. */
+    public function test_endereco_do_mixdrop_normaliza_o_esquema(): void
+    {
+        $metodo = new \ReflectionMethod($this->leitor(), 'enderecoDoMixdrop');
+        $metodo->setAccessible(true);
+
+        $this->assertSame(
+            self::MP4_MIXDROP,
+            $metodo->invoke($this->leitor(), $this->scriptDoMixdrop())
+        );
+    }
 }

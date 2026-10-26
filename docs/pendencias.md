@@ -90,42 +90,60 @@ entrega o mesmo arquivo em vários mirrors. Quem abre o caminho sem extensão é
 cadeia do scraper, que já provou a relevância da página antes de resolver o
 player.
 
-## Os outros servidores do videobox (MixDrop, DoodStream, Byse)
+## Os outros servidores do videobox (DoodStream e Byse)
 
-**Observado em 2026-10-25, na página real do filme.** O `pobreflixtv.democrat`
-declara quatro servidores dublados para o mesmo título, e só o **StreamTape** é
-percorrido hoje — ele responde a um `GET` com `Range` e o token sai de uma
-concatenação de JavaScript no HTML. Os outros três exigem trabalho próprio:
+**Observado em 2026-10-25/26, nas páginas reais.** O `pobreflixtv.democrat` declara
+quatro servidores dublados para o mesmo título. Dois já são percorridos:
 
-- **MixDrop** (`mixdrop.top/e/<id>`) publica o endereço dentro de um script
-  empacotado (`eval(function(p,a,c,k,e,d)...)`); falta um desempacotador de
-  produção que devolva o `wurl`.
+- **StreamTape** (`streamtape.com/e/<id>`) — `get_video` com token em
+  concatenação de JavaScript. É o primeiro da fila, e também o espelho que o site
+  mais deixa apodrecer: episódios antigos respondem "Video not found!".
+- **MixDrop** (`mixdrop.top/e/<id>`) — o endereço sai de um script empacotado
+  (`eval(function(p,a,c,k,e,d)...)`), desempacotado no backend, e leva a um
+  `mxcontent.net/...mp4?s=...&e=...` com `Range` e faststart. Entrou porque era
+  ele que salvava o episódio quando o StreamTape estava morto.
+
+Continuam de fora:
+
 - **DoodStream** (`playmogo.com/e/<id>`) entrega por `pass_md5`, com token de
-  sessão e `Referer` do embed; a primeira sondagem devolveu "File not found" com
-  o `Referer` certo, então falta entender qual cookie o endpoint espera.
+  sessão e `Referer` do embed; a sondagem devolveu "File not found" com o
+  `Referer` certo, então falta entender qual cookie o endpoint espera.
 - **Byse** (`bysebuho.com/e/<id>`) é uma SPA: o HTML tem 1,6 KB e um
   `<script type="module">`, e o vídeo só existe depois de a aplicação chamar a
   API interna.
 
-**Para abrir esse caminho**, o desenho é o mesmo do StreamTape: uma receita por
-host dentro do [`LeitorVideobox`](../backend/app/Services/Torrents/LeitorVideobox.php:1),
-sempre com confirmação por sonda — nunca por posição de token no HTML. Enquanto
-não houver receita, o servidor é registrado no log como visto e recusado, e a
-fonte sai do StreamTape (que hoje é quem entrega o dublado).
+**Para abrir esses dois**, o desenho é o mesmo: uma receita por host dentro do
+[`LeitorVideobox`](../backend/app/Services/Torrents/LeitorVideobox.php:1), sempre
+com confirmação por sonda — nunca por posição de token no HTML. Enquanto não
+houver receita, o servidor é registrado no log como visto e recusado.
 
-## A descida para o episódio no videobox não existe
+## A descida para o episódio no videobox — resolvida
 
-**Observado no mesmo diagnóstico.** O `pobreflixtv.democrat` separa filme
-(`/filmes/online/...`) e série (`/series/online/...`), mas a **página da série**
-não é a do episódio: a lista de episódios chega por um XHR próprio
-(`do=episodesList&id=...`), e o `playerData` do id da série não devolve
-`servers_dub`. O agregador é reconhecido na busca e a página passa na prova de
-mídia, mas o leitor devolve `null` — e a busca segue para o agregador seguinte,
-como deve ser.
+**Observado em 2026-10-25, resolvido em 2026-10-26.** O
+`pobreflixtv.democrat` separa filme (`/filmes/online/...`), série
+(`/series/online/...`) e episódio (`/episodios/online/<slug>-<T>x<E>-<id>/`). A
+busca devolve a **ficha da série**, e o `playerData` do id da série vem com
+`servers_dub` vazio — por isso a série caía na cascata de torrents mesmo tendo
+acervo no site.
 
-**Para abrir esse caminho**, o leitor precisa montar o id do episódio a partir de
-`data-temp`/`data-ep` (ou ler `do=episodesList`) antes de pedir o `playerData`.
-Nada disso foi exercitado com uma série real ainda; o caso medido foi filme.
+O caminho é o próprio endpoint do player:
+`do=episodesList&id=<série>&season=<temporada>` devolve
+`{"episodes":[{"number":"1","url":".../episodios/online/..."}]}`. Quando o
+pedido traz temporada e episódio, o [`LeitorVideobox`](../backend/app/Services/Torrents/LeitorVideobox.php:1)
+consulta essa lista, escolhe o episódio **pelo número** e recomeça a leitura na
+página dele — onde o id é o do episódio e os servidores existem.
+
+Duas guardas: a descida acontece **uma vez** (ficha → episódio; a página do
+episódio tem `data-temp`/`data-ep` preenchidos e não desce de novo), e sem
+temporada/episódio no pedido a ficha é tratada como qualquer página sem servidor.
+Medido no acervo real: "Round 6" S02E02 → fonte direta pt-BR em 14,3 s, sem a
+cascata de torrents entrar.
+
+**O que continua em aberto** nesse caminho: a lista é pedida por temporada, e o
+`season` é o único parâmetro — se o site mudar a forma da aba (ou passar a paginar
+episódios), o leitor devolve `null` e a busca segue para o agregador seguinte. É a
+mesma fragilidade de scraping de todo o resto, com sintoma no log
+(`Leitor videobox: episódio não encontrado na ficha`).
 
 ## O fallback do espelho por id (`redeflixapi.store`) não é consumido
 

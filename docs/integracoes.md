@@ -3095,6 +3095,31 @@ responde `200` com um JSON de erro, e só o `Content-Type`/`ftyp` separa — e e
 a URL do `get_video`, não o redirecionamento final (o token vale para o IP de quem
 pediu, e o endereço final muda a cada consulta).
 
+O **MixDrop** entra em seguida, e é ele que salva o episódio: o site deixa o
+espelho do StreamTape apodrecer ("Video not found!" no embed), e o endereço do
+MP4 está num script empacotado pelo packer clássico
+(`eval(function(p,a,c,k,e,d){...}('...',62,N,'...'.split('|'),0,{}))`). O leitor
+desempacota — troca os índices do dicionário de volta pelas palavras, com
+conversão própria de base porque o `base_convert()` do PHP para em 36 e o packer
+usa 62 — e chega a `mxcontent.net/...mp4?s=...&e=...`, confirmado por sonda
+(`206`, `video/mp4`, faststart).
+
+##### Série: a ficha não serve vídeo, o episódio serve
+
+Na série, a busca devolve a **ficha** (`/series/online/...`), e o `playerData` do
+id dela vem com `servers_dub` **vazio** — é por isso que série caía na cascata de
+torrents mesmo com acervo no site. O vídeo mora em
+`/episodios/online/<slug>-<T>x<E>-<id>/`, e o caminho até lá é um endpoint do
+próprio player: `do=episodesList&id=<série>&season=<temporada>` devolve
+`{"episodes":[{"number":"1","url":"..."}]}`.
+
+Com temporada e episódio no pedido, o leitor consulta essa lista, escolhe o
+episódio **pelo número** e recomeça a leitura na página dele. A descida acontece
+uma vez só, e a página do episódio (que tem `data-temp`/`data-ep` preenchidos)
+não desce de novo. Medido no acervo real: "Round 6" S02E02 → fonte direta pt-BR
+em 14,3 s. Foi essa correção que colocou a série na mesma ordem do filme —
+direto primeiro, torrent só se o direto voltar vazio.
+
 Como o player da página é uma **declaração** e não uma URL, o
 [`ExtratorVideo::temMidia()`](../backend/app/Services/Torrents/ExtratorVideo.php:372)
 passou a aceitar `data-video-id` junto da marca `videobox` como prova de mídia — e
@@ -3106,7 +3131,7 @@ vazia encerrava o fluxo antes de o player ser consultado. Medido depois da
 correção: **2,9 s** do título à fonte direta, com a cascata encerrada no primeiro
 agregador.
 
-Os outros três servidores (MixDrop, DoodStream, Byse) ainda não têm receita — ver
+Os servidores que continuam sem receita são o DoodStream e o Byse — ver
 [pendências](pendencias.md).
 
 A relevância pelo título é conferida **na hora da busca**, sobre o slug do link —

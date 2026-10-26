@@ -815,7 +815,7 @@ class ProvedorStreamDireto implements ProvedorTorrents
              * aproveitável" — com o vídeo a uma requisição de distância, no
              * player que o filtro nunca chegou a consultar.
              */
-            $resolvido = $this->resolvedor->resolver($corpo, $pagina, $teto);
+            $resolvido = $this->resolvedor->resolver($corpo, $pagina, $teto, $temporada, $episodio);
 
             if ($resolvido !== null) {
                 return $this->fonteResolvida($resolvido, $titulo, $pagina);

@@ -40,15 +40,19 @@ class LeitorVideobox
     /**
      * Servidores cuja cadeia o projeto sabe percorrer, na ordem de preferência.
      *
-     * O StreamTape vem primeiro porque é o único com caminho aberto sem browser:
-     * o `get_video` responde a um `GET` com `Range`. MixDrop publica o endereço
-     * dentro de um script empacotado, DoodStream exige o `pass_md5` da sessão e
-     * o Byse é uma SPA que só monta o player no navegador — os três aparecem no
-     * log como vistos e recusados, para a próxima investigação saber onde parou.
+     * O StreamTape vem primeiro porque é o mais direto: o `get_video` responde a
+     * um `GET` com `Range` e o token sai de uma concatenação no HTML. Ele,
+     * porém, é o espelho que o site mais deixa apodrecer — episódios antigos
+     * respondem "Video not found". O MixDrop entra logo depois, com o endereço
+     * publicado num script empacotado que este leitor desempacota.
+     *
+     * DoodStream (token de sessão em `pass_md5`) e Byse (SPA que só monta o
+     * player no navegador) continuam fora — aparecem no log como vistos e
+     * recusados, para a próxima investigação saber onde parou.
      *
      * @var array<int, string>
      */
-    private const SERVIDORES = ['streamtape'];
+    private const SERVIDORES = ['streamtape', 'mixdrop'];
 
     /**
      * Teto, em segundos, da leitura que confirma o arquivo.
@@ -81,10 +85,43 @@ class LeitorVideobox
      * responde ou quando nenhum servidor conhecido entrega arquivo. Nunca
      * devolve URL que não tenha sido aberta e conferida.
      *
+     * Em **série**, a página que a busca devolve é a ficha
+     * (`/series/online/...`), e o `playerData` dela vem sem servidor nenhum — o
+     * vídeo mora na página do episódio
+     * (`/episodios/online/<slug>-<T>x<E>-<id>/`). Quando o pedido traz temporada
+     * e episódio, o leitor desce por `do=episodesList&season=` até a página certa
+     * e continua a leitura lá.
+     *
      * @return array{url: string, idioma: string}|null
      */
-    public function resolver(string $html, string $pagina, int $teto): ?array
-    {
+    public function resolver(
+        string $html,
+        string $pagina,
+        int $teto,
+        ?int $temporada = null,
+        ?int $episodio = null,
+    ): ?array {
+        return $this->resolverNaPagina($html, $pagina, $teto, $temporada, $episodio, 0);
+    }
+
+    /**
+     * O corpo da leitura, com a profundidade explícita.
+     *
+     * A descida é permitida **uma vez**: ficha → episódio. `$profundidade` é o
+     * guarda contra o laço de uma página que se aponta para si mesma, e também
+     * contra descer de novo a partir da página do episódio — lá, servidor vazio
+     * significa acervo sem vídeo, não ficha de série.
+     *
+     * @return array{url: string, idioma: string}|null
+     */
+    private function resolverNaPagina(
+        string $html,
+        string $pagina,
+        int $teto,
+        ?int $temporada,
+        ?int $episodio,
+        int $profundidade,
+    ): ?array {
         $id = $this->idDoVideo($html);
 
         if ($id === null) {
@@ -106,12 +143,7 @@ class LeitorVideobox
         $servidores = $this->mapaDeServidores((string) ($dados['servers_dub'] ?? ''));
 
         if ($servidores === []) {
-            Log::debug('Leitor videobox: o vídeo não declara servidor dublado.', [
-                'pagina' => $pagina,
-                'audio' => (string) ($dados['current_audio'] ?? ''),
-            ]);
-
-            return null;
+            return $this->descerParaEpisodio($pagina, $html, $id, $teto, $temporada, $episodio, $profundidade);
         }
 
         foreach (self::SERVIDORES as $servidor) {
@@ -127,7 +159,7 @@ class LeitorVideobox
                 continue;
             }
 
-            $url = $this->peloStreamtape($base.$idNoServidor, $pagina, $teto);
+            $url = $this->peloServidor($servidor, $base.$idNoServidor, $pagina, $teto);
 
             if ($url !== null) {
                 Log::debug('Leitor videobox: vídeo encontrado.', [
@@ -143,6 +175,117 @@ class LeitorVideobox
             'pagina' => $pagina,
             'servidores' => array_keys($servidores),
         ]);
+
+        return null;
+    }
+
+    /**
+     * Desce da ficha da série para a página do episódio pedido.
+     *
+     * A ficha (`/series/online/...`) prova que o título é aquele, mas não serve
+     * vídeo: o `playerData` do id da série vem com `servers_dub` vazio, e é isso
+     * que fazia a série cair na cascata de torrents mesmo tendo acervo no site.
+     * O caminho até o episódio é um endpoint do próprio player
+     * (`do=episodesList&id=<série>&season=<temporada>`), que devolve a lista da
+     * temporada com a URL de cada episódio. A leitura recomeça lá, onde o id é o
+     * do episódio e os servidores existem.
+     *
+     * A descida só vale quando o pedido **traz temporada e episódio** e quando a
+     * página é mesmo uma ficha — a página do episódio já tem `data-temp`/`data-ep`
+     * preenchidos, e nela servidor vazio significa acervo sem vídeo.
+     *
+     * @return array{url: string, idioma: string}|null
+     */
+    private function descerParaEpisodio(
+        string $pagina,
+        string $html,
+        string $id,
+        int $teto,
+        ?int $temporada,
+        ?int $episodio,
+        int $profundidade,
+    ): ?array {
+        if ($profundidade > 0 || $temporada === null || $episodio === null || $this->ehPaginaDeEpisodio($html)) {
+            Log::debug('Leitor videobox: página sem servidor dublado.', [
+                'pagina' => $pagina,
+                'audio' => 'dublado',
+            ]);
+
+            return null;
+        }
+
+        $link = $this->enderecoDoEpisodio($pagina, $html, $id, $temporada, $episodio, $teto);
+
+        if ($link === null) {
+            Log::debug('Leitor videobox: episódio não encontrado na ficha.', [
+                'pagina' => $pagina,
+                'temporada' => $temporada,
+                'episodio' => $episodio,
+            ]);
+
+            return null;
+        }
+
+        $corpo = $this->abrir($link, $pagina, $teto);
+
+        if ($corpo === null) {
+            return null;
+        }
+
+        Log::debug('Leitor videobox: descendo para a página do episódio.', [
+            'serie' => $pagina,
+            'episodio' => $link,
+        ]);
+
+        return $this->resolverNaPagina($corpo, $link, $teto, $temporada, $episodio, $profundidade + 1);
+    }
+
+    /**
+     * Diz se a página é a de um episódio — e não a ficha da série.
+     *
+     * O player preenche `data-temp`/`data-ep` com números só na página do
+     * episódio; na ficha os atributos vêm vazios ou não vêm.
+     */
+    private function ehPaginaDeEpisodio(string $html): bool
+    {
+        return (bool) preg_match('#data-temp\s*=\s*["\']\d+["\']#i', $html)
+            && (bool) preg_match('#data-ep\s*=\s*["\']\d+["\']#i', $html);
+    }
+
+    /**
+     * O endereço da página do episódio, lido da lista da temporada.
+     *
+     * O endpoint devolve `{"episodes":[{"number":"1","url":"..."}]}` — a
+     * numeração é texto, e o casamento é pelo número pedido. O `season` é o
+     * parâmetro que a própria ficha usa nas abas de temporada.
+     */
+    private function enderecoDoEpisodio(
+        string $pagina,
+        string $html,
+        string $id,
+        int $temporada,
+        int $episodio,
+        int $teto,
+    ): ?string {
+        $url = $this->origem($pagina, $html)
+            .'/index.php?app=videobox&module=video&controller=view&do=episodesList&id='.rawurlencode($id)
+            .'&season='.$temporada;
+
+        $dados = $this->dadosDaApi($url, $pagina, $teto);
+
+        if ($dados === null) {
+            return null;
+        }
+
+        foreach ((array) ($dados['episodes'] ?? []) as $item) {
+            if (! is_array($item) || (int) ($item['number'] ?? 0) !== $episodio) {
+                continue;
+            }
+
+            $link = trim((string) ($item['url'] ?? ''));
+
+            return preg_match('#^https?://#i', $link) ? $link : null;
+        }
 
         return null;
     }
@@ -234,16 +377,30 @@ class LeitorVideobox
      */
     private function dadosDoPlayer(string $pagina, string $html, string $id, int $teto): ?array
     {
-        $url = $this->enderecoDoPlayerData($pagina, $html, $id);
+        return $this->dadosDaApi($this->enderecoDoPlayerData($pagina, $html, $id), $pagina, $teto);
+    }
 
+    /**
+     * Lê um endpoint JSON do player.
+     *
+     * Os dois endpoints que o leitor consulta — o `playerData` e o
+     * `episodesList` — pedem a mesma apresentação: `X-Requested-With` (sem ele o
+     * site devolve a casca da página), `Referer` da ficha e `Accept` de JSON.
+     * Concentrar isso aqui evita duas cópias do mesmo trio de cabeçalhos, que é
+     * justamente o tipo de detalhe que passa despercebido quando muda.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function dadosDaApi(string $url, string $referer, int $teto): ?array
+    {
         try {
             $resposta = $this->cliente->get($url, [], $this->navegador(), $teto, [
                 'X-Requested-With' => 'XMLHttpRequest',
-                'Referer' => $pagina,
+                'Referer' => $referer,
                 'Accept' => 'application/json, text/javascript, */*; q=0.01',
             ]);
         } catch (\Throwable $excecao) {
-            Log::debug('Leitor videobox: o endpoint do player não respondeu.', [
+            Log::debug('Leitor videobox: endpoint do player não respondeu.', [
                 'url' => $url,
                 'erro' => $excecao->getMessage(),
             ]);
@@ -295,6 +452,178 @@ class LeitorVideobox
         }
 
         return '';
+    }
+
+    /**
+     * Encaminha o embed para a receita do servidor dele.
+     *
+     * A escolha é pelo nome que o `playerData` declarou, e não pelo host: os
+     * domínios desses players rodam (`playmogo.com` já foi `dood.so`,
+     * `mixdrop.top` já foi `mixdrop.co`), e a receita continua a mesma.
+     */
+    private function peloServidor(string $servidor, string $embed, string $referer, int $teto): ?string
+    {
+        return match ($servidor) {
+            'streamtape' => $this->peloStreamtape($embed, $referer, $teto),
+            'mixdrop' => $this->peloMixdrop($embed, $referer, $teto),
+            default => null,
+        };
+    }
+
+    /**
+     * Atravessa o embed do MixDrop até o MP4 do CDN.
+     *
+     * A página publica o endereço dentro de um script empacotado pelo packer
+     * clássico (`eval(function(p,a,c,k,e,d){...}('...',62,N,'...'.split('|'),0,{}))`).
+     * Nada é executado: o desempacotador só troca os índices do dicionário de
+     * volta pelas palavras, e o endereço aparece como
+     * `//a-deliveryNN.mxcontent.net/v2/<id>.mp4?s=...&e=...`.
+     *
+     * O parâmetro `e=` é a expiração e a URL é servida ao IP de quem pediu — as
+     * mesmas duas condições do `get_video` do StreamTape. Por isso o link é
+     * entregue como está, e não o resultado de uma nova resolução: quem abre é
+     * o media-service, no mesmo IP e poucos segundos depois.
+     */
+    private function peloMixdrop(string $embed, string $referer, int $teto): ?string
+    {
+        $host = strtolower((string) parse_url($embed, PHP_URL_HOST));
+
+        if (! str_contains($host, 'mixdrop')) {
+            Log::debug('Leitor videobox: servidor fora da receita conhecida.', [
+                'servidor' => $host,
+            ]);
+
+            return null;
+        }
+
+        $html = $this->abrir($embed, $referer, $teto);
+
+        if ($html === null) {
+            return null;
+        }
+
+        $url = $this->enderecoDoMixdrop($html);
+
+        if ($url === null) {
+            Log::debug('Leitor videobox: o MixDrop não publicou o arquivo.', ['embed' => $embed]);
+
+            return null;
+        }
+
+        if ($this->confirmarVideo($url, $teto)) {
+            return $url;
+        }
+
+        Log::debug('Leitor videobox: o MixDrop publicou endereço que não serve vídeo.', [
+            'embed' => $embed,
+        ]);
+
+        return null;
+    }
+
+    /**
+     * O endereço do MP4 dentro da página do MixDrop.
+     *
+     * A primeira tentativa é no texto cru, para os espelhos que ainda publicam
+     * `MDCore.wurl` direto. A segunda desempacota o script — e busca o `.mp4` em
+     * vez de um nome de variável, porque o packer troca os nomes e o que
+     * sobrevive é a extensão do arquivo.
+     */
+    private function enderecoDoMixdrop(string $html): ?string
+    {
+        $codigo = $this->desempacotar($html);
+
+        foreach ([$codigo, $html] as $fonte) {
+            if ($fonte === null) {
+                continue;
+            }
+
+            if (! preg_match('#(?:https?:)?//[^"\'\s]+\.mp4[^"\'\s]*#i', $fonte, $achado)) {
+                continue;
+            }
+
+            $url = html_entity_decode(trim($achado[0]), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+
+            return str_starts_with($url, '//') ? 'https:'.$url : $url;
+        }
+
+        return null;
+    }
+
+    /**
+     * Desempacota o script do packer clássico (`eval(function(p,a,c,k,e,d)...)`).
+     *
+     * Funciona como o `p.a.c.k.e.r` original: o corpo é uma string com índices
+     * (`0`, `1`, `...`, `a`, `b`...) e o dicionário é a lista de palavras
+     * separada por `|`. Cada índice é trocado pela palavra correspondente — o
+     * `base_convert` é necessário porque, acima de dez, o packer usa letras.
+     *
+     * Devolve `null` quando o formato não é o esperado. Sem essa trava, uma
+     * página que apenas **mencione** `eval(function(` faria o leitor tratar lixo
+     * como código e procurar um `.mp4` que não existe.
+     */
+    private function desempacotar(string $html): ?string
+    {
+        if (! preg_match(
+            "#eval\\(function\\(p,a,c,k,e,d\\)\\{.*?\\}\\(\\s*'(.*?)'\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*'(.*?)'\\.split\\('\\|'\\)#s",
+            $html,
+            $achado
+        )) {
+            return null;
+        }
+
+        [, $corpo, $base, $conta, $dicionario] = $achado;
+
+        $palavras = explode('|', (string) $dicionario);
+        $codigo = (string) $corpo;
+
+        for ($indice = (int) $conta - 1; $indice >= 0; $indice--) {
+            $palavra = $palavras[$indice] ?? '';
+
+            if ($palavra === '') {
+                continue;
+            }
+
+            /*
+             * O `base_convert()` do PHP para em 36 — e o packer usa 62 (dígitos,
+             * minúsculas e maiúsculas). Daí o conversor próprio: sem ele, todo
+             * script com mais de 35 palavras estourava com `ValueError` em vez
+             * de desempacotar.
+             */
+            $codigo = (string) preg_replace(
+                '/\b'.preg_quote($this->emBase($indice, (int) $base), '/').'\b/',
+                str_replace(['\\', '$'], ['\\\\', '\\$'], $palavra),
+                $codigo
+            );
+        }
+
+        return $codigo;
+    }
+
+    /**
+     * Converte um número para a base do packer (2 a 62).
+     *
+     * O alfabeto é o mesmo do `p.a.c.k.e.r`: `0-9`, depois `a-z`, depois `A-Z`.
+     * É o que faz o índice 61 virar `Z` e o 10 virar `a`, exatamente como o
+     * dicionário do script espera.
+     */
+    private function emBase(int $numero, int $base): string
+    {
+        $alfabeto = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+        $base = max(2, min(strlen($alfabeto), $base));
+
+        if ($numero <= 0) {
+            return '0';
+        }
+
+        $convertido = '';
+
+        while ($numero > 0) {
+            $convertido = $alfabeto[$numero % $base].$convertido;
+            $numero = intdiv($numero, $base);
+        }
+
+        return $convertido;
     }
 
     /**

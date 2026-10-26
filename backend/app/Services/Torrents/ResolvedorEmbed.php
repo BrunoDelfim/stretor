@@ -134,13 +134,22 @@ class ResolvedorEmbed
      * origem e devolvem 403 sem ela. O `$teto` é o tempo desta consulta, já
      * descontado do orçamento global por quem chama.
      *
+     * `$temporada` e `$episodio` só importam para a cadeia do videobox: a ficha
+     * da série não serve vídeo, e é com a numeração que o leitor desce até a
+     * página do episódio. As demais cadeias ignoram os dois.
+     *
      * Devolve `null` quando não há embed conhecido ou quando a cadeia não chega
      * ao arquivo. Nunca devolve uma URL que não tenha sido aberta e conferida.
      *
      * @return array{url: string, idioma: ?string}|null
      */
-    public function resolver(string $html, string $referer, int $teto): ?array
-    {
+    public function resolver(
+        string $html,
+        string $referer,
+        int $teto,
+        ?int $temporada = null,
+        ?int $episodio = null,
+    ): ?array {
         /*
          * A travessia custa mais de uma requisição — a página do embed, a API, o
          * player e a playlist —, então ela segue o mesmo critério do laço de
@@ -160,7 +169,7 @@ class ResolvedorEmbed
          * do `pobreflixtv.democrat` — que tem o filme — parecia vazia, e o
          * agregador era descartado por "sem prova de mídia".
          */
-        $videobox = $this->videobox->resolver($html, $referer, $teto);
+        $videobox = $this->videobox->resolver($html, $referer, $teto, $temporada, $episodio);
 
         if ($videobox !== null) {
             return $videobox;
