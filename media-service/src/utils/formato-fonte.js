@@ -25,66 +25,25 @@
 export const EXTENSOES_DIRETAS = ['.mp4', '.m4v', '.webm', '.mkv', '.mov', '.m3u8', '.mpd']
 
 /**
- * Tipos de conteúdo que identificam o formato de uma fonte sem extensão.
+ * Traduz o `format_name` do ffprobe na extensão que o FFmpeg espera.
  *
- * A lista é curta de propósito: só entra o que o FFmpeg lê como arquivo
- * progressivo ou playlist HLS. Qualquer outro tipo continua recusado, porque
- * aceitar um `text/html` de página de erro entregaria ao player uma sessão que
- * morre na abertura.
+ * O ffprobe devolve uma lista de contêineres compatíveis entre si
+ * (`mov,mp4,m4a,3gp,3g2,mj2`) ou o nome do formato de transporte (`hls`,
+ * `mpegts`, `matroska,webm`). A ordem das checagens importa: `matroska,webm`
+ * contém `webm`, e um `.webm` é lido como Matroska pelo FFmpeg de qualquer
+ * forma — por isso o Matroska vem antes.
  *
- * @type {Record<string, string>}
- */
-const EXTENSOES_POR_TIPO = {
-  'video/mp4': '.mp4',
-  'video/webm': '.webm',
-  'video/quicktime': '.mov',
-  'video/x-matroska': '.mkv',
-  'video/x-m4v': '.m4v',
-  'application/vnd.apple.mpegurl': '.m3u8',
-  'application/x-mpegurl': '.m3u8',
-  'audio/mpegurl': '.m3u8',
-  'audio/x-mpegurl': '.m3u8',
-}
-
-/**
- * Traduz um `Content-Type` na extensão correspondente.
- *
- * A comparação ignora parâmetros (`; charset=...`) e caixa, porque cada CDN
- * publica o mesmo tipo de um jeito: `video/mp4`, `Video/MP4`,
- * `application/vnd.apple.mpegurl; charset=utf-8`.
- *
- * @param {string|null|undefined} tipo
+ * @param {string|null|undefined} formato
  * @returns {string} extensão reconhecida, ou `''`
  */
-export function extensaoPeloTipo(tipo) {
-  const limpo = String(tipo ?? '')
-    .split(';')[0]
-    .trim()
-    .toLowerCase()
+export function extensaoPeloFormato(formato) {
+  const nome = String(formato ?? '').toLowerCase()
 
-  return EXTENSOES_POR_TIPO[limpo] ?? ''
-}
-
-/**
- * Reconhece o formato pelos primeiros bytes, quando o servidor não declara tipo.
- *
- * O `application/octet-stream` é a resposta preguiçosa de muito CDN, e nesse
- * caso só a assinatura do arquivo separa um MP4 de uma página de erro. A
- * assinatura do MP4 fica no **offset 4** (`....ftyp`), não no começo; a do WebM
- * e a do HLS são as conhecidas.
- *
- * @param {Buffer} amostra
- * @returns {string} extensão reconhecida, ou `''`
- */
-export function extensaoPelaAmostra(amostra) {
-  if (amostra.length >= 4
-    && amostra[0] === 0x1a && amostra[1] === 0x45 && amostra[2] === 0xdf && amostra[3] === 0xa3) {
-    return '.webm'
-  }
-
-  if (amostra.length >= 12 && amostra.subarray(4, 8).toString('latin1') === 'ftyp') return '.mp4'
-
-  if (amostra.subarray(0, 7).toString('latin1') === '#EXTM3U') return '.m3u8'
+  if (nome === '') return ''
+  if (nome.includes('hls')) return '.m3u8'
+  if (nome.includes('matroska') || nome.includes('webm')) return '.mkv'
+  if (nome.includes('mov') || nome.includes('mp4') || nome.includes('3gp')) return '.mp4'
+  if (nome.includes('mpegts')) return '.mp4'
 
   return ''
 }

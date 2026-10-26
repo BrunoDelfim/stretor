@@ -67,13 +67,21 @@ redirecionamento final (um caminho de CDN com o nome do filme) terminam em
 `.mp4`. Eram 1,6 GB de MP4 recusados por causa do texto do link.
 
 **O que mudou:** o media-service passou a descobrir o formato **pela origem**
-quando a URL não declara extensão — uma requisição de dois bytes com `Range`,
-lendo o `Content-Type` (`video/mp4`, `application/vnd.apple.mpegurl`...) e, se o
-servidor não declarar tipo, a assinatura dos primeiros bytes (`ftyp` = MP4,
-`#EXTM3U` = HLS). A leitura é cancelada no primeiro bloco: se o servidor ignorar
-o `Range`, o filme inteiro não é baixado. Validado no container: `ffprobe` abriu
-o StreamTape (`h264` 720p + `aac`) e a sessão direta foi para `convertendo` com a
-playlist publicada.
+quando a URL não declara extensão. A primeira versão fazia isso com um `fetch` de
+dois bytes lendo o `Content-Type`; funcionava na máquina de desenvolvimento, mas
+**no container o cliente HTTP do Node não alcança os CDNs de embed** — a conexão
+TCP abre e o `fetch`/`https.get` morre em `ETIMEDOUT` para `*.tapecontent.net` e
+`*.mxcontent.net`, enquanto o FFmpeg lê os mesmos endereços sem dificuldade (ele
+faz Happy Eyeballs e tem as opções de reconexão). O efeito era o pior possível: o
+backend já tinha confirmado o vídeo, o media-service recusava a fonte com
+`formato_desconhecido`, e o player pedia `/fontes` de novo — em laço.
+
+A sonda agora é o **próprio ffprobe** (`format.format_name`), com três
+tentativas, porque é a mesma leitura que a conversão fará em seguida: se ele não
+abre, o FFmpeg também não abriria. `mov,mp4,...` vira `.mp4`, `matroska,webm`
+vira `.mkv`, `hls` vira `.m3u8`. Validado no container: `ffprobe` abriu o
+StreamTape (`h264` 720p + `aac`) e a sessão de Lanterns S01E01 foi a **pronto**,
+com a playlist publicada.
 
 O que **continua** de fora, e por decisão de produto:
 

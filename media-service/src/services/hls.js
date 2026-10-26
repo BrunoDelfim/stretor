@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process'
 
 import { logger } from '../utils/logger.js'
 import { descreverIdioma, normalizarIdioma } from '../utils/idiomas.js'
+import { extensaoPeloFormato } from '../utils/formato-fonte.js'
 
 /**
  * Pipeline de conversão para HLS.
@@ -348,6 +349,50 @@ export async function comRetentativa(operacao, { tentativas = 3, esperaMs = 1000
   }
 
   throw ultimoErro
+}
+
+/**
+ * Descobre o formato de uma fonte remota que não declara extensão.
+ *
+ * A sonda é o **próprio ffprobe**, e não um `fetch`. A primeira versão usava
+ * `fetch` com `Range` — barato e suficiente na máquina de desenvolvimento —, mas
+ * no container os CDNs de embed (`*.tapecontent.net`, `*.mxcontent.net`) não são
+ * alcançados pelo cliente HTTP do Node: a conexão TCP/IPv4 abre pelo `net` e o
+ * `https.get`/`fetch` morre em `ETIMEDOUT`, enquanto o FFmpeg lê o mesmo arquivo
+ * sem dificuldade (ele faz Happy Eyeballs e tem as opções de reconexão). O
+ * resultado era cruel: o backend já havia confirmado o vídeo, e o media-service
+ * recusava a fonte com `formato_desconhecido` — o player pedia `/fontes` de novo
+ * e entrava em laço.
+ *
+ * O ffprobe responde com `format.format_name` (`mov,mp4,...`, `matroska,webm`,
+ * `hls`), que é a mesma leitura que a conversão fará em seguida. Repetimos três
+ * vezes porque a resolução de nome dentro do container tem rajadas de
+ * `EAI_AGAIN` — o mesmo motivo das retentativas de `analisarArquivo`.
+ *
+ * @param {string} url
+ * @returns {Promise<string>} extensão reconhecida, ou `''`
+ */
+export async function formatoDaFonteRemota(url) {
+  if (!ehOrigemRemota(url)) return ''
+
+  const sondar = () =>
+    new Promise((resolve, reject) => {
+      ffmpeg(url).ffprobe(null, opcoesRedeRemota(url), (erro, dados) => {
+        if (erro) return reject(erro)
+
+        resolve(dados)
+      })
+    })
+
+  try {
+    const metadados = await comRetentativa(sondar, { tentativas: 3, esperaMs: 800 })
+
+    return extensaoPeloFormato(metadados?.format?.format_name)
+  } catch (erro) {
+    logger.warn(`sonda de formato não concluiu para ${url}: ${resumirErro(erro)}`)
+
+    return ''
+  }
 }
 
 /**
