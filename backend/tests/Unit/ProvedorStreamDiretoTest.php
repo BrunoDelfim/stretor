@@ -478,4 +478,54 @@ class ProvedorStreamDiretoTest extends TestCase
 
         $this->assertSame(['https://site.test/episodio.mp4'], $mantidas);
     }
+
+    /**
+     * Homônimos: a ficha que casa exato vem primeiro, e a que qualifica **outra
+     * obra** sai da lista.
+     *
+     * Foi o "One Piece": o agregador devolve o anime
+     * (`one-piece-dublado-60734`) e a série live-action
+     * (`one-piece-a-serie-dublado-24386`), e a live-action vinha primeiro. Servir
+     * a segunda a quem pediu o anime é pior que não servir nada ali — a cascata
+     * segue e o próximo agregador é perguntado.
+     */
+    public function test_candidata_que_qualifica_outra_obra_sai_quando_ha_casa_exata(): void
+    {
+        $anime = 'https://site.test/series/online/one-piece-dublado-60734/';
+        $live = 'https://site.test/series/online/one-piece-a-serie-dublado-24386/';
+
+        $ordem = $this->invocar('ordenarCandidatas', [$live, $anime], ['One Piece']);
+
+        $this->assertSame([$anime], $ordem);
+    }
+
+    /**
+     * Sem casa exata, a qualificada continua valendo — é o único caminho para o
+     * título, e quem decide se serve é a sonda do arquivo.
+     */
+    public function test_sem_casa_exata_a_candidata_qualificada_fica(): void
+    {
+        $live = 'https://site.test/series/online/one-piece-a-serie-dublado-24386/';
+        $filme = 'https://site.test/filmes/online/one-piece-o-filme-dublado-963/';
+
+        $ordem = $this->invocar('ordenarCandidatas', [$live, $filme], ['One Piece']);
+
+        $this->assertCount(2, $ordem);
+        $this->assertContains($live, $ordem);
+        $this->assertContains($filme, $ordem);
+    }
+
+    /**
+     * A ordem é de afinidade: o slug com todas as palavras do título passa na
+     * frente de um slug que só tem uma parte dele.
+     */
+    public function test_ordem_por_afinidade_com_o_titulo(): void
+    {
+        $parcial = 'https://site.test/series/online/piece-dublado-1/';
+        $completo = 'https://site.test/series/online/one-piece-dublado-2/';
+
+        $ordem = $this->invocar('ordenarCandidatas', [$parcial, $completo], ['One Piece']);
+
+        $this->assertSame([$completo, $parcial], $ordem);
+    }
 }

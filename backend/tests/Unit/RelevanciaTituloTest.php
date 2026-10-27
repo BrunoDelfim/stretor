@@ -382,4 +382,53 @@ class RelevanciaTituloTest extends TestCase
             'https://www.tokyvideo.com/br/video/desperate-housewives-pt-01x01-nicsfilm'
         ));
     }
+
+    /**
+     * Anime e live-action de mesmo nome: o endereço é o que desempata.
+     *
+     * O acervo guarda "One Piece" (anime, 875 episódios) e "One Piece: A Série"
+     * (live-action, 8 por temporada). As duas fichas trazem as palavras do
+     * título, e a relevância aprovava as duas — a live-action vinha primeiro na
+     * busca e era servida no lugar do anime.
+     */
+    public function test_anime_e_live_action_sao_separados_pelo_endereco(): void
+    {
+        $titulos = ['One Piece', 'ワンピース'];
+
+        $anime = $this->invocar(
+            'pesoDoEndereco',
+            'https://www.pobreflixtv.democrat/series/online/one-piece-dublado-60734/',
+            $titulos
+        );
+
+        $live = $this->invocar(
+            'pesoDoEndereco',
+            'https://www.pobreflixtv.democrat/series/online/one-piece-a-serie-dublado-24386/',
+            $titulos
+        );
+
+        $this->assertSame(0, $anime['extras'], 'O slug do anime só tem as palavras do título.');
+        $this->assertFalse($anime['desambigua'], 'O anime é a obra de base, não uma qualificação.');
+        $this->assertTrue($live['desambigua'], 'O slug qualifica a obra como outra.');
+        $this->assertGreaterThan($live['peso'], $anime['peso'], 'O anime tem de vir antes.');
+    }
+
+    /**
+     * O enfeite de URL não conta como diferença.
+     *
+     * `assistir`, `online`, `dublado` e `temporada` aparecem em todo slug; se
+     * contassem como palavra extra, a página certa seria penalizada por causa do
+     * formato do endereço, e não do conteúdo.
+     */
+    public function test_ruido_de_url_nao_conta_como_palavra_extra(): void
+    {
+        $peso = $this->invocar(
+            'pesoDoEndereco',
+            'https://www.site.test/assistir-round-6-temporada-1-dublado-online/',
+            ['Round 6']
+        );
+
+        $this->assertSame(0, $peso['extras']);
+        $this->assertFalse($peso['desambigua']);
+    }
 }

@@ -339,6 +339,125 @@ trait RelevanciaTitulo
     }
 
     /**
+     * Palavras do endereço que falam do **formato da página**, não da obra.
+     *
+     * São as que o site acrescenta a todo slug: `dublado`, `legendado`,
+     * `assistir`, `online`, `temporada`... Elas não distinguem uma obra da outra,
+     * e contá-las como diferença faria a página certa ser penalizada por causa de
+     * um enfeite de URL.
+     *
+     * @var array<int, string>
+     */
+    private const RUIDO_NO_ENDERECO = [
+        'assistir', 'online', 'gratis', 'gratuito', 'gratuita', 'completo', 'completa',
+        'dublado', 'dublada', 'legendado', 'legendada', 'dual', 'audio',
+        'nacional', 'original', 'hd', 'sd', 'fhd', 'uhd', '4k',
+        '1080p', '720p', '480p', 'temporada', 'season', 'episodio', 'episode', 'ep',
+    ];
+
+    /**
+     * Palavras que qualificam a página como **outra obra**.
+     *
+     * Foi o caso do "One Piece": o acervo tem o anime (`one-piece-dublado-60734`,
+     * 875 episódios) e a série live-action da Netflix
+     * (`one-piece-a-serie-dublado-24386`, 8 episódios por temporada). Os dois
+     * endereços trazem as palavras do título, então a checagem de relevância
+     * aprovava os dois — e o primeiro da fila era a live-action, servida no lugar
+     * do anime.
+     *
+     * `serie`, `filme`, `live`, `action`, `movie` e `ova` são justamente o que o
+     * acervo usa para dizer "esta é outra obra de mesmo nome". Quando o endereço
+     * traz uma delas **além** do título pedido, ele está qualificando outra coisa.
+     * `anime` fica de fora de propósito: é como o próprio acervo marca o desenho,
+     * que aqui é a obra de base.
+     *
+     * @var array<int, string>
+     */
+    private const DESAMBIGUADORES = ['serie', 'filme', 'movie', 'live', 'action', 'ova'];
+
+    /**
+     * Mede o quanto o endereço de uma página parece ser do título pedido.
+     *
+     * O endereço é lido pelo **último segmento do caminho** (o slug), porque os
+     * anteriores são o tipo da página (`/series/online/`, `/filmes/online/`) e não
+     * dizem nada sobre a obra. Do slug saem as palavras de ruído de URL
+     * ([`RUIDO_NO_ENDERECO`]) e os números (ids e anos), e o que resta é comparado
+     * com as palavras do título: cada acerto soma, cada palavra extra ou faltando
+     * desconta, e o casamento exato (sem extra nem falta) leva um bônus.
+     *
+     * O retorno traz ainda se o endereço **desambigua outra obra** — o sinal que
+     * separa o anime da série live-action de mesmo nome. Quem usa decide o que
+     * fazer com isso; aqui só se mede.
+     *
+     * @param  array<int, string>  $titulos  Todas as grafias do título
+     * @return array{peso: int, extras: int, desambigua: bool}
+     */
+    public function pesoDoEndereco(string $url, array $titulos): array
+    {
+        $doEndereco = $this->tokensDoEndereco($url);
+
+        $melhor = ['peso' => 0, 'extras' => 0, 'desambigua' => false];
+        $encontrou = false;
+
+        foreach ($this->titulosUnicos($titulos) as $titulo) {
+            $doTitulo = $this->palavrasChave($titulo);
+
+            if ($doTitulo === []) {
+                continue;
+            }
+
+            $acertos = count(array_intersect($doTitulo, $doEndereco));
+            $extras = array_values(array_diff($doEndereco, $doTitulo));
+            $faltando = count(array_diff($doTitulo, $doEndereco));
+
+            $peso = ($acertos * 4) - (count($extras) * 3) - ($faltando * 4);
+
+            if ($extras === [] && $faltando === 0) {
+                $peso += 12;
+            }
+
+            if ($encontrou && $peso <= $melhor['peso']) {
+                continue;
+            }
+
+            $melhor = [
+                'peso' => $peso,
+                'extras' => count($extras),
+                'desambigua' => array_intersect($extras, self::DESAMBIGUADORES) !== [],
+            ];
+
+            $encontrou = true;
+        }
+
+        return $melhor;
+    }
+
+    /**
+     * As palavras com significado que o slug de uma página carrega.
+     *
+     * Só o último segmento do caminho entra: `/series/online/one-piece-dublado-1`
+     * vale `one`, `piece`. Um slug com extensão (`.html`) também é lido, porque a
+     * extensão cai como palavra numérica/curta no filtro.
+     *
+     * @return array<int, string>
+     */
+    private function tokensDoEndereco(string $url): array
+    {
+        $caminho = trim((string) parse_url($url, PHP_URL_PATH), '/');
+
+        if ($caminho === '') {
+            return [];
+        }
+
+        $segmentos = preg_split('#/+#', $caminho) ?: [];
+        $slug = (string) end($segmentos);
+
+        $tokens = $this->palavrasChave($slug);
+
+        return array_values(array_diff($tokens, self::RUIDO_NO_ENDERECO));
+    }
+
+    /**
      * Lê o limiar de palavras-chave da configuração.
      *
      * O padrão é 2: um título composto precisa de duas palavras distintas para

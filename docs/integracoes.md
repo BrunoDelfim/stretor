@@ -4190,6 +4190,38 @@ zero, e `stream_direto_playerflix_host` acompanha a rotação de domínio da fam
    A página que não passa é descartada com um `debug` **"página sem relação com o
    título descartada"**, antes de a extração gastar orçamento nela.
 
+   ##### A ordem das candidatas: o homônimo não é o título
+
+   A relevância aprova a **página**, mas não separa duas obras de mesmo nome. O
+   acervo guarda as duas: "One Piece" é o anime (`one-piece-dublado-60734`, 875
+   episódios) e também a série live-action da Netflix (`one-piece-a-serie-dublado-24386`,
+   8 episódios por temporada). As duas fichas trazem as palavras do título, então
+   as duas passavam — e quem vinha primeiro na busca do agregador era servido. O
+   usuário pedia o anime e recebia o episódio equivalente da live-action.
+
+   Antes de abrir as candidatas, o provedor as ordena por **afinidade com o
+   título** ([`RelevanciaTitulo::pesoDoEndereco()`](../backend/app/Services/Torrents/RelevanciaTitulo.php:395)).
+   A leitura é do **slug** (o último segmento do caminho), porque os anteriores
+   são o tipo da página (`/series/online/`, `/filmes/online/`). Do slug saem as
+   palavras de ruído de URL — `dublado`, `legendado`, `assistir`, `online`,
+   `temporada`, resoluções — e os números (ids e anos); o que resta é comparado
+   com as palavras do título: acerto soma, extra e falta descontam, e o casamento
+   exato leva bônus.
+
+   O segundo sinal é o **desambiguador**: `serie`, `filme`, `movie`, `live`,
+   `action` e `ova` no slug indicam que a página qualifica **outra obra**. Quando
+   existe na lista uma candidata que casa exato, as qualificadas são descartadas —
+   é o que impede o fallback de servir a live-action caso a ficha do anime falhe.
+   Quando **não** existe exata, a qualificada continua valendo: é o único caminho
+   para o título, e quem decide se serve é a sonda do arquivo. `anime` fica fora
+   da lista de propósito, porque é como o próprio acervo marca o desenho.
+
+   Medido: antes, "One Piece" T1E1 abria
+   `one-piece-a-serie-1x1-dublado-24387` (a live-action, ~60 min de duração);
+   depois, desce de `one-piece-dublado-60734` para `one-piece-1x1-dublado-60735`
+   e entrega o `get_video` do StreamTape em 8,4 s — sessão `pronto`, duração
+   1477 s (~24,6 min), que é a do anime.
+
    ##### A terceira barreira: o link precisa entregar mídia
 
    Passar nas duas primeiras não basta. A relevância do **vídeo** tem uma isenção

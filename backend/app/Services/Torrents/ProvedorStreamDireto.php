@@ -300,6 +300,8 @@ class ProvedorStreamDireto implements ProvedorTorrents
          * orçamento que o seguinte precisava para achar o episódio.
          */
         foreach ($this->agregadores->candidatas($titulos, $temporada, $episodio) as $dominio => $diretas) {
+            $diretas = $this->ordenarCandidatas($diretas, $titulos);
+
             Log::debug('Stream direto: candidatas da busca direta no agregador.', [
                 'dominio' => $dominio,
                 'candidatas' => count($diretas),
@@ -337,6 +339,8 @@ class ProvedorStreamDireto implements ProvedorTorrents
                 if ($candidatas === []) {
                     continue;
                 }
+
+                $candidatas = $this->ordenarCandidatas($candidatas, $titulos);
 
                 $termosComResultado++;
 
@@ -391,6 +395,68 @@ class ProvedorStreamDireto implements ProvedorTorrents
         }
 
         return $unicas;
+    }
+
+    /**
+     * Põe as candidatas em ordem de afinidade com o título — e tira as que
+     * qualificam **outra obra** quando existe uma que casa exatamente.
+     *
+     * O acervo guarda obras homônimas: "One Piece" é o anime (875 episódios) e
+     * também a série live-action da Netflix ("One Piece: A Série", 8 por
+     * temporada). As duas fichas trazem as palavras do título, então a checagem
+     * de relevância aprovava as duas, e quem vinha primeiro na busca do agregador
+     * era servido — no caso, a live-action no lugar do anime.
+     *
+     * A ordem resolve a preferência (casa exato primeiro) e o descarte resolve o
+     * risco de fallback: se a exata falhar, a qualificada não entra no lugar
+     * dela. Servir "One Piece: A Série" a quem pediu "One Piece" é pior que não
+     * servir nada ali e deixar a cascata seguir.
+     *
+     * O descarte só acontece quando **há** uma exata na mesma lista: se o acervo
+     * só tiver a versão qualificada, ela continua valendo — é o único caminho
+     * para o título, e quem decide se serve é a sonda do arquivo.
+     *
+     * @param  array<int, string>  $candidatas
+     * @param  array<int, string>  $titulos
+     * @return array<int, string>
+     */
+    private function ordenarCandidatas(array $candidatas, array $titulos): array
+    {
+        if (count($candidatas) < 2) {
+            return $candidatas;
+        }
+
+        $avaliadas = [];
+        $existeExata = false;
+
+        foreach ($candidatas as $url) {
+            $peso = $this->pesoDoEndereco($url, $titulos);
+
+            $existeExata = $existeExata || $peso['extras'] === 0;
+
+            $avaliadas[] = ['url' => $url, 'peso' => $peso];
+        }
+
+        $mantidas = [];
+
+        foreach ($avaliadas as $avaliada) {
+            if ($existeExata && $avaliada['peso']['desambigua']) {
+                Log::debug('Stream direto: candidata que qualifica outra obra descartada.', [
+                    'url' => $avaliada['url'],
+                    'titulos' => $titulos,
+                ]);
+
+                continue;
+            }
+
+            $mantidas[] = $avaliada;
+        }
+
+        // O `usort` do PHP 8 é estável: empate mantém a ordem em que o agregador
+        // devolveu, que é a relevância da busca dele.
+        usort($mantidas, fn (array $a, array $b): int => $b['peso']['peso'] <=> $a['peso']['peso']);
+
+        return array_column($mantidas, 'url');
     }
 
     /**
