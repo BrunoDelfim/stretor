@@ -5,7 +5,7 @@ permite reproduzir, que ainda não tem correção fechada. Não é o diário de 
 (esse é [`plans/`](../plans/), que guarda o "porquê" das decisões já tomadas) —
 aqui só entra o que ainda precisa de ação.
 
-## Escolha de arquivo entrega o filme no lugar do episódio
+## Escolha de arquivo entrega o filme no lugar do episódio — resolvido no fallback
 
 **Observado nos logs do media-service.** O pack
 
@@ -41,7 +41,19 @@ caso "S04E28 → `... - 87.mkv`", coberto pelo teste
 > *boot*, então os logs acima podem refletir a versão **anterior** à correção.
 > Reconferir ao vivo com esses dois packs antes de tratar como bug aberto.
 
-**Se persistir, atacar por aqui:**
+**O fallback também foi fechado (2026-10-27).** Mesmo com a numeração absoluta, o
+caminho "nada casou, pega o maior vídeo" continuava entregando o filme: num pack
+grande o maior arquivo é justamente o de `Movies/`. Agora, quando há episódio
+pedido, os **extras saem da disputa** antes do fallback —
+[`pareceExtra()`](../media-service/src/services/sessoes.js:2080) reconhece as
+pastas `Movies/`, `Filmes/`, `Specials/`, `Extras/`, `OVA/`, `Featurettes/` e os
+arquivos `NCOP`/`NCED` (abertura e encerramento sem crédito, que ficam na pasta da
+temporada). Sobrando episódio, o fallback pega o maior **deles**; só quando o pack
+tem apenas extras é que o maior vídeo geral volta a valer, para não recusar a
+fonte inteira. Coberto por quatro testes em
+[`escolha-arquivo.test.js`](../media-service/test/escolha-arquivo.test.js).
+
+**Se ainda persistir, atacar por aqui:**
 
 1. **O fallback não deveria entregar filme.** Antes de desistir e pegar o maior
    vídeo, excluir os caminhos de extra — `Movies/`, `Filmes/`, `Specials/`,
@@ -266,9 +278,19 @@ saídas possíveis, nenhuma aplicada:
 - **Separar o orçamento do socorro** — reservar ~30 s do canal para a primeira
   página que falhar, em vez de deixar o socorro competir com as seguintes.
 
-Antes de mexer, vale medir: nesta rodada o FlareSolverr **não resolveu** a ficha
-do `tvpobreflix.top` — devolveu `Error solving the challenge. Timeout after 5.0 /
-10.0 seconds` em 16,4 s e 14,0 s. Para esse host o socorro não é a saída (o
-caminho é o degrau da temporada, já implementado); o ajuste acima só compensa se
-outros hosts se comportarem diferente — o que ainda não foi medido.
+Antes de mexer, vale medir: nesta rodada o FlareSolverr **não resolveu** nenhum dos
+hosts que bloqueiam. Medição de 2026-10-27, `maxTimeout` de 7 s:
+
+| Host | Resultado | Custo |
+| --- | --- | --- |
+| `flixie.com.br` | `Error solving the challenge` | 10,4 s |
+| `br2.trendcinema.com` | `Error solving the challenge` | 10,2 s |
+| `www.ferreirafilmes.com.br` | `Challenge not detected!` (não havia desafio) | 6,0 s |
+
+O `tvpobreflix.top` já tinha falhado antes (5 s e 10 s, 16,4 s e 14,0 s). Ou seja:
+no acervo que o stream direto percorre, o socorro **não entrega** — ele só custa
+tempo. Adaptar o orçamento não traria fonte, e é por isso que a mudança não foi
+feita: o caminho que resolveu o caso foi o degrau da temporada, não o navegador do
+proxy. Se algum host novo passar a resolver pelo FlareSolverr, a conta acima é o
+ponto de partida.
 

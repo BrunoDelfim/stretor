@@ -2033,12 +2033,62 @@ export function escolherArquivoDeVideo(torrent, temporada = null, episodio = nul
       return porNumeracaoAbsoluta
     }
 
+    /*
+     * Nada casou. O fallback do maior vídeo é o pior lugar para terminar: num
+     * pack grande o maior arquivo é quase sempre o **filme** da pasta `Movies/`,
+     * com duas horas de conteúdo que não é o episódio pedido. Era o que o pack
+     * `[Anime Time] Attack On Titan (Complete Collection)` fazia — entregava
+     * `Movies/... Movie 04 - Chronicle.mkv` para S01E01, S04E01 e S04E28.
+     *
+     * Antes de desistir, os extras saem da disputa: filme, especiais, OVA e
+     * aberturas sem crédito nunca são a resposta de um episódio de temporada. Se
+     * o pack só tiver extras (um pack de especiais, por exemplo), vale o maior
+     * vídeo como antes — entregar algo é melhor do que recusar a fonte inteira.
+     */
+    const semExtras = videos.filter((arquivo) => !pareceExtra(arquivo.path))
+
+    if (semExtras.length > 0) {
+      logger.warn(
+        `[torrent] nenhum arquivo casa S${temporada}E${episodio}; usando o maior dos episódios do pacote`
+      )
+
+      return semExtras.sort((a, b) => b.length - a.length)[0]
+    }
+
     logger.warn(
-      `[torrent] nenhum arquivo casa S${temporada}E${episodio}; usando o maior vídeo do pacote`
+      `[torrent] nenhum arquivo casa S${temporada}E${episodio} e o pacote só tem extras; usando o maior vídeo`
     )
   }
 
   return videos.sort((a, b) => b.length - a.length)[0]
+}
+
+/**
+ * Diz se o caminho pertence a um **extra** do pacote, e não a um episódio.
+ *
+ * Num pack de série, a pasta de extras guarda o filme, os especiais e as
+ * aberturas: `Movies/`, `Filmes/`, `Specials/`, `Extras/`, `OVA/`,
+ * `Featurettes/`. Os arquivos `NCOP`/`NCED` (abertura e encerramento sem
+ * crédito) costumam ficar na pasta da temporada, então o nome também entra na
+ * conta.
+ *
+ * A checagem é por segmento de caminho, não por texto solto: uma pasta chamada
+ * "Movie Night" ou um arquivo "Movies.doc" não são extra de vídeo.
+ *
+ * @param {string} caminho caminho relativo do arquivo no torrent
+ */
+function pareceExtra(caminho) {
+  const segmentos = String(caminho ?? '').split('/')
+
+  const pastaDeExtra = segmentos.some((segmento) =>
+    /(^|[\s._-])(extras?|specials?|movies?|filmes?|ovas?|featurettes?)$/i.test(segmento.trim())
+  )
+
+  if (pastaDeExtra) return true
+
+  const nome = segmentos.pop() ?? ''
+
+  return /(^|[\s._-])nc(op|ed)\d*([\s._-]|$)/i.test(nome)
 }
 
 /**

@@ -84,9 +84,51 @@ test('sem pasta de temporada, mantém o fallback do maior vídeo', () => {
   assert.equal(escolherArquivoDeVideo(torrent, null, null).path, 'Filme (1999)/extra.mp4')
 })
 
-test('episódio fora do alcance da temporada cai no maior vídeo (não inventa)', () => {
-  // S04E99 não existe: a 4ª temporada vai até o 87.
+test('episódio fora do alcance da temporada não entrega o filme', () => {
+  // S04E99 não existe: a 4ª temporada vai até o 87. O fallback antigo pegava o
+  // maior vídeo do pacote — o filme de 2 h. Agora ele fica com o maior
+  // **episódio**, porque extra nunca é a resposta de um episódio pedido.
   const escolhido = escolherArquivoDeVideo(packAnime, 4, 99)
 
-  assert.equal(escolhido.path, `${BASE}/Attack On Titan Movies/[Anime Time] Attack on Titan Movie  04 - Chronicle.mkv`)
+  assert.equal(escolhido.path, `${BASE}/Attack on Titan Season 4/[Anime Time] Attack on Titan - 87.mkv`)
+  assert.ok(!escolhido.path.includes('Movies/'))
+})
+
+test('sem pasta de temporada, o filme de Movies/ não vence os episódios', () => {
+  const torrent = {
+    files: [
+      arquivo('Serie/Episodio 01.mkv', 800),
+      arquivo('Serie/Episodio 02.mkv', 850),
+      arquivo('Serie/Movies/Serie O Filme.mkv', 999999),
+      arquivo('Serie/Specials/Especial de Natal.mkv', 99999),
+    ],
+    path: '/tmp',
+  }
+
+  assert.equal(escolherArquivoDeVideo(torrent, 2, 5).path, 'Serie/Episodio 02.mkv')
+})
+
+test('abertura sem crédito na pasta da temporada não vence os episódios', () => {
+  const torrent = {
+    files: [
+      arquivo('Serie/Season 2/Serie - Episodio 03.mkv', 700),
+      arquivo('Serie/Season 2/Serie - NCOP.mkv', 5000),
+      arquivo('Serie/Season 2/Serie - NCED2.mkv', 4000),
+    ],
+    path: '/tmp',
+  }
+
+  assert.equal(escolherArquivoDeVideo(torrent, 2, 9).path, 'Serie/Season 2/Serie - Episodio 03.mkv')
+})
+
+test('pack só com extras mantém o maior vídeo (não recusa a fonte)', () => {
+  const torrent = {
+    files: [
+      arquivo('Serie/Extras/Bastidores.mkv', 300),
+      arquivo('Serie/Extras/Entrevistas.mkv', 900),
+    ],
+    path: '/tmp',
+  }
+
+  assert.equal(escolherArquivoDeVideo(torrent, 1, 1).path, 'Serie/Extras/Entrevistas.mkv')
 })
