@@ -30,6 +30,39 @@ trait NormalizaFonte
     protected const SEEDS_NAO_MEDIDOS = 1;
 
     /**
+     * Decide o idioma de uma fonte juntando o campo do provedor e o título.
+     *
+     * O campo de idioma do provedor é informação melhor que a tag do título —
+     * quando ele existe e é reconhecido, vale. Só que ele descreve o release
+     * **inteiro** e não separa áudio de legenda: um indexador Torznab que
+     * preenche `language=Portuguese` num `...PORTUGUESE.SUBtitles...` está
+     * dizendo o idioma da **legenda**. O título, ali, é mais específico e
+     * rebaixa a fonte para legendado.
+     *
+     * A correção vale só nesse sentido: campo dizendo áudio PT-BR + título
+     * anunciando legenda sem marca explícita de dublagem. Um "Dublado" no título
+     * continua vencendo (é marca explícita), e um título sem marca nenhuma deixa
+     * o campo mandar, como antes.
+     *
+     * @param  array<string, mixed>  $dados  Campos crus do provedor
+     */
+    protected function deduzirIdioma(array $dados, string $textoIdioma): IdiomaFonte
+    {
+        $doCampo = IdiomaFonte::deduzirDoIdioma((string) ($dados['idioma'] ?? ''));
+
+        if ($doCampo === null) {
+            return IdiomaFonte::deduzirDoTitulo($textoIdioma);
+        }
+
+        if ($doCampo === IdiomaFonte::DUBLADO
+            && IdiomaFonte::deduzirDoTitulo($textoIdioma) === IdiomaFonte::LEGENDADO) {
+            return IdiomaFonte::LEGENDADO;
+        }
+
+        return $doCampo;
+    }
+
+    /**
      * Monta uma fonte já no contrato do frontend.
      *
      * @param  array<string, mixed>  $dados  Campos crus do provedor
@@ -51,8 +84,7 @@ trait NormalizaFonte
          */
         $textoIdioma = (string) ($dados['idioma_titulo'] ?? $titulo);
 
-        $idioma = IdiomaFonte::deduzirDoIdioma((string) ($dados['idioma'] ?? ''))
-            ?? IdiomaFonte::deduzirDoTitulo($textoIdioma);
+        $idioma = $this->deduzirIdioma($dados, $textoIdioma);
 
         $id = trim((string) ($dados['id'] ?? ''));
 
@@ -100,8 +132,7 @@ trait NormalizaFonte
 
         $textoIdioma = (string) ($dados['idioma_titulo'] ?? $titulo);
 
-        $idioma = IdiomaFonte::deduzirDoIdioma((string) ($dados['idioma'] ?? ''))
-            ?? IdiomaFonte::deduzirDoTitulo($textoIdioma);
+        $idioma = $this->deduzirIdioma($dados, $textoIdioma);
 
         /*
          * O `id` de uma fonte direta não tem infohash para derivar. Usamos o
