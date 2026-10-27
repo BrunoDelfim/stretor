@@ -2323,6 +2323,22 @@ async function iniciar() {
    */
   let motivoFinal = null
 
+  /*
+   * A rodada só vale quando traz uma lista **diferente**.
+   *
+   * O título que motivou isto tinha uma fonte só: um torrent com um seed, que
+   * nunca conectava. As três rodadas buscavam a mesma lista, tentavam a mesma
+   * fonte e terminavam no mesmo erro — com 1,5 s de espera e uma varredura nova
+   * no backend entre elas, e a impressão de que o app tinha entrado em laço.
+   *
+   * Lista idêntica à anterior não ganhou peer nem fonte nova no intervalo; quem
+   * insiste na mesma fonte é o laço de rede dentro de `tentarFontes()`
+   * (TENTATIVAS_FONTE_REDE). A lista vazia fica de fora desta regra: ali a
+   * repetição ainda tem valor, porque uma busca que falhou por rede pode voltar
+   * cheia na rodada seguinte.
+   */
+  let assinaturaAnterior = null
+
   for (let rodada = 1; rodada <= MAX_RODADAS_DE_BUSCA; rodada += 1) {
     if (cancelado || minhaAbertura !== abertura) return
 
@@ -2383,6 +2399,17 @@ async function iniciar() {
     }
 
     totalFontes.value = fontes.length
+
+    /*
+     * Mesma lista da rodada anterior, já percorrida e sem conexão: repetir a
+     * tentativa agora só refaz o mesmo caminho. `motivoFinal` já guarda o motivo
+     * apurado (sem peers, sem dados...) e é ele que a tela mostra.
+     */
+    const assinatura = fontes.map((fonte) => fonte.id).join('|')
+
+    if (assinatura === assinaturaAnterior) break
+
+    assinaturaAnterior = assinatura
 
     const resultado = await tentarFontes(fontes, minhaGeracao, minhaAbertura, filme)
 

@@ -152,6 +152,14 @@ exigiam fechar e reabrir o episódio. Cada fonte ainda é insistida até
 `TENTATIVAS_FONTE_REDE` vezes quando o motivo é `rede`, mas isso também acontece
 sem texto de erro na tela.
 
+A rodada extra só acontece se ela trouxer uma **lista diferente**. Uma repetição
+idêntica — mesmos `id`s, na mesma ordem — não ganhou peer nem fonte nova em 1,5 s,
+e insistir nela só refazia o caminho: era o caso do título com uma única fonte,
+um torrent de um seed, em que as três rodadas varriam o backend para terminar no
+mesmo "sem peers", com cara de laço infinito. A lista **vazia** continua fora
+dessa regra, porque ali a repetição ainda tem valor: uma busca que falhou por
+rede pode voltar cheia na rodada seguinte.
+
 Só depois de esgotar as rodadas o overlay entra em **erro**, com a explicação do
 que houve (`mensagemDeFalha`). O placar de motivos ganhou o rótulo `rede` (do
 `motivo=rede` que o media-service devolve), com mensagem própria porque a
