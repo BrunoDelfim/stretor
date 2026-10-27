@@ -118,12 +118,25 @@ test('comRetentativa desiste depois do número de tentativas', async () => {
 })
 
 test('os ajustes de reconexão só entram numa origem remota', () => {
-  assert.deepEqual(opcoesRedeRemota('https://vaiquecol.com/cdn/hls/831b/master.m3u8?md5=x'), [
-    '-reconnect 1',
-    '-reconnect_streamed 1',
-    '-reconnect_delay_max 5',
-    '-reconnect_on_http_error 5xx,429',
-  ])
+  const opcoes = opcoesRedeRemota('https://vaiquecol.com/cdn/hls/831b/master.m3u8?md5=x')
+
+  /*
+   * O `-user_agent` entrou depois: os CDNs de embed conferem o agente antes de
+   * servir o playlist, e um cliente que se anuncia como biblioteca leva 403.
+   * O array é plano (opção, valor, opção, valor...), que é como o
+   * `fluent-ffmpeg` o repassa para o FFmpeg.
+   */
+  assert.equal(opcoes[0], '-user_agent')
+  assert.match(opcoes[1], /^Mozilla\/5\.0/)
+
+  for (const esperada of [
+    '-reconnect', '1',
+    '-reconnect_streamed', '1',
+    '-reconnect_delay_max', '5',
+    '-reconnect_on_http_error', '5xx,429',
+  ]) {
+    assert.ok(opcoes.includes(esperada), `esperava ${esperada} em ${JSON.stringify(opcoes)}`)
+  }
 
   // Num arquivo local não há conexão para religar, e a opção é do protocolo
   // HTTP: passá-la faria o FFmpeg abortar a abertura com `Option not found`.

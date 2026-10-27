@@ -236,7 +236,15 @@ class ResolvedorEmbed
      */
     private function peloPlenoflu(string $embed, string $referer, int $teto): ?array
     {
-        $html = $this->abrir($embed, $referer, $teto);
+        /*
+         * O `Referer` da página do embed é o **próprio site do player**, e não o
+         * agregador que o embute. Medido em 2026-10-27: o `plenoflu.com` passou a
+         * responder `403 Acesso proibido` a qualquer origem de fora — inclusive à
+         * do `tvpobreflix.com`, que é quem exibe o `<iframe>`. O navegador do
+         * usuário manda o próprio `plenoflu.com` porque o iframe é servido por
+         * ele; imitar isso é o que reabre a cadeia. A API já fazia assim.
+         */
+        $html = $this->abrir($embed, $this->refererDoEmbed($embed), $teto);
 
         if ($html === null) {
             return null;
@@ -283,6 +291,30 @@ class ResolvedorEmbed
         }
 
         return null;
+    }
+
+    /**
+     * O `Referer` que um embed aceita: o da própria origem dele.
+     *
+     * Os sites de player conferem a origem do pedido. O `plenoflu.com` responde
+     * `403 Acesso proibido` a qualquer `Referer` de fora — inclusive ao do
+     * agregador que o embute —, e `200` quando a origem é ele mesmo. O navegador
+     * do usuário faz exatamente isso: o `<iframe>` é servido pelo `plenoflu.com`,
+     * então é ele quem aparece como referência.
+     *
+     * Devolver a raiz (`esquema://host/`) e não o caminho do embed é deliberado:
+     * é o menor `Referer` que o site aceita, e não revela de qual episódio veio o
+     * pedido.
+     */
+    private function refererDoEmbed(string $embed): string
+    {
+        $partes = parse_url($embed);
+
+        if (! is_array($partes) || ! isset($partes['scheme'], $partes['host'])) {
+            return $embed;
+        }
+
+        return $partes['scheme'].'://'.$partes['host'].'/';
     }
 
     /**

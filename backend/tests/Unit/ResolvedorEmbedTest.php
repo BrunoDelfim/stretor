@@ -23,7 +23,7 @@ class ResolvedorEmbedTest extends TestCase
     /** Hash do player usado nos fixtures; o formato é o do FirePlayer (hexa largo). */
     private const HASH = 'd41d8cd98f00b204e9800998ecf8427e';
 
-    private const PLAYLIST = "https://vaiquecol.com/cdn/hls/831b/master.m3u8?md5=abc&expires=1";
+    private const PLAYLIST = 'https://vaiquecol.com/cdn/hls/831b/master.m3u8?md5=abc&expires=1';
 
     /**
      * Invoca um método privado do resolvedor sem abrir conexão nenhuma.
@@ -437,5 +437,31 @@ class ResolvedorEmbedTest extends TestCase
         );
 
         return implode('', $escapes);
+    }
+
+    /**
+     * A página do embed é aberta com o `Referer` do **próprio site do player**.
+     *
+     * Medido em 2026-10-27: o `plenoflu.com` passou a devolver
+     * `403 Acesso proibido` para qualquer origem de fora — inclusive o
+     * `tvpobreflix.com`, que é quem exibe o `<iframe>`. Com o `Referer` da própria
+     * origem (a raiz do site), a página responde `200` e a cadeia segue. Era isso
+     * que fazia a fonte do episódio existir na página e não virar fonte.
+     */
+    public function test_pagina_do_plenoflu_e_aberta_com_referer_do_proprio_site(): void
+    {
+        Http::fake([
+            'https://plenoflu.com/tvshow/*' => Http::response('DIRECT_EPISODE_ID = 77601'),
+            'https://plenoflu.com/api*' => Http::response(json_encode([
+                'data' => ['options' => []],
+            ])),
+        ]);
+
+        $this->resolvedor()->resolver($this->paginaComEmbed(), 'https://agregador.test/serie', 10);
+
+        Http::assertSent(function ($requisicao): bool {
+            return str_contains($requisicao->url(), 'plenoflu.com/tvshow')
+                && $requisicao->hasHeader('Referer', 'https://plenoflu.com/');
+        });
     }
 }

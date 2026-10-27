@@ -125,31 +125,35 @@ Continuam de fora:
 com confirmação por sonda — nunca por posição de token no HTML. Enquanto não
 houver receita, o servidor é registrado no log como visto e recusado.
 
-## A descoberta de páginas do TokyVideo depende do motor de busca
+## A descoberta de páginas do TokyVideo não fecha com motor gratuito
 
 **Observado em 2026-10-27.** O TokyVideo tem o episódio dublado de "Donas de Casa
 Desesperadas" S01E01 (`/br/video/desperate-housewives-pt-01x01-nicsfilm`), e o
 provedor **já extrai** a fonte quando recebe essa página: o MP4 do CDN é aceito
 pela isenção de mesmo site e o `ffprobe` do media-service o abre (2.615 s,
-`mov,mp4,...`). O que falta é **chegar** até ela.
+`mov,mp4,...`). O que não existe é um caminho **gratuito** até ela:
 
-Testado sem sucesso:
+- SearXNG (o motor do projeto) não devolve a página em nenhum termo testado,
+  inclusive `site:tokyvideo.com ...`;
+- a busca do próprio site (`POST api.tokyvideo.com/search-videos`): o upload é
+  **não listado** — 56 resultados por página, paginando até a 6ª, e nenhum é ele;
+  o autocomplete (`search-ajax`) é pior e devolve notícia;
+- DuckDuckGo HTML responde `202` (desafio) para o IP do container e o Bing não
+  traz o vídeo.
 
-- o motor do projeto (SearXNG) para "Donas de Casa Desesperadas 1x01",
-  "Desperate Housewives 1x01", "Desperate Housewives 01x01 dublado" e
-  `site:tokyvideo.com ...` — a página não aparece em nenhum termo;
-- a busca do próprio site (`POST api.tokyvideo.com/search-videos`): 26 resultados
-  para "desperate housewives" e nenhum é o episódio; o autocomplete
-  (`search-ajax`) é pior e devolve notícia;
-- DuckDuckGo HTML: responde `202` (desafio) para o IP do container;
-- Bing: a página não volta para esse IP.
+**Não há plano de API paga**: o projeto é 100% gratuito. O suporte ao motor
+`brave` continua no código, mas **inerte** — sem chave ele é descartado antes de
+qualquer requisição — e não é recomendado.
 
-**Para fechar**, o caminho previsto no projeto é o motor **Brave** (API oficial,
-chave em `TORRENTS_STREAM_DIRETO_BRAVE_KEY`, selecionado em
-`TORRENTS_STREAM_DIRETO_MOTORES`). Sem a chave o motor é descartado antes de
-qualquer requisição, e a cobertura fica restrita ao SearXNG. Alternativa de
-infraestrutura: um SearXNG com o Google funcionando — o do container está
-suspenso para este IP.
+Para este título o caminho gratuito **já existe** e foi consertado junto: o
+`tvpobreflix.com` (e o `verpobreflix.net`) embutem o `plenoflu.com`, e a cadeia
+voltou a resolver quando o `Referer` do embed foi corrigido (ver
+[integrações](integracoes.md#a-travessia-do-embed--do-iframe-ao-masterm3u8)).
+Medido: 31 s, fonte direta pt-BR, áudio `por` e playlist 200.
+
+Se um dia for preciso cobrir um site cuja busca não indexa o acervo, a saída
+gratuita é um motor próprio (SearXNG com o Google funcionando) ou um adaptador de
+busca do site — nunca uma API paga.
 
 ## A descida para o episódio no videobox — resolvida
 

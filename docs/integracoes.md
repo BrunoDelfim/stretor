@@ -3188,24 +3188,26 @@ Medido: com a página em mãos, o provedor devolve **1 fonte direta pt-BR**
 (`provedor = tokyvideo.com`) e o `ffprobe` do media-service abre o MP4
 (`mov,mp4,...`, 2.615 s). Antes da correção a mesma página devolvia zero.
 
-**O que continua faltando é a descoberta.** O motor do projeto (SearXNG) não
-devolve essa página para nenhum dos termos testados — "Donas de Casa Desesperadas
-1x01", "Desperate Housewives 1x01", "Desperate Housewives 01x01 dublado",
-`site:tokyvideo.com ...` — e a busca do próprio site não indexa o episódio (o
-`search-videos` devolve 26 resultados e nenhum é ele). O DuckDuckGo HTML responde
-desafio (202) e o Bing não traz o vídeo do IP do container. O Google do usuário
-tem a página; o do container está suspenso.
+**A descoberta não fecha com as ferramentas gratuitas.** O motor do projeto
+(SearXNG) não devolve essa página para nenhum dos termos testados — "Donas de Casa
+Desesperadas 1x01", "Desperate Housewives 1x01", "Desperate Housewives 01x01
+dublado", `site:tokyvideo.com ...` —, a busca do próprio site não indexa o upload
+(o `search-videos` devolve 56 resultados por página, nenhum é ele; o autocomplete
+devolve notícia), o DuckDuckGo HTML responde desafio (`202`) e o Bing não traz o
+vídeo para o IP do container. O upload é não listado; o Google do usuário o tem, o
+do container está suspenso.
 
-Para páginas assim, o caminho que o projeto já suporta é o **motor Brave**, que é
-API oficial e indexa o que o SearXNG não tem:
+**O projeto é 100% gratuito, então não há motor pago de reserva**: o suporte a
+APIs com chave (o motor `brave`) existe no código, mas fica inerte — sem chave ele
+é descartado antes de qualquer requisição, e não é recomendado aqui.
 
-```
-TORRENTS_STREAM_DIRETO_MOTORES=brave:https://api.search.brave.com/res/v1/web/search
-TORRENTS_STREAM_DIRETO_BRAVE_KEY=<chave>
-```
-
-Sem a chave, o motor `brave` é descartado antes de qualquer requisição (o
-`MotorBuscaWeb` já trata isso) e a descoberta continua sendo só do SearXNG.
+O que **resolveu o caso real** foi outra coisa: com a correção do `Referer` do
+`plenoflu` (ver a subseção *A travessia do embed*), o mesmo episódio passou a sair
+de graça pelo `tvpobreflix.com`/`verpobreflix.net`, que embutem o
+`plenoflu.com/tvshow/693/1/1` e resolvem até o `master.m3u8` do `vaiquecol.com`.
+Medido: 31 s, 1 fonte direta pt-BR, sessão no media-service com áudio `por` e
+playlist 200. O TokyVideo continua sem descoberta — e, para este título, não é
+mais necessário.
 
 Os servidores que continuam sem receita são o DoodStream e o Byse — ver
 [pendências](pendencias.md).
@@ -3514,7 +3516,8 @@ esbarrar no próximo player de embed vai querer saber onde ele começa.
 O [`ResolvedorEmbed`](../backend/app/Services/Torrents/ResolvedorEmbed.php:1) entra
 em cena quando a extração do HTML volta vazia — quando a página **tem** mídia (o
 embed prova isso) mas não entrega arquivo. Ele recebe o HTML da página já aberta e
-o endereço dela como `Referer`.
+o endereço dela como `Referer` — mas, para abrir o **embed**, usa o `Referer` da
+própria origem dele (item 3).
 
 1. **O iframe diz para onde ir.** A página do episódio do `verpobreflix.net` traz
    `<iframe src="https://plenoflu.com/tvshow/1413/1/1">`. Só hosts conhecidos são
@@ -3527,7 +3530,16 @@ o endereço dela como `Referer`.
    player. Os parâmetros vão na **query string** — o endpoint lê `$_GET`, não o
    corpo —, então um POST sem corpo basta e o
    [`ClienteHttp`](../backend/app/Services/Torrents/ClienteHttp.php:1) serve sem
-   alteração. O único requisito é um `Referer` qualquer: sem ele, `403`.
+   alteração.
+   > **O `Referer` tem de ser do próprio `plenoflu.com`.** Em 2026-10-27 o site
+   > passou a responder `403 Acesso proibido` para **qualquer** origem de fora —
+   > inclusive a do agregador que exibe o `<iframe>` (medido com o
+   > `tvpobreflix.com`) —, e `200` quando a referência é ele mesmo. O navegador do
+   > usuário faz isso naturalmente, porque o iframe é servido pelo `plenoflu.com`.
+   > Na prática: a **página do embed** é aberta com `Referer: https://plenoflu.com/`
+   > (o `refererDoEmbed()` do resolvedor) e a **API** com o mesmo valor. Com o
+   > `Referer` do agregador, a cadeia inteira morria no primeiro passo e o episódio
+   > existia na página sem nunca virar fonte.
 4. **`POST /api?action=getPlayer&video_id=<id>`** devolve, em `data.video_url`, o
    endereço do provedor em **base64**.
 5. **O player empacotado.** O `vaiquecol.com` não recebe o vídeo por parâmetro: um
