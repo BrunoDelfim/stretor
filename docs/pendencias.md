@@ -113,9 +113,17 @@ quatro servidores dublados para o mesmo título. Dois já são percorridos:
 
 Continuam de fora:
 
-- **DoodStream** (`playmogo.com/e/<id>`) entrega por `pass_md5`, com token de
-  sessão e `Referer` do embed; a sondagem devolveu "File not found" com o
-  `Referer` certo, então falta entender qual cookie o endpoint espera.
+- **DoodStream** (`playmogo.com/e/<id>`). A receita foi decifrada e validada até o
+  fim em 2026-10-26: a página publica `pass_md5/<caminho>` e o `token`, o `GET`
+  em `/pass_md5/<caminho>` devolve a base do arquivo (num `*.cloudatacdn.com`) e o
+  `makePlay()` só concatena 10 caracteres sorteados e `?token=…&expiry=<ms>`. O
+  que impede o uso é o **destino**: essa base responde `302` para
+  `https://<id>.dood.video/...`, e no container `*.dood.video` resolve para
+  **`127.0.0.1`** (bloqueio de DNS do host) — conexão recusada. O `206
+  video/mp4` do CDN antes do salto também não traz assinatura de MP4
+  (`ftyp`/`moov`/`mdat`) nos primeiros 4 KB, então nem serviria como arquivo.
+  Sem alcançar o host final, não há receita que resolva; se o DNS do host deixar
+  de bloquear, a receita acima é o mapa.
 - **Byse** (`bysebuho.com/e/<id>`) é uma SPA: o HTML tem 1,6 KB e um
   `<script type="module">`, e o vídeo só existe depois de a aplicação chamar a
   API interna.
