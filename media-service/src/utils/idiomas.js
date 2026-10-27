@@ -124,14 +124,16 @@ export function descreverIdioma(codigo) {
  */
 
 /*
- * Prova forte: fala do **áudio** (ou da origem brasileira) e vale sozinha.
+ * Prova forte dividida em duas, como no PHP: a marca **explícita** de áudio vale
+ * inclusive quando o nome também anuncia legenda ("Dublado e Legendado"), e a
+ * marca de **idioma** ("português", "portuguese") só vale sem legenda ao lado —
+ * "PORTUGUESE.SUBtitles" fala da legenda, não do áudio.
  */
-const INDICIOS_PT_BR_AUDIO_FORTE = [
+const INDICIOS_PT_BR_AUDIO_EXPLICITO = [
   'dublado',
   'dublada',
   'dublagem',
   'nacional',
-  'portugu',
   'áudio pt',
   'audio pt',
   'brasileiro',
@@ -141,6 +143,8 @@ const INDICIOS_PT_BR_AUDIO_FORTE = [
   'brazilian',
 ]
 
+const INDICIOS_PT_BR_AUDIO_IDIOMA = ['portugu']
+
 /*
  * Códigos **colados** de idioma PT-BR, espelho de `TAGS_CODIGO`. Diferente do
  * "pt" solto, estas formas não se confundem com a legenda, então provam o áudio
@@ -148,19 +152,45 @@ const INDICIOS_PT_BR_AUDIO_FORTE = [
  */
 const INDICIOS_PT_BR_CODIGO = ['pt-br', 'pt_br', 'pt br', 'ptbr', 'br-pt']
 
+/*
+ * Marcas de legenda, espelho de `TAGS_LEGENDA`. As inglesas entram porque o
+ * release que motivou a correção anunciava `PORTUGUESE.SUBtitles` — a legenda é
+ * em português, o áudio é o original.
+ */
+const INDICIOS_LEGENDA = [
+  'legendado',
+  'legendada',
+  'legenda',
+  'legendas',
+  'subtitulado',
+  'subtitulada',
+  'subtitle',
+  'subtitles',
+]
+
 // Bandeira do Brasil: dois code points (regional indicators B e R). É prova de
 // áudio — quem publica com a bandeira no nome está dizendo "isto é brasileiro".
 const EMOJI_BRASIL = '\u{1F1E7}\u{1F1F7}'
 
 /**
+ * Diz se o texto anuncia legenda — a marca portuguesa ou a inglesa.
+ *
+ * Espelho de `IndiciosPtBr::marcaLegendado()`. "SUBS"/"SUB" só contam como
+ * palavra: "subwoofer" e "subsídio" não anunciam legenda.
+ */
+function marcaLegenda(normalizado) {
+  if (INDICIOS_LEGENDA.some((tag) => normalizado.includes(tag))) return true
+
+  return /(?<![a-z0-9])subs?(?![a-z0-9])/.test(normalizado)
+}
+
+/**
  * Diz se o texto traz uma **marca** de áudio PT-BR.
  *
  * Espelho de `App\Support\IndiciosPtBr::temProvaFortePtBr()`: é a única prova
- * aceita. Fala do áudio ou da origem brasileira ("dublado", "nacional",
- * "português", "brasileiro", a bandeira) ou usa o código colado de PT-BR. O
- * código só conta quando o texto não anuncia legenda — em "Legendado pt BR" o
- * "pt BR" descreve a legenda, não o áudio. O marcador genérico de multi-faixa
- * ("dual", "multi áudio") e o "pt" solto ficam de fora.
+ * aceita. A marca explícita de áudio vence a de legenda; a legenda, por sua vez,
+ * anula as pistas ambíguas (idioma nomeado e código colado). O marcador genérico
+ * de multi-faixa ("dual", "multi áudio") e o "pt" solto ficam de fora.
  */
 function temProvaFortePtBr(texto) {
   if (!texto) return false
@@ -168,12 +198,14 @@ function temProvaFortePtBr(texto) {
 
   const normalizado = texto.toLowerCase()
 
-  if (INDICIOS_PT_BR_AUDIO_FORTE.some((tag) => normalizado.includes(tag))) {
+  if (INDICIOS_PT_BR_AUDIO_EXPLICITO.some((tag) => normalizado.includes(tag))) {
     return true
   }
 
-  if (normalizado.includes('legendado') || normalizado.includes('legenda')) {
-    return false
+  if (marcaLegenda(normalizado)) return false
+
+  if (INDICIOS_PT_BR_AUDIO_IDIOMA.some((tag) => normalizado.includes(tag))) {
+    return true
   }
 
   return INDICIOS_PT_BR_CODIGO.some((tag) => normalizado.includes(tag))

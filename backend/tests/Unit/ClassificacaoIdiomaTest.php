@@ -155,6 +155,65 @@ class ClassificacaoIdiomaTest extends TestCase
     }
 
     /**
+     * "PORTUGUESE.SUBTITLES" é legenda em português, não dublagem.
+     *
+     * Era o único torrent de "Donas de Casa Desesperadas" S06E13: o radical
+     * "portugu" provava o áudio e a fonte saía como pt-BR (dublada) — o player
+     * entregava áudio original e o corte de idioma encerrava a busca cedo,
+     * acreditando já ter dublado.
+     */
+    public function test_portuguese_subtitles_e_legenda_nao_dublado(): void
+    {
+        $this->assertSame(
+            IdiomaFonte::LEGENDADO,
+            IdiomaFonte::deduzirDoTitulo('Desperate.Housewives.S06E13.[ON/OFF].PORTUGUESE.SUBtitles.iCAPx3')
+        );
+
+        $this->assertSame(
+            IdiomaFonte::LEGENDADO,
+            IdiomaFonte::deduzirDoTitulo('Filme Português (Legenda) 1080p')
+        );
+
+        $this->assertSame(
+            IdiomaFonte::LEGENDADO,
+            IdiomaFonte::deduzirDoTitulo('Movie 2024 1080p WEB-DL PT-BR SUBS')
+        );
+    }
+
+    /**
+     * A marca explícita de áudio continua vencendo a de legenda: um release
+     * dublado que também traz legenda é dublado.
+     */
+    public function test_dublado_com_legenda_continua_dublado(): void
+    {
+        $this->assertSame(
+            IdiomaFonte::DUBLADO,
+            IdiomaFonte::deduzirDoTitulo('Filme Dublado e Legendado 1080p')
+        );
+
+        $this->assertSame(
+            IdiomaFonte::DUBLADO,
+            IdiomaFonte::deduzirDoTitulo('Filme DUBLADO PT-BR (Legenda) WEB-DL')
+        );
+    }
+
+    /**
+     * "Sub" no meio de outra palavra não anuncia legenda.
+     */
+    public function test_palavra_com_sub_no_meio_nao_e_legenda(): void
+    {
+        $this->assertSame(
+            IdiomaFonte::ORIGINAL,
+            IdiomaFonte::deduzirDoTitulo('Subwoofer.Movie.2024.1080p')
+        );
+
+        $this->assertSame(
+            IdiomaFonte::DUBLADO,
+            IdiomaFonte::deduzirDoTitulo('Filme Português Subwoofer 1080p')
+        );
+    }
+
+    /**
      * O "pt" solto continua valendo na leitura de **conteúdo** (pastas e nomes
      * internos), onde não há uma tag de legenda no título para desempatar.
      */

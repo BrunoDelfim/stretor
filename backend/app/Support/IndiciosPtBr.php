@@ -45,20 +45,20 @@ namespace App\Support;
 final class IndiciosPtBr
 {
     /**
-     * Indícios que provam áudio PT-BR por si só.
+     * Marcas que falam do **áudio** PT-BR e valem mesmo quando o nome também
+     * anuncia legenda.
      *
      * São palavras inteiras ou radicais que, no nome de um release, só fazem
-     * sentido como marca de dublagem. O radical "portugu" cobre "português",
-     * "portugues" e "portuguese" de uma vez.
+     * sentido como marca de dublagem. "Dublado e Legendado" continua dublado: a
+     * legenda ali é um extra, não o idioma do áudio.
      *
      * @var array<int, string>
      */
-    public const TAGS_AUDIO_FORTE = [
+    public const TAGS_AUDIO_EXPLICITO = [
         'dublado',
         'dublada',
         'dublagem',
         'nacional',
-        'portugu',
         'áudio pt',
         'audio pt',
         'brasileiro',
@@ -66,6 +66,38 @@ final class IndiciosPtBr
         'brasil',
         'brazil',
         'brazilian',
+    ];
+
+    /**
+     * Marca de **idioma** ("português", "portuguese") — prova o áudio só quando o
+     * nome não anuncia legenda.
+     *
+     * O radical cobre "português", "portugues" e "portuguese" de uma vez. A
+     * ressalva da legenda existe porque "PORTUGUESE.SUBtitles" e "Português
+     * (Legenda)" dizem que a **legenda** é em português — o áudio é o original.
+     * Sem ela, o release `Desperate.Housewives.S06E13.PORTUGUESE.SUBtitles`
+     * entrava na lista como dublado e o player entregava áudio original com a
+     * etiqueta errada.
+     *
+     * @var array<int, string>
+     */
+    public const TAGS_AUDIO_IDIOMA = [
+        'portugu',
+    ];
+
+    /**
+     * Todas as provas fortes de áudio PT-BR, na ordem em que são consultadas.
+     *
+     * A lista reunida serve à leitura de **conteúdo** e ao que precisa responder
+     * "existe indício de áudio PT-BR neste texto?". A classificação de título usa
+     * as duas metades separadas, porque a marca de legenda anula só a metade
+     * ambígua (ver [`temProvaFortePtBr()`]).
+     *
+     * @var array<int, string>
+     */
+    public const TAGS_AUDIO_FORTE = [
+        ...self::TAGS_AUDIO_EXPLICITO,
+        ...self::TAGS_AUDIO_IDIOMA,
     ];
 
     /**
@@ -121,7 +153,29 @@ final class IndiciosPtBr
         'br-pt',
     ];
 
-    /** Emoji da bandeira do Brasil (U+1F1E7 U+1F1F7), às vezes usado no lugar das tags. */
+    /**
+     * Marcas de **legenda** reconhecidas no nome do release.
+     *
+     * A portuguesa é a que a comunidade brasileira usa; as inglesas aparecem nos
+     * releases internacionais e nos packs de anime. Todas negam o áudio PT-BR
+     * quando não há marca explícita de dublagem ao lado.
+     *
+     * @var array<int, string>
+     */
+    public const TAGS_LEGENDA = [
+        'legendado',
+        'legendada',
+        'legenda',
+        'legendas',
+        'subtitulado',
+        'subtitulada',
+        'subtitle',
+        'subtitles',
+    ];
+
+    /**
+     * Emoji da bandeira do Brasil (U+1F1E7 U+1F1F7), às vezes usado no lugar das tags.
+     */
     public const EMOJI_BRASIL = "\u{1F1E7}\u{1F1F7}";
 
     /**
@@ -197,14 +251,20 @@ final class IndiciosPtBr
      *
      * É a única prova aceita pela classificação de título
      * ([`IdiomaFonte::deduzirDoTitulo()`]): fala do áudio ou da origem brasileira
-     * ("dublado", "nacional", "português", "brasileiro", a bandeira) ou usa o
-     * código colado de PT-BR ([`TAGS_CODIGO`]). De fora ficam o indício genérico
-     * de multi-faixa ("dual", "multi áudio") e o "pt" solto — nenhum dos dois
-     * prova que existe uma faixa em português (ver a nota da classe).
+     * ("dublado", "nacional", "brasileiro", a bandeira), usa o código colado de
+     * PT-BR ([`TAGS_CODIGO`]) ou nomeia o idioma ("português", "portuguese").
+     * De fora ficam o indício genérico de multi-faixa ("dual", "multi áudio") e o
+     * "pt" solto — nenhum dos dois prova que existe uma faixa em português (ver a
+     * nota da classe).
      *
-     * O código, porém, só conta quando o nome **não** anuncia legenda: em
-     * "Legendado pt BR" o "pt BR" descreve a **legenda**, não o áudio. A prova
-     * descritiva ("Dublado e Legendado") vem antes e vence sem essa ressalva.
+     * A ordem importa e tem três faixas:
+     *
+     * 1. **A marca explícita de áudio** vence sempre, inclusive contra a legenda:
+     *    "Dublado e Legendado" é dublado com legenda extra.
+     * 2. **A legenda anula o resto**: em "PORTUGUESE.SUBtitles" e em "Legendado pt
+     *    BR", o português é o da legenda — o áudio é o original.
+     * 3. Sem legenda, o idioma nomeado ("portugu") e o código colado ("pt-br")
+     *    provam o áudio.
      */
     public static function temProvaFortePtBr(string $texto): bool
     {
@@ -218,7 +278,7 @@ final class IndiciosPtBr
 
         $normalizado = mb_strtolower($texto);
 
-        foreach (self::TAGS_AUDIO_FORTE as $tag) {
+        foreach (self::TAGS_AUDIO_EXPLICITO as $tag) {
             if (str_contains($normalizado, $tag)) {
                 return true;
             }
@@ -226,6 +286,12 @@ final class IndiciosPtBr
 
         if (self::marcaLegendado($texto)) {
             return false;
+        }
+
+        foreach (self::TAGS_AUDIO_IDIOMA as $tag) {
+            if (str_contains($normalizado, $tag)) {
+                return true;
+            }
         }
 
         foreach (self::TAGS_CODIGO as $tag) {
@@ -238,12 +304,20 @@ final class IndiciosPtBr
     }
 
     /**
-     * Diz se o título anuncia **legenda** — a marca "legendado"/"legenda".
+     * Diz se o título anuncia **legenda** — a marca portuguesa ou a inglesa.
      *
-     * Fecha a classificação: um release sem marca de áudio PT-BR que anuncia
-     * legenda é `legendado` (áudio original com legenda), e não original puro. O
-     * código de PT por perto ("Legendado pt BR") descreve a legenda — e é
+     * Fecha a classificação: um release sem marca explícita de áudio PT-BR que
+     * anuncia legenda é `legendado` (áudio original com legenda), e não original
+     * puro. O código de PT por perto ("Legendado pt BR") descreve a legenda — e é
      * justamente por isso que ele não conta como prova de dublagem.
+     *
+     * As formas inglesas entraram depois de um caso concreto: o único torrent de
+     * "Donas de Casa Desesperadas" S06E13 era
+     * `Desperate.Housewives.S06E13.[ON/OFF].PORTUGUESE.SUBtitles.iCAPx3`. O radical
+     * "portugu" provava o áudio e a fonte saía como dublada — áudio original
+     * entregue com a etiqueta errada, e ainda por cima contando como PT-BR no
+     * corte de idioma, o que encerrava a busca cedo. "SUBS"/"SUB" só contam como
+     * palavra: "subwoofer" e "subsídio" não anunciam legenda.
      */
     public static function marcaLegendado(string $texto): bool
     {
@@ -253,7 +327,13 @@ final class IndiciosPtBr
 
         $normalizado = mb_strtolower($texto);
 
-        return str_contains($normalizado, 'legendado') || str_contains($normalizado, 'legenda');
+        foreach (self::TAGS_LEGENDA as $tag) {
+            if (str_contains($normalizado, $tag)) {
+                return true;
+            }
+        }
+
+        return (bool) preg_match('/(?<![a-z0-9])subs?(?![a-z0-9])/', $normalizado);
     }
 
     /**

@@ -43,3 +43,26 @@ test('o código colado de PT-BR conta; o "pt" solto não', () => {
   assert.equal(contemIndicioPtBr('Filme Legendado pt BR'), false)
   assert.equal(contemIndicioPtBr('Filme pt'), false)
 })
+
+/*
+ * "PORTUGUESE.SUBTITLES" fala da **legenda**, não do áudio — era o único torrent
+ * de "Donas de Casa Desesperadas" S06E13 e passava por dublado.
+ */
+test('"Portuguese Subtitles" não prova áudio PT-BR', () => {
+  assert.equal(
+    contemIndicioPtBr('Desperate.Housewives.S06E13.[ON/OFF].PORTUGUESE.SUBtitles.iCAPx3'),
+    false
+  )
+  assert.equal(contemIndicioPtBr('Movie 2024 1080p WEB-DL PT-BR SUBS'), false)
+  assert.equal(contemIndicioPtBr('Filme Português (Legenda) 1080p'), false)
+})
+
+test('a marca explícita de dublagem vence a de legenda', () => {
+  assert.equal(contemIndicioPtBr('Filme Dublado e Legendado 1080p'), true)
+  assert.equal(contemIndicioPtBr('Filme DUBLADO PT-BR (Legenda) WEB-DL'), true)
+})
+
+test('"Sub" no meio de outra palavra não é legenda', () => {
+  assert.equal(contemIndicioPtBr('Subwoofer.Movie.2024.1080p'), false)
+  assert.equal(contemIndicioPtBr('Filme Português Subwoofer 1080p'), true)
+})
