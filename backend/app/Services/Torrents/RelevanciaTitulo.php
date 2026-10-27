@@ -159,6 +159,125 @@ trait RelevanciaTitulo
     }
 
     /**
+     * A página casa com **qualquer** grafia do título?
+     *
+     * O mesmo título chega em duas línguas — "Donas de Casa Desesperadas" e
+     * "Desperate Housewives" —, e o acervo publica em uma, na outra ou nas duas.
+     * Julgar a página só pela grafia principal descartava justamente a página que
+     * o motor achou pelo nome de origem: o termo "Desperate Housewives 01x01"
+     * encontrava a página, e a conferência de relevância a recusava porque
+     * comparava com a tradução. Quem chama passa a lista inteira de títulos.
+     *
+     * @param  array<int, string>  $titulos
+     */
+    public function paginaRelevanteParaAlgum(string $pagina, string $tituloPagina, array $titulos): bool
+    {
+        foreach ($this->titulosUnicos($titulos) as $titulo) {
+            if ($this->paginaRelevante($pagina, $tituloPagina, $titulo)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * O vídeo casa com qualquer grafia do título — ou vem do **mesmo site** da
+     * página.
+     *
+     * A isenção por site existe para o arquivo de CDN com nome opaco. O Tokyvideo
+     * serve o episódio em `cdnst73.tokyvideo.com/videos/684/684511/mp4/<sha>.mp4`:
+     * não há uma palavra do título para conferir, e a checagem por palavra-chave
+     * recusava o vídeo de uma página que já havia provado ser sobre o título. Como
+     * o arquivo está no mesmo site da página, ele é o player daquela página — a
+     * prova de relevância já foi dada antes, na abertura dela.
+     *
+     * A isenção é **do mesmo site**, não de qualquer host: um CDN de terceiro
+     * embutido numa página de fandom continua passando pela checagem, que é o que
+     * separa o player do episódio do trailer de outro programa.
+     *
+     * @param  array<int, string>  $titulos
+     */
+    public function videoRelevanteParaAlgum(string $url, array $titulos, ?string $pagina = null): bool
+    {
+        if ($pagina !== null && $this->mesmoSite($url, $pagina)) {
+            return true;
+        }
+
+        foreach ($this->titulosUnicos($titulos) as $titulo) {
+            if ($this->videoRelevante($url, $titulo)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * A lista de títulos sem vazios e sem repetição, preservando a ordem.
+     *
+     * @param  array<int, string>  $titulos
+     * @return array<int, string>
+     */
+    private function titulosUnicos(array $titulos): array
+    {
+        $limpos = [];
+
+        foreach ($titulos as $titulo) {
+            $titulo = trim((string) $titulo);
+
+            if ($titulo !== '' && ! in_array($titulo, $limpos, true)) {
+                $limpos[] = $titulo;
+            }
+        }
+
+        return $limpos;
+    }
+
+    /** Diz se o vídeo e a página pertencem ao mesmo site (mesmo domínio de registro). */
+    private function mesmoSite(string $url, string $pagina): bool
+    {
+        $doVideo = $this->dominioDe($url);
+        $daPagina = $this->dominioDe($pagina);
+
+        return $doVideo !== '' && $doVideo === $daPagina;
+    }
+
+    /**
+     * O domínio de registro de uma URL, sem subdomínio e sem `www.`.
+     *
+     * `cdnst73.tokyvideo.com` e `www.tokyvideo.com` precisam cair no mesmo
+     * `tokyvideo.com` — é isso que faz o CDN do próprio site contar como o player
+     * da página. Os TLDs de dois níveis mais comuns no acervo PT-BR entram na
+     * conta para `www.site.com.br` não virar `com.br`.
+     */
+    private function dominioDe(string $url): string
+    {
+        $host = strtolower((string) parse_url($url, PHP_URL_HOST));
+
+        if ($host === '') {
+            return '';
+        }
+
+        $host = (string) preg_replace('/^www\./', '', $host);
+        $partes = explode('.', $host);
+
+        if (count($partes) <= 2) {
+            return $host;
+        }
+
+        $ultimosDois = implode('.', array_slice($partes, -2));
+
+        $doisNiveis = ['com.br', 'net.br', 'tv.br', 'org.br', 'com.ar', 'com.mx', 'com.pt', 'co.uk'];
+
+        if (in_array($ultimosDois, $doisNiveis, true)) {
+            return implode('.', array_slice($partes, -3));
+        }
+
+        return $ultimosDois;
+    }
+
+    /**
      * Diz se a URL pertence a um host de embed conhecido, isento da checagem.
      *
      * A lista é curta e de propósito: só entram os hosts cujo endereço de vídeo é

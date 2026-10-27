@@ -323,4 +323,63 @@ class RelevanciaTituloTest extends TestCase
             ''
         ));
     }
+
+    /**
+     * A página é julgada pela **lista** de títulos: o original também vale.
+     *
+     * O motor encontra a página pelo nome de origem ("Desperate Housewives
+     * 01x01") e a conferência antiga a recusava porque comparava só com a
+     * tradução. Era a página com o episódio dublado ficando de fora.
+     */
+    public function test_pagina_original_do_titulo_e_aceita_pela_lista(): void
+    {
+        $titulos = ['Donas de Casa Desesperadas', 'Desperate Housewives'];
+
+        $this->assertTrue($this->invocar(
+            'paginaRelevanteParaAlgum',
+            'https://www.tokyvideo.com/br/video/desperate-housewives-pt-01x01-nicsfilm',
+            'Desperate Housewives PT 01x01 | nicsfilm - Tokyvideo',
+            $titulos
+        ));
+
+        // Lixo continua lixo: nada do título em nenhuma das grafias.
+        $this->assertFalse($this->invocar(
+            'paginaRelevanteParaAlgum',
+            'https://www.tokyvideo.com/br/video/historia-4',
+            'História 4',
+            $titulos
+        ));
+    }
+
+    /**
+     * O MP4 do **próprio site** da página é aceito mesmo com nome opaco (hash).
+     *
+     * O Tokyvideo serve o episódio em
+     * `cdnst73.tokyvideo.com/videos/684/684511/mp4/<sha>.mp4`: não há palavra do
+     * título no caminho, e a checagem por palavra-chave recusava o vídeo de uma
+     * página que já tinha provado ser sobre o título.
+     */
+    public function test_video_do_mesmo_site_da_pagina_e_aceito(): void
+    {
+        $this->assertTrue($this->invocar(
+            'videoRelevanteParaAlgum',
+            'https://cdnst73.tokyvideo.com/videos/684/684511/mp4/2ce7768671dd.mp4?secure=abc',
+            ['Donas de Casa Desesperadas', 'Desperate Housewives'],
+            'https://www.tokyvideo.com/br/video/desperate-housewives-pt-01x01-nicsfilm'
+        ));
+    }
+
+    /**
+     * CDN de terceiro com nome opaco continua recusado — a isenção é do mesmo
+     * site, não de qualquer host.
+     */
+    public function test_video_de_outro_site_com_nome_opaco_e_recusado(): void
+    {
+        $this->assertFalse($this->invocar(
+            'videoRelevanteParaAlgum',
+            'https://cdn.terceiro.test/videos/684/684511.mp4',
+            ['Donas de Casa Desesperadas', 'Desperate Housewives'],
+            'https://www.tokyvideo.com/br/video/desperate-housewives-pt-01x01-nicsfilm'
+        ));
+    }
 }

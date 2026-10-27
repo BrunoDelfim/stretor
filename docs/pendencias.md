@@ -125,6 +125,32 @@ Continuam de fora:
 com confirmação por sonda — nunca por posição de token no HTML. Enquanto não
 houver receita, o servidor é registrado no log como visto e recusado.
 
+## A descoberta de páginas do TokyVideo depende do motor de busca
+
+**Observado em 2026-10-27.** O TokyVideo tem o episódio dublado de "Donas de Casa
+Desesperadas" S01E01 (`/br/video/desperate-housewives-pt-01x01-nicsfilm`), e o
+provedor **já extrai** a fonte quando recebe essa página: o MP4 do CDN é aceito
+pela isenção de mesmo site e o `ffprobe` do media-service o abre (2.615 s,
+`mov,mp4,...`). O que falta é **chegar** até ela.
+
+Testado sem sucesso:
+
+- o motor do projeto (SearXNG) para "Donas de Casa Desesperadas 1x01",
+  "Desperate Housewives 1x01", "Desperate Housewives 01x01 dublado" e
+  `site:tokyvideo.com ...` — a página não aparece em nenhum termo;
+- a busca do próprio site (`POST api.tokyvideo.com/search-videos`): 26 resultados
+  para "desperate housewives" e nenhum é o episódio; o autocomplete
+  (`search-ajax`) é pior e devolve notícia;
+- DuckDuckGo HTML: responde `202` (desafio) para o IP do container;
+- Bing: a página não volta para esse IP.
+
+**Para fechar**, o caminho previsto no projeto é o motor **Brave** (API oficial,
+chave em `TORRENTS_STREAM_DIRETO_BRAVE_KEY`, selecionado em
+`TORRENTS_STREAM_DIRETO_MOTORES`). Sem a chave o motor é descartado antes de
+qualquer requisição, e a cobertura fica restrita ao SearXNG. Alternativa de
+infraestrutura: um SearXNG com o Google funcionando — o do container está
+suspenso para este IP.
+
 ## A descida para o episódio no videobox — resolvida
 
 **Observado em 2026-10-25, resolvido em 2026-10-26.** O

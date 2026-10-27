@@ -18,7 +18,8 @@ class TermosStreamDiretoTest extends TestCase
      */
     private function termos(string $metodo, mixed ...$argumentos): mixed
     {
-        $anonimo = new class {
+        $anonimo = new class
+        {
             use TermosStreamDireto;
         };
 
@@ -206,7 +207,15 @@ class TermosStreamDiretoTest extends TestCase
         $this->assertNotContains('Desperate Housewives 1x01 assistir online dublado', $termos);
     }
 
-    public function test_titulo_original_vem_depois_do_titulo_principal(): void
+    /**
+     * O título original entra **logo depois** do termo mais preciso.
+     *
+     * Antes ele era a cauda da lista e, com o teto de termos do `.env`, nunca
+     * chegava a ser consultado. A prioridade agora é: o termo PT mais preciso
+     * primeiro, o original em seguida, e o resto das variações depois — assim o
+     * acervo que só publica pelo nome de origem continua ao alcance.
+     */
+    public function test_titulo_original_entra_logo_depois_do_termo_mais_preciso(): void
     {
         config()->set('services.torrents.stream_direto_max_termos', 0);
 
@@ -223,7 +232,8 @@ class TermosStreamDiretoTest extends TestCase
 
         $this->assertNotFalse($posicaoPrincipal);
         $this->assertNotFalse($posicaoOriginal);
-        $this->assertLessThan($posicaoOriginal, $posicaoPrincipal);
+        $this->assertSame(1, $posicaoOriginal, 'O original vem logo depois do primeiro termo.');
+        $this->assertLessThan($posicaoPrincipal, $posicaoOriginal);
     }
 
     public function test_filme_usa_o_titulo_original_solto(): void
@@ -360,5 +370,33 @@ class TermosStreamDiretoTest extends TestCase
 
         // O alternativo limpo entra como rede de segurança, sem numeração dupla.
         $this->assertContains('Desperate Housewives', $termos);
+    }
+
+    /**
+     * O título original sobrevive ao teto de termos.
+     *
+     * Com o teto em 5 (o do `.env`), as quatro grafias de numeração vezes as
+     * intenções enchiam a lista e o original — que ficava na cauda — nunca era
+     * consultado. Era o caso de "Donas de Casa Desesperadas": o episódio existe
+     * publicado como "Desperate Housewives", e o scraper não perguntava por esse
+     * nome, então a página com o vídeo dublado ficava invisível.
+     */
+    public function test_titulo_original_sobrevive_ao_teto_de_termos(): void
+    {
+        config()->set('services.torrents.stream_direto_max_termos', 5);
+
+        $termos = $this->termos(
+            'termosDeStreaming',
+            'Donas de Casa Desesperadas',
+            1,
+            1,
+            ['Desperate Housewives']
+        );
+
+        $posicao = array_search('Desperate Housewives 1x01', $termos, true);
+
+        $this->assertNotFalse($posicao, 'O título original precisa estar na lista.');
+        $this->assertLessThan(5, $posicao, 'E precisa caber no teto de cinco termos.');
+        $this->assertGreaterThan(0, $posicao, 'O termo mais preciso continua na frente.');
     }
 }

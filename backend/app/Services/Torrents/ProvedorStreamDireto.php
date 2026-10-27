@@ -296,7 +296,7 @@ class ProvedorStreamDireto implements ProvedorTorrents
 
             $parar = $this->visitar(
                 $diretas,
-                $titulo,
+                $titulos,
                 $temporada,
                 $episodio,
                 $paginasVisitadas,
@@ -331,7 +331,7 @@ class ProvedorStreamDireto implements ProvedorTorrents
 
                 if ($this->visitar(
                     $candidatas,
-                    $titulo,
+                    $titulos,
                     $temporada,
                     $episodio,
                     $paginasVisitadas,
@@ -461,7 +461,7 @@ class ProvedorStreamDireto implements ProvedorTorrents
      */
     private function visitar(
         array $candidatas,
-        string $titulo,
+        array $titulos,
         ?int $temporada,
         ?int $episodio,
         array &$paginasVisitadas,
@@ -469,6 +469,8 @@ class ProvedorStreamDireto implements ProvedorTorrents
         int $tetoFontes,
         int $tetoConsulta,
     ): bool {
+        $titulo = $titulos[0] ?? '';
+
         foreach ($candidatas as $pagina) {
             if (! $this->temTempoParaConsulta($tetoConsulta)) {
                 return true;
@@ -496,7 +498,7 @@ class ProvedorStreamDireto implements ProvedorTorrents
 
             $paginasVisitadas[$pagina] = true;
 
-            $novas = $this->rasparPagina($pagina, $titulo, $temporada, $episodio);
+            $novas = $this->rasparPagina($pagina, $titulos, $temporada, $episodio);
 
             /*
              * O crivo de idioma roda na busca, e não só na montagem final: só a
@@ -553,8 +555,10 @@ class ProvedorStreamDireto implements ProvedorTorrents
      *
      * @return array<int, array<string, mixed>>
      */
-    private function rasparPagina(string $pagina, string $titulo, ?int $temporada = null, ?int $episodio = null): array
+    private function rasparPagina(string $pagina, array $titulos, ?int $temporada = null, ?int $episodio = null): array
     {
+        $titulo = $titulos[0] ?? '';
+
         $teto = $this->tempoDeConsulta((int) config('services.torrents.stream_direto_tempo_limite', 10));
 
         if ($teto <= 0) {
@@ -662,7 +666,7 @@ class ProvedorStreamDireto implements ProvedorTorrents
          * um episódio aleatório. A página precisa provar que é sobre o título
          * antes de a extração gastar orçamento nela.
          */
-        if (! $this->paginaRelevante($pagina, $tituloPagina, $titulo)) {
+        if (! $this->paginaRelevanteParaAlgum($pagina, $tituloPagina, $titulos)) {
             Log::debug('Stream direto: página sem relação com o título descartada.', [
                 'pagina' => $pagina,
                 'titulo_pagina' => $tituloPagina,
@@ -718,7 +722,7 @@ class ProvedorStreamDireto implements ProvedorTorrents
                         'episodio' => $linkEpisodio,
                     ]);
 
-                    return $this->rasparPagina($linkEpisodio, $titulo, $temporada, $episodio);
+                    return $this->rasparPagina($linkEpisodio, $titulos, $temporada, $episodio);
                 }
 
                 Log::debug('Stream direto: página sem prova de mídia descartada.', ['pagina' => $pagina]);
@@ -773,7 +777,7 @@ class ProvedorStreamDireto implements ProvedorTorrents
          */
         $urls = array_values(array_filter(
             $urls,
-            function (string $url) use ($pagina, $titulo): bool {
+            function (string $url) use ($pagina, $titulo, $titulos): bool {
                 if ($this->filtroAdultoAtivo() && FiltroConteudoAdulto::urlBloqueada($url)) {
                     Log::warning('Stream direto: vídeo de origem imprópria descartado.', [
                         'pagina' => $pagina,
@@ -783,7 +787,7 @@ class ProvedorStreamDireto implements ProvedorTorrents
                     return false;
                 }
 
-                if (! $this->videoRelevante($url, $titulo)) {
+                if (! $this->videoRelevanteParaAlgum($url, $titulos, $pagina)) {
                     Log::debug('Stream direto: vídeo sem relação com o título descartado.', [
                         'pagina' => $pagina,
                         'video' => $url,

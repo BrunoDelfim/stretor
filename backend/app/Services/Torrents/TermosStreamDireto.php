@@ -253,20 +253,52 @@ trait TermosStreamDireto
          * aplicada acima, a numeração era anexada de novo e o termo saía com duas
          * grafias ("... S01E01 dublado 1x01"), que nenhum motor casa.
          */
+        $alternativosTermos = [];
+
         foreach ($this->titulosLimpos($titulosAlternativos) as $alternativo) {
             $alternativoBase = $this->tituloSemNumeracao($alternativo, $temporada, $episodio);
             $alternativoJaNumerado = $alternativoBase !== $alternativo;
 
             if ($temporada !== null && $episodio !== null && ! $alternativoJaNumerado) {
                 foreach ($this->numeracoesDoEpisodio($temporada, $episodio) as $numeracao) {
-                    $termos[] = "{$alternativo} {$numeracao}";
+                    $alternativosTermos[] = "{$alternativo} {$numeracao}";
                 }
             } else {
-                $termos[] = $alternativoJaNumerado ? $alternativoBase : $alternativo;
+                $alternativosTermos[] = $alternativoJaNumerado ? $alternativoBase : $alternativo;
             }
         }
 
-        return $this->limitarTermos(array_values(array_unique($termos)));
+        /*
+         * **Cobertura bilíngue mínima.** O título original entra na segunda
+         * posição, e não no fim da lista.
+         *
+         * O motivo é o teto de termos (`stream_direto_max_termos`, 5 no `.env`).
+         * Um episódio gera quatro grafias de numeração vezes as intenções, e o
+         * corte descarta a cauda — que era justamente onde o título original
+         * morava. Na prática ele **nunca** era consultado: a busca de "Donas de
+         * Casa Desesperadas" gastava os cinco termos em variações em português e
+         * voltava vazia, embora o mesmo episódio exista publicado como "Desperate
+         * Housewives". Foi assim que uma página de player com o episódio dublado
+         * ficou invisível para o scraper.
+         *
+         * Um termo do original logo depois do mais preciso é barato (uma consulta
+         * ao motor) e cobre o acervo que só publica pelo nome de origem. O resto
+         * continua na cauda, sem mudar a ordem relativa dos termos PT-BR.
+         */
+        $alternativosTermos = array_values(array_unique($alternativosTermos));
+
+        if ($alternativosTermos !== []) {
+            $primeiro = $termos[0] ?? '';
+
+            $termos = array_values(array_unique(array_merge(
+                $primeiro === '' ? [] : [$primeiro],
+                array_slice($alternativosTermos, 0, 1),
+                $primeiro === '' ? [] : array_slice($termos, 1),
+                array_slice($alternativosTermos, 1),
+            )));
+        }
+
+        return $this->limitarTermos($termos);
     }
 
     /**

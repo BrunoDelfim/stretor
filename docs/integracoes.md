@@ -3155,6 +3155,58 @@ vazia encerrava o fluxo antes de o player ser consultado. Medido depois da
 correção: **2,9 s** do título à fonte direta, com a cascata encerrada no primeiro
 agregador.
 
+##### TokyVideo: o player é aceito, a descoberta é que falta
+
+O TokyVideo publica o episódio num `<video><source>` normal, mas o arquivo vem de
+um CDN com **nome opaco**:
+`cdnst73.tokyvideo.com/videos/684/684511/mp4/2ce77686...ffd2.mp4?secure=...`. Duas
+peneiras recusavam essa página legítima:
+
+1. **Relevância pelo título.** A página de "Donas de Casa Desesperadas" S01E01
+   aparece publicada como "Desperate Housewives PT 01x01". Julgada só pela grafia
+   principal, ela era descartada — mesmo tendo sido encontrada pelo nome de
+   origem.
+2. **Relevância do vídeo.** O caminho do MP4 não tem uma palavra do título (é
+   hash), então o `videoRelevante()` recusava.
+
+A correção tem três partes:
+
+- [`paginaRelevanteParaAlgum()`](../backend/app/Services/Torrents/RelevanciaTitulo.php:173)
+  e [`videoRelevanteParaAlgum()`](../backend/app/Services/Torrents/RelevanciaTitulo.php:201)
+  julgam contra **todas** as grafias do título (traduzido e original), e o
+  `ProvedorStreamDireto` passou a carregar a lista inteira em vez do título
+  principal.
+- O vídeo servido pelo **mesmo site** da página é isento da checagem por
+  palavra-chave — o CDN do próprio site *é* o player daquela página, e a prova de
+  relevância já foi dada na abertura dela. CDN de terceiro continua sendo checado.
+- O título original ganhou uma vaga **no começo** da lista de termos
+  ([`TermosStreamDireto`](../backend/app/Services/Torrents/TermosStreamDireto.php:271)).
+  Antes ele era a cauda, e com o teto de 5 termos nunca era consultado: a busca
+  gastava os cinco em variações PT-BR e voltava vazia.
+
+Medido: com a página em mãos, o provedor devolve **1 fonte direta pt-BR**
+(`provedor = tokyvideo.com`) e o `ffprobe` do media-service abre o MP4
+(`mov,mp4,...`, 2.615 s). Antes da correção a mesma página devolvia zero.
+
+**O que continua faltando é a descoberta.** O motor do projeto (SearXNG) não
+devolve essa página para nenhum dos termos testados — "Donas de Casa Desesperadas
+1x01", "Desperate Housewives 1x01", "Desperate Housewives 01x01 dublado",
+`site:tokyvideo.com ...` — e a busca do próprio site não indexa o episódio (o
+`search-videos` devolve 26 resultados e nenhum é ele). O DuckDuckGo HTML responde
+desafio (202) e o Bing não traz o vídeo do IP do container. O Google do usuário
+tem a página; o do container está suspenso.
+
+Para páginas assim, o caminho que o projeto já suporta é o **motor Brave**, que é
+API oficial e indexa o que o SearXNG não tem:
+
+```
+TORRENTS_STREAM_DIRETO_MOTORES=brave:https://api.search.brave.com/res/v1/web/search
+TORRENTS_STREAM_DIRETO_BRAVE_KEY=<chave>
+```
+
+Sem a chave, o motor `brave` é descartado antes de qualquer requisição (o
+`MotorBuscaWeb` já trata isso) e a descoberta continua sendo só do SearXNG.
+
 Os servidores que continuam sem receita são o DoodStream e o Byse — ver
 [pendências](pendencias.md).
 
