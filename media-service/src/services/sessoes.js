@@ -2088,7 +2088,15 @@ function pareceExtra(caminho) {
 
   const nome = segmentos.pop() ?? ''
 
-  return /(^|[\s._-])nc(op|ed)\d*([\s._-]|$)/i.test(nome)
+  /*
+   * Nome que declara a numeração do episódio é episódio, mesmo que a série se
+   * chame "Movie Night" — a marca `SxxExx` é mais forte que a palavra solta.
+   */
+  if (/(^|[\s._-])s\d{1,2}[\s._-]*e\d{1,3}([\s._-]|$)/i.test(nome)) return false
+
+  if (/(^|[\s._-])nc(op|ed)\d*([\s._-]|$)/i.test(nome)) return true
+
+  return /(^|[\s._-])(movies?|filmes?|specials?|ovas?|featurettes?|extras?)([\s._-]|$)/i.test(nome)
 }
 
 /**
@@ -2311,7 +2319,13 @@ function arquivoPorNumeracaoAbsoluta(videos, temporada, episodio) {
         indice < partes.length - 1 && segmentoEhDaTemporada(segmento, temporada)
     )
 
-    return naTemporada && !/(^|\/)(extras?|specials?|nc(op|ed)?)(\/|$)/i.test(arquivo.path)
+    /*
+     * O mesmo crivo de extra usado no fallback: um filme ou um especial dentro da
+     * pasta da temporada também se numera, e um número fora de série deslocaria o
+     * "menor número da pasta" — o que muda o episódio escolhido para todos os
+     * outros pedidos daquela temporada.
+     */
+    return naTemporada && !pareceExtra(arquivo.path)
   })
 
   const numerados = candidatos

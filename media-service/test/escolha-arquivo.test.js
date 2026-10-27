@@ -132,3 +132,20 @@ test('pack só com extras mantém o maior vídeo (não recusa a fonte)', () => {
 
   assert.equal(escolherArquivoDeVideo(torrent, 1, 1).path, 'Serie/Extras/Entrevistas.mkv')
 })
+
+test('filme dentro da pasta da temporada não desloca a numeração absoluta', () => {
+  // O filme se numera como "04" e ficaria abaixo do primeiro episódio (60),
+  // deslocando todo o cálculo: S04E01 passaria a apontar para o episódio 57.
+  const torrent = {
+    files: [
+      arquivo('Serie/Season 4/Serie Movie 04.mkv', 999999),
+      arquivo('Serie/Season 4/Serie - 60.mkv', 900),
+      arquivo('Serie/Season 4/Serie - 61.mkv', 900),
+      arquivo('Serie/Season 4/Serie - 87.mkv', 950),
+    ],
+    path: '/tmp',
+  }
+
+  assert.equal(escolherArquivoDeVideo(torrent, 4, 1).path, 'Serie/Season 4/Serie - 60.mkv')
+  assert.equal(escolherArquivoDeVideo(torrent, 4, 28).path, 'Serie/Season 4/Serie - 87.mkv')
+})
