@@ -3068,7 +3068,8 @@ padrão de caminho identifica o conteúdo na página de resultado (`/filmes/onli
 `/series/`, `/(serie|filme)/<id>`). O domínio serve de âncora — só links do próprio
 site entram, o que descarta menu, rodapé e link patrocinado sem precisar de lista
 negra. O resultado do verpobreflix é a ficha da série, e o provedor desce dali para
-a página do episódio pelo caminho que já existia.
+a página do episódio pelo caminho que já existia — em dois degraus, desde a
+mudança de stack do site (ver a subseção seguinte).
 
 O `pobreflixtv.democrat` vem primeiro porque é o acervo atual do Pobreflix e o único
 cujo player já foi percorrido até o arquivo (o StreamTape do videobox — ver a
@@ -3079,6 +3080,38 @@ indexa pelo id do TMDB, o que dispensa a busca por nome —, mas a página do ep
 dele só abre com o passe configurado (`services.torrents.passe_cloudflare_*`). Como
 o provedor para no primeiro agregador que rende, os seguintes só custam quando o
 anterior não rendeu nada.
+
+##### A descida da ficha passa pela temporada
+
+A ficha do Pobreflix atual (`tvpobreflix.top`, Next.js) não entrega a lista completa
+no HTML: o servidor manda só a **primeira temporada**, e as abas das outras são
+montadas por JavaScript. Numa série de oito temporadas, a busca de "Donas de Casa
+Desesperadas" S06E13 achava a ficha certa e não achava `temporada-6/episodio-13` em
+lugar nenhum — a página caía em "sem prova de mídia" e sobrava a cascata de torrents,
+que devolvia **um** torrent (1 seed, áudio original com legenda): o player tentava,
+não subia, e a tela repetia a busca com o mesmo resultado.
+
+O link da temporada, porém, é um `<a href>` de verdade
+(`<a href="/series/donas-de-casa-desesperadas/temporada-6">`), e a página dela
+**lista os episódios no servidor**. A descida virou dois degraus: ficha →
+`temporada-6` → `episodio-13`. O
+[`linkDoEpisodio()`](../backend/app/Services/Torrents/ProvedorStreamDireto.php:1081)
+continua tentando o link exato primeiro e só então procura o da temporada — com uma
+trava (`enderecoJaEhDaTemporada()`) para a página da temporada não devolver a si
+mesma e o provedor ficar indo e voltando até o orçamento acabar.
+
+Medido, mesma busca, mesmo dia: antes **45,6 s e zero fontes diretas** (só o
+torrent de 1 seed); depois **21,9 s** e fonte direta pt-BR (`plenoflu` →
+`vaiquecol.com/cdn/hls/…/master.m3u8`), com a sessão subindo `pronto` em 15 s e
+playlist 200.
+
+O degrau intermediário só custa uma requisição e só acontece depois de a ficha ter
+sido aceita como o título pedido, então vale para qualquer agregador da mesma
+família (`/temporada-N` como página própria).
+
+O `verpobreflix.net` responde **301** para `www.tvpobreflix.top` — o mesmo acervo,
+stack novo. O cliente segue o redirect e a leitura vale igual; o domínio do catálogo
+só precisa mudar quando o antigo parar de redirecionar.
 
 ##### A busca do `pobreflixtv.democrat` é um XHR, não uma página
 

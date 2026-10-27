@@ -516,6 +516,66 @@ class ProvedorStreamDiretoTest extends TestCase
     }
 
     /**
+     * A ficha que só lista a primeira temporada desce para a temporada pedida.
+     *
+     * O `tvpobreflix.top` monta a ficha assim: episódios da temporada 1 no HTML e
+     * as demais abas carregadas por JavaScript. O **link** da temporada, porém, é
+     * um `<a href>` de verdade — e a página dela lista os episódios no servidor.
+     * Sem este degrau, "Donas de Casa" S06E13 era descartado por "sem prova de
+     * mídia" e sobrava só o torrent.
+     */
+    public function test_ficha_que_so_lista_a_primeira_temporada_desce_para_a_temporada(): void
+    {
+        $html = <<<'HTML'
+        <html><body>
+            <a href="/series/donas-de-casa-desesperadas/temporada-1/episodio-1">Episódio 1</a>
+            <a href="/series/donas-de-casa-desesperadas/temporada-6">Temporada 6</a>
+        </body></html>
+        HTML;
+
+        $link = $this->invocar(
+            'linkDoEpisodio',
+            $html,
+            'https://site.com/series/donas-de-casa-desesperadas',
+            6,
+            13
+        );
+
+        $this->assertSame('https://site.com/series/donas-de-casa-desesperadas/temporada-6', $link);
+    }
+
+    /** Na página da temporada, o episódio é achado normalmente. */
+    public function test_pagina_da_temporada_entrega_o_link_do_episodio(): void
+    {
+        $html = '<a href="/series/donas-de-casa-desesperadas/temporada-6/episodio-13">6x13</a>';
+
+        $link = $this->invocar(
+            'linkDoEpisodio',
+            $html,
+            'https://site.com/series/donas-de-casa-desesperadas/temporada-6',
+            6,
+            13
+        );
+
+        $this->assertSame('https://site.com/series/donas-de-casa-desesperadas/temporada-6/episodio-13', $link);
+    }
+
+    /**
+     * A temporada sem o episódio não volta para si mesma.
+     *
+     * Sem a trava, a página que lista o próprio link da temporada devolveria a si
+     * e o provedor ficaria indo e voltando até o orçamento acabar.
+     */
+    public function test_pagina_da_temporada_sem_o_episodio_nao_volta_para_si(): void
+    {
+        $html = '<a href="/series/x/temporada-6">Temporada 6</a>';
+
+        $link = $this->invocar('linkDoEpisodio', $html, 'https://site.com/series/x/temporada-6', 6, 13);
+
+        $this->assertNull($link);
+    }
+
+    /**
      * A ordem é de afinidade: o slug com todas as palavras do título passa na
      * frente de um slug que só tem uma parte dele.
      */

@@ -1094,13 +1094,56 @@ class ProvedorStreamDireto implements ProvedorTorrents
             $episodio
         );
 
-        if (! preg_match($padrao, $html, $casamento)) {
+        if (preg_match($padrao, $html, $casamento)) {
+            $endereco = html_entity_decode($casamento[1], ENT_QUOTES | ENT_HTML5, 'UTF-8');
+
+            return $this->resolverEndereco($endereco, $pagina);
+        }
+
+        /*
+         * Sem o link exato, a ficha pode estar listando só a **primeira**
+         * temporada. O `tvpobreflix.top` (Next.js) monta a ficha assim: os
+         * episódios da temporada 1 vêm no HTML, e as abas das outras temporadas
+         * carregam o conteúdo por JavaScript — a página da temporada 6 não está
+         * ali, mas o **link** para ela está (`<a href=".../temporada-6">`).
+         *
+         * Descer para a temporada custa uma requisição e entrega o HTML certo: a
+         * página da temporada lista os episódios dela no servidor, e a descida
+         * normal acha o episódio. Sem este degrau, a ficha era descartada por
+         * "sem prova de mídia" e o episódio existia a dois cliques de distância.
+         *
+         * A guarda evita o vaivém: numa página que **já é** a da temporada, o
+         * degrau não se repete — o link do episódio é a única saída dali.
+         */
+        if ($this->enderecoJaEhDaTemporada($pagina, $temporada)) {
+            return null;
+        }
+
+        $padraoTemporada = sprintf('#href\s*=\s*["\']([^"\']*?temporada[-/]%d/?)[\'"]#i', $temporada);
+
+        if (! preg_match($padraoTemporada, $html, $casamento)) {
             return null;
         }
 
         $endereco = html_entity_decode($casamento[1], ENT_QUOTES | ENT_HTML5, 'UTF-8');
 
         return $this->resolverEndereco($endereco, $pagina);
+    }
+
+    /**
+     * Diz se o endereço atual já é o da **temporada** pedida.
+     *
+     * É a trava do degrau intermediário: na página da temporada, procurar de novo
+     * o link da temporada devolveria a própria página e o provedor ficaria indo e
+     * voltando. Ali só o link do episódio interessa.
+     */
+    private function enderecoJaEhDaTemporada(string $pagina, int $temporada): bool
+    {
+        // `temporada-6` sem número colado e sem `/episodio` na sequência: é a
+        // página da temporada, não a do episódio nem a de outra temporada.
+        $padrao = sprintf('#temporada[-/]%d(?!\d)(?![-/]episodio)#i', $temporada);
+
+        return (bool) preg_match($padrao, $pagina);
     }
 
     /**

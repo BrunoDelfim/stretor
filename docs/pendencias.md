@@ -242,3 +242,33 @@ Não foi integrado ainda. Se entrar, o desenho é o mesmo dos outros extractores
 do media-service: um endpoint que chama o binário com timeout curto e devolve a
 URL resolvida; o custo é ~40 MB na imagem e a versão presa à do Alpine.
 
+## O socorro do FlareSolverr não cabe no canal do stream direto
+
+**Observado em 2026-10-27**, no caso "Donas de Casa Desesperadas" S06E13.
+
+A conta que decide se o socorro vale a pena é
+`necessario = maxTimeout + CUSTO_DO_SOCORRO_SEGUNDOS (20)` em
+[`ClienteHttp`](../backend/app/Services/Torrents/ClienteHttp.php:1025). Com o
+`maxTimeout` de 10 s que a página pede, **necessario = 30 s** — exatamente o
+`TORRENTS_STREAM_DIRETO_ORCAMENTO` padrão. Ou seja: qualquer trabalho antes da
+primeira página (as buscas dos agregadores levam 1–4 s) deixa o socorro fora do
+orçamento. Nos logs do caso: `restante 25, necessario 30` na ficha e `restante 8,
+necessario 28` na página do catálogo — nas duas, o socorro foi recusado.
+
+A recusa é o comportamento correto **para páginas que ele resolveria**: uma
+chamada que não caiba custa o orçamento inteiro e chega tarde. Mas o número está
+preso ao `maxTimeout` pedido, e não ao que resta: com 25 s restantes o socorro
+poderia ser chamado com `maxTimeout` de 5 s, que é o que a conta permite. Duas
+saídas possíveis, nenhuma aplicada:
+
+- **Adaptar o pedido ao restante** — recusar só abaixo de
+  `CUSTO_DO_SOCORRO_SEGUNDOS + 5` e pedir `maxTimeout = restante - 20`.
+- **Separar o orçamento do socorro** — reservar ~30 s do canal para a primeira
+  página que falhar, em vez de deixar o socorro competir com as seguintes.
+
+Antes de mexer, vale medir: nesta rodada o FlareSolverr **não resolveu** a ficha
+do `tvpobreflix.top` — devolveu `Error solving the challenge. Timeout after 5.0 /
+10.0 seconds` em 16,4 s e 14,0 s. Para esse host o socorro não é a saída (o
+caminho é o degrau da temporada, já implementado); o ajuste acima só compensa se
+outros hosts se comportarem diferente — o que ainda não foi medido.
+
