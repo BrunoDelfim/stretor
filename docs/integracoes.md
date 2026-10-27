@@ -3748,6 +3748,85 @@ Com a fonte resolvida no backend e legível no media-service, a cadeia fecha: o
 T4E17 de "Donas de Casa Desesperadas" (tmdb `693`), que antes morria no
 `vaiquecol.com` sem o episódio, agora sai como fonte `direto` — a sessão sobe
 `pronto`, com áudio `por` e playlist HLS servida.
+##### O catálogo por id: o `playerflix` e a receita do `watchplay`
+
+O passo zero tinha uma fonte só. Quando o VOD da família `vizer.autos` não tinha
+o título — e ele tem acervo, não catálogo universal —, a busca voltava para o
+motor web, que é justamente o elo que falha: bloqueio de IP, site que troca de
+domínio, acervo que não indexa. A lista de fontes gratuitas levantada depois
+mostrou um caminho melhor: o **EmbedMovies** (`embedmovies.org`) redireciona para
+`myembed.biz`, que por sua vez entrega o player **`playerflix.ink`** — e esse
+player é **indexado por id do TMDB**, não por título.
+
+É a mesma virtude do VOD, com outro formato de resposta. A consulta é
+
+```
+GET https://playerflix.ink/inc/Ajax.php?type=tv&id=93405&season=1&episode=1
+GET https://playerflix.ink/inc/Ajax.php?type=movie&id=969681
+```
+
+com `X-Requested-With: XMLHttpRequest` (sem ele o host devolve a casca HTML do
+site). Filme vai como `type=movie` e **id numérico do TMDB** — `tt...` devolve
+`status: false` —, série vai como `type=tv` com `season`/`episode`. A resposta
+traz `data.options[]`, cada opção com `embed`, `lang`, `label` e `id`.
+
+O endpoint não está documentado em lugar nenhum: o player monta a URL dentro de
+um script **ofuscado**. Em vez de adivinhar, o caminho foi executar o script num
+contexto controlado (`vm` do Node, com `document`/`window` inertes e um `fetch`
+que só anota a URL) e ler o que ele tentaria chamar. Foi de lá que saiu a rota
+acima — e o mesmo truque serve se o player mudar de formato.
+
+**O que o catálogo devolve é embed, não vídeo.** Cada player de terceiro precisa
+da própria receita, e só um deles tem uma aqui: o **`watchplay.shop`**
+(`v1.watchplay.shop/tvshow/<tmdb>/<T>/<E>` e `/movie/<tmdb>`). A página dele é o
+player inteiro em HTML, sem ofuscação e sem XHR:
+
+```js
+window.MyPlayerAudio="Dublado";
+createMyPlayer({container:'#tv-player', id:"tvchannel-1",
+  url:"https:\/\/vid7102402.hclod.qzz.io\/st\/_s3_\/v12\/969681\/playlist.m3u8?md5=…&expires=…",
+  type:'m3u8', …});
+```
+
+Ler o `url` (desescapando o JSON) e o `MyPlayerAudio` resolve os dois campos que
+interessam: arquivo e idioma. O token do CDN vence em ~24 h, o que não é
+problema — a fonte é resolvida na hora da busca, não guardada.
+
+**O detalhe que quase derrubou a fonte: os segmentos mascarados.** O HLS do
+watchplay anuncia os segmentos como `0000.css` (e o filme, como `0000.js`), e um
+`ffprobe`/`ffmpeg` puro recusa a playlist inteira com `is not in
+allowed_segment_extensions`. O media-service já tinha resolvido isso para o
+`plenoflu`: quando a origem é playlist remota, o demuxer roda com
+`-extension_picky 0` e as extensões falsas liberadas
+([`EXTENSOES_SEGMENTO_HLS`](../media-service/src/services/hls.js:110)). Ou seja,
+a receita nova funcionou em cima de uma correção antiga — sem ela, a fonte seria
+descartada na conversão, com o link "vivo" no backend.
+
+**As provas.** Para o filme `969681` e para o episódio `93405`/T1E1, a busca
+completa devolve **uma** fonte `direto`, em PT-BR, em ~4 s, sem chegar ao torrent:
+
+| Etapa | Resultado |
+|---|---|
+| Consulta ao catálogo | `status: true`, opções em `pt-br` |
+| Página do watchplay | `MyPlayerAudio="Dublado"`, `type: 'm3u8'` |
+| Sonda do arquivo (`arquivoServido`) | playlist 200 |
+| `ffprobe` na origem | áudio `aac` 2 canais, `language=por` |
+| Sessão no media-service (`/sessao-direta`) | `pronto`, `idioma_audio: por`, duração 8700 s |
+| Playlist e segmento pelo proxy | 200; segmento com sync de MPEG-TS (`0x47`) |
+
+**O que ficou de fora, e por quê.** O `embed.warezcdn.com` da lista está morto
+(o `.net` é domínio à venda). `embedplayer2.xyz`, `embedplayabyss.top` e
+`superflixapi.fun` aparecem no catálogo em português, mas não têm receita — e o
+SuperFlix já é consultado pelo [`BuscaAgregadores`] pelo caminho normal, então
+tentá-lo aqui só duplicaria a consulta. O `yt-dlp` foi testado nos três e
+responde `Unsupported URL`; ele continua útil para o TokyVideo, não para estes.
+Um embed sem receita é descartado com `debug`, nunca vira fonte.
+
+A chave `stream_direto_resolver_playerflix` desliga a fonte sem desligar o passo
+zero, e `stream_direto_playerflix_host` acompanha a rotação de domínio da família
+(vazio usa `playerflix.ink`).
+
+
 
    ##### Os tipos de motor que restaram
 

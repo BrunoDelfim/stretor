@@ -635,6 +635,25 @@ return [
         'stream_direto_vod_hosts' => $lista(env('TORRENTS_STREAM_DIRETO_VOD_HOSTS'), []),
 
         /*
+         * Catálogo de embeds endereçável pelo id do TMDB (segunda fonte do
+         * passo zero).
+         *
+         * O VOD devolve o arquivo pronto; este devolve os players do título, já
+         * etiquetados por idioma, e a receita do player transforma o embed em
+         * arquivo. Vale porque dispensa a busca: o id do TMDB é a chave, e a
+         * descoberta é o elo que mais falha no conteúdo raro. Desligar restaura
+         * o passo zero do jeito que era, só com o VOD.
+         */
+        'stream_direto_resolver_playerflix' => (bool) env('TORRENTS_STREAM_DIRETO_RESOLVER_PLAYERFLIX', true),
+
+        /*
+         * Endereço do catálogo. Os domínios desta família giram; deixar vazio
+         * usa o padrão embutido no código (`playerflix.ink`). Um host escrito
+         * sem esquema recebe `https://`.
+         */
+        'stream_direto_playerflix_host' => env('TORRENTS_STREAM_DIRETO_PLAYERFLIX_HOST', ''),
+
+        /*
          * Addons Stremio na frente, mas só o que eles entregam como **arquivo
          * pronto** (`url`).
          *

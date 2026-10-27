@@ -91,6 +91,7 @@ class ProvedorStreamDireto implements ProvedorTorrents
         private readonly BuscaAgregadores $agregadores,
         private readonly ResolvedorEmbed $resolvedor,
         private readonly ResolvedorVod $vod,
+        private readonly ResolvedorPlayerflix $playerflix,
     ) {
     }
 
@@ -248,8 +249,18 @@ class ProvedorStreamDireto implements ProvedorTorrents
          * acrescentar que valha o orçamento, e a cascata nem começa. Quando não
          * há fonte para o id (ou o id não veio), o retorno é `null` e a varredura
          * segue exatamente como era.
+         *
+         * São duas famílias de fonte nesse degrau. O VOD entrega o arquivo pronto
+         * e é tentado primeiro por ser uma consulta só; o catálogo do playerflix
+         * devolve os embeds do título (e a receita do player os transforma em
+         * arquivo) e é a segunda tentativa. Os dois têm a mesma disciplina: se não
+         * entregarem nada, a busca não percebe que existiram.
          */
         $peloId = $this->vod->resolver($tmdbId, $temporada, $episodio, $tetoConsulta);
+
+        if ($peloId === null) {
+            $peloId = $this->playerflix->resolver($tmdbId, $temporada, $episodio, $tetoConsulta);
+        }
 
         if ($peloId !== null) {
             Log::debug('Stream direto: fonte resolvida pelo id do TMDB.', [

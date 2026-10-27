@@ -213,6 +213,15 @@ services:
       # Desligada, o valor padrão `true` de `config/services.php` mantém o fluxo
       # como era, com a proposta original do `ResolvedorVod`.
       - TORRENTS_STREAM_DIRETO_SONDAR_URL=${TORRENTS_STREAM_DIRETO_SONDAR_URL:-true}
+      # Catálogo de embeds endereçável pelo id do TMDB (segunda fonte do passo
+      # zero). O VOD devolve o arquivo pronto; este devolve os players do título
+      # já etiquetados por idioma, e a receita do player (watchplay) transforma o
+      # embed em .m3u8. Dispensa a busca, então cobre o conteúdo raro sem
+      # depender do motor. Desligado, o passo zero fica só com o VOD.
+      - TORRENTS_STREAM_DIRETO_RESOLVER_PLAYERFLIX=${TORRENTS_STREAM_DIRETO_RESOLVER_PLAYERFLIX:-true}
+      # Endereço do catálogo acima. Os domínios desta família giram; vazio usa o
+      # padrão do código (playerflix.ink).
+      - TORRENTS_STREAM_DIRETO_PLAYERFLIX_HOST=${TORRENTS_STREAM_DIRETO_PLAYERFLIX_HOST:-}
       # Teto da busca inteira, em segundos (padrão 55). O direto roda primeiro e,
       # quando acha, dispensa a cascata; quando ele volta vazio, é este teto que
       # impede os dois canais de somarem além do que o frontend espera.

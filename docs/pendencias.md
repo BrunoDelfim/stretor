@@ -197,3 +197,40 @@ arquivo, e o [`ResolvedorEmbed`](../backend/app/Services/Torrents/ResolvedorEmbe
 só percorre cadeias de receita conhecida. Se o host voltar, vale reavaliar com
 uma sonda manual antes de escrever qualquer cadeia nova.
 
+
+## O catálogo por id (`playerflix`) — resolvido
+
+**Observado e resolvido em 2026-10-26.** O passo zero só tinha o VOD
+(`vizer.autos`): quando ele não tinha o título, a busca voltava para o motor —
+justamente o elo que falha no conteúdo raro. O EmbedMovies (`embedmovies.org`)
+aponta para `myembed.biz`, que entrega o `playerflix.ink`, um catálogo
+**indexado por id do TMDB** (`/inc/Ajax.php?type=tv&id=…&season=…&episode=…`).
+Entre os players que ele devolve, o `watchplay.shop` publica o `.m3u8` em texto
+puro (`createMyPlayer({url:"…"})` + `MyPlayerAudio="Dublado"`), então não há
+ofuscação no caminho final.
+
+Medido no acervo real: filme `969681` e série `93405`/T1E1 → **1 fonte `direto`
+em PT-BR em ~4 s**, sessão `pronto`, `idioma_audio: por`, playlist e segmento
+200 pelo proxy. Os segmentos mascarados (`0000.css`) passam porque o
+media-service já afrouxa a trava de extensão do demuxer. Ver
+[integrações](integracoes.md#o-catálogo-por-id-o-playerflix-e-a-receita-do-watchplay).
+
+**O que continua em aberto:** `embedplayer2.xyz`, `embedplayabyss.top` e
+`superflixapi.fun` aparecem no catálogo em português e não têm receita — o
+SuperFlix, porém, já é consultado pelo [`BuscaAgregadores`]. Receita nova só
+entra com sonda provando o arquivo, como manda o passo zero. O
+`embed.warezcdn.com` da lista de fontes está morto (o `.net` é domínio à venda).
+
+## O `yt-dlp` como extrator genérico de hosters — avaliado, não integrado
+
+**Observado em 2026-10-26.** O `yt-dlp` instala no Alpine do media-service por
+`apk add yt-dlp` (versão 2026.03.17) e resolve o **TokyVideo** até o MP4 direto
+com token novo — o que fecharia a ponta de reprodução da pendência de descoberta
+acima, se a página fosse descoberta. Testado nos players do catálogo por id
+(`embedplayer2.xyz`, `v1.watchplay.shop`, `superflixapi.fun`): todos respondem
+`Unsupported URL`, então ele **não** substitui as receitas nativas.
+
+Não foi integrado ainda. Se entrar, o desenho é o mesmo dos outros extractores
+do media-service: um endpoint que chama o binário com timeout curto e devolve a
+URL resolvida; o custo é ~40 MB na imagem e a versão presa à do Alpine.
+
