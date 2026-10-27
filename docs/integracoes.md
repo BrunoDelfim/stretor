@@ -4190,6 +4190,40 @@ zero, e `stream_direto_playerflix_host` acompanha a rotação de domínio da fam
    A página que não passa é descartada com um `debug` **"página sem relação com o
    título descartada"**, antes de a extração gastar orçamento nela.
 
+   ##### A terceira barreira: o link precisa entregar mídia
+
+   Passar nas duas primeiras não basta. A relevância do **vídeo** tem uma isenção
+   deliberada: quando o link é do mesmo domínio da página, ele é aceito sem
+   conferir o título — é o que faz o CDN do próprio site (o `tokyvideo.com`
+   servindo `cdnst73.tokyvideo.com`) contar como player. A isenção, porém, aceita
+   qualquer coisa: a ficha de série do `pobreflixtv.democrat` publica
+   `<link rel="manifest" href="/manifest.webm">` — o manifest da PWA com nome de
+   vídeo —, e o `.webm` era o suficiente para virar fonte. O endereço responde
+   `301` para a home, a home vem `200 text/html`, e o `ffprobe` do media-service
+   recusava na hora de tocar: era o "**as fontes conectaram, mas não enviaram
+   dados**" que o usuário via depois de três tentativas.
+
+   A correção tem duas partes, e as duas são por **prova**, não por lista de
+   sites:
+
+   - o extrator recusa nomes que nunca são o vídeo, mesmo com extensão de mídia
+     (`manifest.*`) — o nome é o que denuncia, a extensão é o disfarce;
+   - o provedor lê os **primeiros bytes** de cada link antes de montar a fonte
+     ([`ClienteHttp::pareceVideoServido()`](../backend/app/Services/Torrents/ClienteHttp.php:588)):
+     `ftyp`, `#EXTM3U`, `ID3` ou `Content-Type` de vídeo. O que não passa é
+     descartado com `debug` **"link sem mídia descartado"**, e — o ponto
+     importante — a página volta a valer como *sem arquivo*, então a cadeia do
+     embed roda. É o que conserta o caso de ponta a ponta: descartado o manifest,
+     o [`LeitorVideobox`](../backend/app/Services/Torrents/LeitorVideobox.php:1)
+     desce da ficha para a página do episódio e devolve o MP4 real.
+
+   Medido: "One Piece" T1E1 (tmdb `37854`) devolvia `…/manifest.webm` em 8 s;
+   depois da correção devolve o MP4 do MixDrop
+   (`a-delivery42.mxcontent.net/v2/…mp4?s=…&e=…`) em 7,3 s, e a sessão sobe
+   `pronto` com playlist 200 (o primeiro playlist leva ~40 s porque o arquivo de
+   64 min é remuxado do zero — o overlay espera, já que a conversão segue
+   publicando progresso).
+
 4. **A normalização** — o que sai do extrator passa por
    [`NormalizaFonte::montarFonteDireta()`](../backend/app/Services/Torrents/NormalizaFonte.php:96),
    exatamente como antes. O scraper não inventa um contrato novo: ele só troca a

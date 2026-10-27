@@ -394,6 +394,44 @@ class ProvedorStreamDireto implements ProvedorTorrents
     }
 
     /**
+     * Separa o que a página publicou como vídeo do que só tem cara de vídeo.
+     *
+     * A prova é a leitura dos primeiros bytes, feita pelo
+     * [`ClienteHttp::pareceVideoServido()`] — o mesmo `Range` de 1 KB das outras
+     * sondas. A necessidade veio do `pobreflixtv.democrat`: a ficha da série
+     * anuncia `<link rel="manifest" href="/manifest.webm">`, e o `.webm` do
+     * manifest passava por todas as barreiras anteriores (é do mesmo domínio da
+     * página, então a relevância o isentava). O endereço redireciona para a home,
+     * que é `text/html`: a fonte nascia morta, a sessão do player falhava e o
+     * usuário só via o aviso genérico de "fontes não enviaram dados".
+     *
+     * O descarte é registrado em `debug` com a URL e o motivo, porque é o tipo de
+     * caso em que a página "tinha vídeo" no log e não tinha na tela.
+     *
+     * @param  array<int, string>  $urls
+     * @return array<int, string>
+     */
+    private function somenteArquivosDeVideo(array $urls, string $pagina, int $teto): array
+    {
+        $aproveitadas = [];
+
+        foreach ($urls as $url) {
+            if ($this->cliente->pareceVideoServido($url, min($teto, 4))) {
+                $aproveitadas[] = $url;
+
+                continue;
+            }
+
+            Log::debug('Stream direto: link sem mídia descartado.', [
+                'pagina' => $pagina,
+                'video' => $url,
+            ]);
+        }
+
+        return $aproveitadas;
+    }
+
+    /**
      * Corta a lista no teto de fontes do direto.
      *
      * A ordem de chegada é preservada: os primeiros links que a página apresentou
@@ -811,6 +849,22 @@ class ProvedorStreamDireto implements ProvedorTorrents
                 return true;
             }
         ));
+
+        /*
+         * A terceira barreira é a de **conteúdo**, e ela nasceu de um caso real:
+         * a ficha da série do `pobreflixtv.democrat` publica o manifest da PWA
+         * em `/manifest.webm`. O endereço é do mesmo domínio da página — então a
+         * isenção de relevância acima o aprovava — e responde `301` para a home,
+         * que vem `200 text/html`. A fonte entrava na lista, o player abria a
+         * sessão, o `ffprobe` recusava e o usuário via "as fontes não enviaram
+         * dados" três vezes.
+         *
+         * A prova aqui é a leitura dos primeiros bytes: `ftyp`, `#EXTM3U`, `ID3`
+         * ou um `Content-Type` de vídeo. O que não passa é descartado com log —
+         * e, se nada sobrar, o fluxo segue para o embed como se a página não
+         * tivesse arquivo nenhum (é o `if` logo abaixo).
+         */
+        $urls = $this->somenteArquivosDeVideo($urls, $pagina, $teto);
 
         if ($urls === []) {
             /*

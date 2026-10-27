@@ -96,6 +96,21 @@ class ExtratorVideo
     ];
 
     /**
+     * Nomes de arquivo que nunca são o vídeo, mesmo com extensão de mídia.
+     *
+     * O `pobreflixtv.democrat` publica o manifest da PWA como `/manifest.webm`
+     * (`<link rel="manifest" href="/manifest.webm">`), e o `.webm` do nome
+     * engana qualquer checagem que só olhe o sufixo. Como o endereço é do mesmo
+     * domínio da página, ele também passava pela isenção de relevância do
+     * provedor — a ficha da série virava fonte direta apontando para um arquivo
+     * que nem vídeo é (o endereço responde `301` para a home). O nome é o que
+     * denuncia; aqui a extensão é só o disfarce.
+     *
+     * @var array<int, string>
+     */
+    private const NOMES_NAO_MIDIA = ['manifest'];
+
+    /**
      * Chaves de configuração de player que costumam carregar a URL do vídeo.
      *
      * A ordem não importa — todas são varridas. O `file` é do JW Player; o `src`
@@ -805,6 +820,13 @@ class ExtratorVideo
         }
 
         $caminho = strtolower((string) parse_url($url, PHP_URL_PATH));
+
+        $nome = basename($caminho);
+        $radical = str_contains($nome, '.') ? (string) strstr($nome, '.', true) : $nome;
+
+        if (in_array($radical, self::NOMES_NAO_MIDIA, true)) {
+            return false;
+        }
 
         foreach (self::EXTENSOES as $extensao) {
             if (str_ends_with($caminho, '.'.$extensao)) {

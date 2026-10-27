@@ -3,6 +3,7 @@
 namespace Tests\Unit;
 
 use App\Services\Torrents\ProvedorStreamDireto;
+use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 /**
@@ -441,5 +442,40 @@ class ProvedorStreamDiretoTest extends TestCase
 
         $this->assertSame('stream_direto', $id);
         $this->assertSame('Stream direto', $rotulo);
+    }
+
+    /**
+     * O link que a página anuncia como vídeo só vira fonte se entregar mídia.
+     *
+     * Foi o caso do `/manifest.webm` do `pobreflixtv.democrat`: mesmo domínio da
+     * página (então a relevância isentava), extensão de vídeo no nome, e um
+     * `301` para a home na prática. A leitura dos primeiros bytes separa os dois
+     * mundos — e o `404` também cai, porque aí nem há o que ler.
+     */
+    public function test_link_sem_midia_e_descartado_pela_leitura_dos_bytes(): void
+    {
+        config()->set('services.torrents.stream_direto_sondar_url', true);
+
+        Http::fake([
+            'https://site.test/manifest.webm' => Http::response(
+                '<!DOCTYPE html><html><body>home</body></html>',
+                200,
+                ['Content-Type' => 'text/html; charset=UTF-8']
+            ),
+            'https://site.test/morto.mp4' => Http::response('', 404),
+            'https://site.test/episodio.mp4' => Http::response(
+                "\x00\x00\x00\x18ftypmp42".str_repeat("\x00", 512),
+                206,
+                ['Content-Type' => 'video/mp4']
+            ),
+        ]);
+
+        $mantidas = $this->invocar('somenteArquivosDeVideo', [
+            'https://site.test/manifest.webm',
+            'https://site.test/morto.mp4',
+            'https://site.test/episodio.mp4',
+        ], 'https://site.test/series/one-piece', 5);
+
+        $this->assertSame(['https://site.test/episodio.mp4'], $mantidas);
     }
 }

@@ -567,6 +567,55 @@ class ClienteHttp
     }
 
     /**
+     * Prova que a URL entrega **bytes** de vídeo, e não só um cabeçalho simpático.
+     *
+     * A sonda de existência (`arquivoServido()`) responde "o arquivo está lá?" e
+     * aprova quase tudo, de propósito. Esta responde outra pergunta: "o que vem
+     * na leitura é mídia?". A diferença apareceu no `pobreflixtv.democrat`, cuja
+     * ficha publica `/manifest.webm`: o endereço responde `301` para a home, a
+     * home vem `200 text/html`, e a sonda antiga aprovava — a fonte entrava na
+     * lista e o `ffprobe` do media-service recusava na hora de tocar, com o
+     * usuário já esperando.
+     *
+     * A leitura é a mesma de [`amostrarArquivo()`] (Range + stream, 1 KB) e a
+     * régua é a de [`pareceVideo()`]. Quando a leitura não acontece (timeout,
+     * `403` sem corpo), a resposta é `true`: é a postura tímida do resto das
+     * sondas — sem prova, não se condena.
+     *
+     * Desligada pela mesma chave da sonda (`stream_direto_sondar_url`), porque é
+     * a mesma decisão de gastar uma requisição para conferir o link.
+     */
+    public function pareceVideoServido(string $url, ?int $timeout = null): bool
+    {
+        if (! (bool) config('services.torrents.stream_direto_sondar_url', true)) {
+            return true;
+        }
+
+        $amostra = $this->amostrarArquivo($url, self::AMOSTRA_DA_SONDA, $timeout ?? 4);
+
+        if ($amostra === null) {
+            return true;
+        }
+
+        if (in_array($amostra['status'], self::STATUS_DE_ARQUIVO_MORTO, true)) {
+            return false;
+        }
+
+        if ($this->pareceVideo($amostra)) {
+            return true;
+        }
+
+        Log::debug('Sonda de vídeo: a URL não entrega mídia.', [
+            'url' => $url,
+            'status' => $amostra['status'],
+            'tipo' => $amostra['tipo'],
+            'amostra' => mb_substr(trim($amostra['corpo']), 0, 80),
+        ]);
+
+        return false;
+    }
+
+    /**
      * Diz se a amostra tem cara de arquivo de vídeo, e não de página de erro.
      *
      * São duas provas independentes: o `Content-Type` que o CDN declarou e a
@@ -587,10 +636,16 @@ class ClienteHttp
 
         $inicio = substr($amostra['corpo'], 0, 64);
 
-        // `ftyp` mora no offset 4 dos MP4/MOV (depois do tamanho da caixa).
+        /*
+         * `ftyp` mora no offset 4 dos MP4/MOV (depois do tamanho da caixa). O
+         * `#EXTM3U` é procurado em qualquer posição do começo, e não só na
+         * primeira: playlist servida como `text/plain` às vezes vem com uma
+         * quebra de linha antes da tag, e exigir a posição zero reprovava uma
+         * fonte boa.
+         */
         return str_contains($inicio, 'ftyp')
-            || stripos($inicio, '#EXTM3U') === 0
-            || stripos($inicio, 'ID3') === 0;
+            || stripos($inicio, '#EXTM3U') !== false
+            || str_starts_with($inicio, 'ID3');
     }
 
     /**

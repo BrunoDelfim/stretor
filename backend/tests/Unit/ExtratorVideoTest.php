@@ -380,4 +380,32 @@ class ExtratorVideoTest extends TestCase
         $this->assertTrue($this->extrator()->temMidia($html));
         $this->assertContains('https://player.desconhecido.test/embed/abc123', $this->extrator()->extrairEmbeds($html));
     }
+
+    /**
+     * O manifest da PWA não é vídeo, mesmo com nome de vídeo.
+     *
+     * O `pobreflixtv.democrat` publica `<link rel="manifest"
+     * href="/manifest.webm">`, e o `.webm` enganava a checagem por extensão: a
+     * ficha da série virava fonte direta apontando para um endereço que
+     * redireciona para a home. O nome é a prova que a extensão não dá.
+     */
+    public function test_manifest_com_extensao_de_video_nao_e_video(): void
+    {
+        $relativo = '<link rel="manifest" href="/manifest.webm">';
+        $absoluto = '<link rel="manifest" href="https://www.site.test/manifest.webm">';
+
+        $this->assertSame([], $this->extrator()->extrair($relativo));
+        $this->assertSame([], $this->extrator()->extrair($absoluto));
+    }
+
+    /**
+     * A regra do nome é só do radical `manifest`: um vídeo com nome normal
+     * continua entrando, e o `.webm` de verdade segue valendo.
+     */
+    public function test_video_com_nome_comum_continua_valendo(): void
+    {
+        $html = '<video src="https://cdn.site.test/one-piece-1x1.webm"></video>';
+
+        $this->assertSame(['https://cdn.site.test/one-piece-1x1.webm'], $this->extrator()->extrair($html));
+    }
 }
