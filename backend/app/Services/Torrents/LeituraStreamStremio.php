@@ -2,6 +2,7 @@
 
 namespace App\Services\Torrents;
 
+use App\Support\IndiciosPtBr;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -330,6 +331,16 @@ trait LeituraStreamStremio
      */
     private function idiomaDoNome(string $nome): string
     {
+        /*
+         * Legenda em português não é áudio em português. "PORTUGUESE.SUBtitles"
+         * no nome descreve a legenda, e devolver `portuguese` aqui fazia a fonte
+         * nascer dublada — o mesmo caso do torrent do Knaben, por outra porta.
+         * Sem promessa, a classificação fica com a tag do próprio nome.
+         */
+        if (IndiciosPtBr::marcaLegendado($nome)) {
+            return '';
+        }
+
         if (stripos($nome, 'brazil') !== false
             || stripos($nome, 'portuguese') !== false
             || stripos($nome, 'português') !== false

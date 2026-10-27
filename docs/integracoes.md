@@ -890,6 +890,32 @@ as legendas é que são PT-BR. Ele **não** entra na pilha PT-BR boa: cai na res
 É o que separa `Clube da Luta 1999 Bluray 720p Legendado pt BR` das fontes que o
 usuário de fato quer ouvir.
 
+#### "Portuguese Subtitles" é legenda, não dublagem
+
+A marca de idioma só prova áudio quando o release **não** anuncia legenda. A
+distinção vale nas quatro portas por onde a classificação entra, porque todas
+acabavam promovendo a mesma fonte:
+
+| Porta | Entrada | O que acontecia |
+| --- | --- | --- |
+| título do torrent ([`IdiomaFonte::deduzirDoTitulo`](../backend/app/Enums/IdiomaFonte.php:83)) | `Desperate.Housewives.S06E13.PORTUGUESE.SUBtitles` | `portugu` provava o áudio e a fonte saía dublada |
+| campo do indexador ([`NormalizaFonte::deduzirIdioma`](../backend/app/Services/Torrents/NormalizaFonte.php:49)) | `language=Portuguese` num release legendado | o campo vencia o título e voltava a marcar dublado |
+| nome no addon Stremio ([`LeituraStreamStremio::idiomaDoNome`](../backend/app/Services/Torrents/LeituraStreamStremio.php:332)) | `PORTUGUESE.SUBtitles` no rótulo | devolvia `portuguese`, que o campo traduzia para dublado |
+| URL da página ([`ProvedorStreamDireto::idiomaDaPagina`](../backend/app/Services/Torrents/ProvedorStreamDireto.php:1303)) | `/br/filme-portuguese-subtitles` | o `pt` do caminho classificava como dublado |
+
+A régua agora é a mesma em todas: **marca explícita de áudio** ("dublado",
+"nacional", "brasileiro", "áudio pt") vence inclusive contra a legenda —
+"Dublado e Legendado" continua dublado; a **marca de idioma** ("português",
+"portuguese") e o **código colado** ("pt-br") valem só quando não há legenda no
+mesmo nome. As formas de legenda reconhecidas são `legendado`, `legenda(s)`,
+`subtitles`, `subtitulado(a)` e `SUBS`/`SUB` **como palavra** — "subwoofer" não
+anuncia legenda.
+
+O efeito medido no caso real (Donas de Casa S06E13): a única fonte de torrent era
+`PORTUGUESE.SUBtitles` e entrava como dublada, em 45,6 s de busca; agora a mesma
+busca entrega a fonte **direta dublada** em 8,6 s, com sessão `pronto` e playlist
+200.
+
 #### O corte duro de idioma: só áudio PT-BR provado
 
 O `apenas_pt_br` decide *quanto* da reserva entra para completar o mínimo — mas a

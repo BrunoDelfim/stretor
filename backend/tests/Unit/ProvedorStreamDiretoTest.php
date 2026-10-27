@@ -97,6 +97,30 @@ class ProvedorStreamDiretoTest extends TestCase
     }
 
     /**
+     * "subtitles"/"legendas" no endereço é legenda, não dublagem — e a negação
+     * vem antes do código `pt` do slug, como no "legendado".
+     */
+    public function test_endereco_com_subtitles_e_legendas_vira_legendado(): void
+    {
+        $this->assertSame(
+            'legendado',
+            $this->invocar('idiomaDaPagina', 'https://site.com/br/filme-portuguese-subtitles')
+        );
+
+        $this->assertSame(
+            'legendado',
+            $this->invocar('idiomaDaPagina', 'https://site.com/filme-legendas-pt-br')
+        );
+
+        // "sub" colado em outra palavra não anuncia legenda: o `pt-br` continua
+        // valendo como indício de áudio.
+        $this->assertSame(
+            'dublado',
+            $this->invocar('idiomaDaPagina', 'https://site.com/filme-subwoofer-pt-br')
+        );
+    }
+
+    /**
      * O segmento de país é procurado com as barras à volta: `/br/` é o Brasil,
      * mas `/bruno/` não é. Sem essa borda, qualquer slug com "br" viraria
      * dublado.

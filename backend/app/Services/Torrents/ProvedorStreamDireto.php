@@ -1304,7 +1304,13 @@ class ProvedorStreamDireto implements ProvedorTorrents
     {
         $alvo = strtolower($pagina);
 
-        if (str_contains($alvo, 'legendado') || str_contains($alvo, 'legendada')) {
+        /*
+         * A negação vem primeiro e cobre as grafias que o release usa: além de
+         * "legendado", o endereço pode dizer "legenda" ou "subtitles" — é o caso
+         * de um espelho que publica `...-portuguese-subtitles...`. Se a checagem
+         * de indícios viesse antes, o `pt` do slug o classificaria como dublado.
+         */
+        if (IndiciosPtBr::marcaLegendado($alvo)) {
             return 'legendado';
         }
 

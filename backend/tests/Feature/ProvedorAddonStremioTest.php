@@ -93,6 +93,25 @@ class ProvedorAddonStremioTest extends TestCase
     }
 
     /**
+     * O rótulo do addon não pode transformar legenda em dublagem.
+     *
+     * Um addon que anuncia "PORTUGUESE.SUBtitles" no nome está dizendo o idioma
+     * da **legenda**; o áudio é o original. Antes, a leitura do nome devolvia
+     * `portuguese`, o campo vencia a tag e a fonte entrava na lista como dublada.
+     */
+    public function test_release_com_subtitles_nao_vira_dublado(): void
+    {
+        $this->dublar([
+            $this->direto('https://cdn.test/filme.mp4', 'Movie.2024.PORTUGUESE.SUBtitles.1080p'),
+        ]);
+
+        $fontes = $this->provedor()->buscar('Movie', 2024, 'tt1234567');
+
+        $this->assertCount(1, $fontes);
+        $this->assertSame(IdiomaFonte::LEGENDADO->value, $fontes[0]['idioma']);
+    }
+
+    /**
      * A extensão é lida do caminho: o token na query não pode esconder o `.m3u8`.
      */
     public function test_extensao_lida_pelo_caminho_preserva_a_query(): void
