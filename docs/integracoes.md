@@ -1482,7 +1482,7 @@ põe as comprovadas **antes** do achado de agora, e o player as tenta primeiro. 
 ganho é do usuário, não do sistema: a lista continua sendo montada normalmente,
 então se a comprovada não conectar mais, o resto está logo atrás.
 
-Três detalhes de desenho:
+Três detalhes de desenho, mais um que nasceu com o link assinado:
 
 - **A comprovada passa pela mesma peneira de malha.** Ela entra na lista antes de
   `testarMalha()`, não depois: uma fonte que morreu desde a última sessão é
@@ -1496,12 +1496,20 @@ Três detalhes de desenho:
   frente que o vídeo tocou, mas uma linha malformada iria para a frente de todas —
   por isso o `fonte_id`, o `magnet` e o `stream` são validados antes de virar
   histórico.
+- **A fonte direta assinada é lida pelo próprio token.** O link do passo zero
+  (watchplay) carrega `expires` em epoch e vence em ~24 h. A peneira de malha não
+  a pega — ela só mede torrent —, então a comprovada de ontem voltava na frente da
+  fila já morta. O [`preferidas()`](../backend/app/Services/FontesReproduzidas.php:53)
+  passou a descartar a linha `direto` cujo `expires` já passou, sem gastar rede: o
+  que tem prazo declarado e venceu não tem como servir, e a busca redescobre a
+  fonte na hora de qualquer jeito.
 
 O histórico **não distingue tipo de fonte**: ele devolve o que tocou por último,
 seja um magnet ou um link direto. É o preço do atalho — se um magnet do Torrentio
 serviu o título ontem e hoje a busca achou um StreamTape melhor, o magnet salvo
 continua vindo primeiro até sair do histórico (ele não expira; só tem teto por
-título). Para forçar a redescoberta, o comando
+título). O link direto é a exceção: quando a URL declara `expires` e o prazo já
+passou, a linha nem entra na fila. Para forçar a redescoberta, o comando
 [`fontes:limpar`](comandos.md#fonteslimpar--apaga-os-links-comprovados) apaga o
 histórico inteiro ou só o de um título/episódio.
 

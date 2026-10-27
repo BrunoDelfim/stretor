@@ -342,4 +342,63 @@ class FontesReproduzidasTest extends TestCase
         $this->assertNotContains($this->hash('antiga'), $sobreviventes, 'Sai a menos usada mais antiga.');
         $this->assertContains($this->hash('antiga-e-muito-usada'), $sobreviventes, 'A mais usada fica, mesmo antiga.');
     }
+
+    /**
+     * A fonte direta assinada tem prazo, e o histórico não sabia disso.
+     *
+     * O link do passo zero (watchplay) carrega `expires` em epoch e vence em
+     * ~24 h. Como o [`TesteDeFontes`] só mede malha de torrent, a comprovada de
+     * ontem voltava na frente da fila sem ninguém conferir nada — e a reprodução
+     * pagava a falha de uma fonte que a própria URL declarava morta. A leitura do
+     * `expires` resolve sem gastar rede.
+     */
+    public function test_comprovada_direta_com_token_vencido_nao_volta_para_a_fila(): void
+    {
+        app(FontesReproduzidas::class)->registrar(
+            [
+                'fonte_id' => md5('vencida'),
+                'tipo' => 'direto',
+                'titulo' => 'Clube da Luta 1999 1080p Dublado',
+                'idioma' => IdiomaFonte::DUBLADO->value,
+                'stream' => 'https://cdn.test/v12/550/playlist.m3u8?md5=abc&expires='.(time() - 60),
+            ],
+            TipoMidia::FILME,
+            550,
+        );
+
+        $this->assertSame(
+            [],
+            app(FontesReproduzidas::class)->preferidas(TipoMidia::FILME, 550),
+            'A URL vencida sai; a busca redescobre a fonte na hora.'
+        );
+    }
+
+    /** A mesma fonte com prazo à frente continua na frente da fila. */
+    public function test_comprovada_direta_com_token_valido_continua_na_fila(): void
+    {
+        app(FontesReproduzidas::class)->registrar(
+            [
+                'fonte_id' => md5('valida'),
+                'tipo' => 'direto',
+                'titulo' => 'Clube da Luta 1999 1080p Dublado',
+                'idioma' => IdiomaFonte::DUBLADO->value,
+                'stream' => 'https://cdn.test/v12/550/playlist.m3u8?md5=abc&expires='.(time() + 3600),
+            ],
+            TipoMidia::FILME,
+            550,
+        );
+
+        $salvas = app(FontesReproduzidas::class)->preferidas(TipoMidia::FILME, 550);
+
+        $this->assertCount(1, $salvas);
+        $this->assertSame('direto', $salvas[0]['tipo']);
+    }
+
+    /** Magnet não vence: a comprovada de torrent não é afetada pelo corte. */
+    public function test_comprovada_de_torrent_sem_prazo_fica(): void
+    {
+        $this->comprovada('sem-prazo', reproducoes: 1, quando: now()->subWeek());
+
+        $this->assertCount(1, app(FontesReproduzidas::class)->preferidas(TipoMidia::FILME, 550));
+    }
 }

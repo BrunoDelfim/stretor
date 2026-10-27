@@ -61,8 +61,42 @@ class FontesReproduzidas
             ->orderByDesc('confirmada_em')
             ->limit($this->limite())
             ->get()
+            ->reject(fn (FonteReproduzida $fonte): bool => $this->streamExpirado(
+                (string) $fonte->stream,
+                (string) $fonte->tipo_fonte,
+            ))
             ->map(fn (FonteReproduzida $fonte): array => $fonte->paraFonte())
+            ->values()
             ->all();
+    }
+
+    /**
+     * Diz se a URL salva de uma fonte direta já venceu pelo próprio token.
+     *
+     * O link direto costuma ser assinado com validade — é o `expires` em epoch
+     * que os CDNs de embed põem na query (o watchplay do passo zero assina por
+     * ~24 h). O magnet não vence, e a fonte direta que não declara prazo também
+     * não: só o que declara validade e já passou dela é descartado.
+     *
+     * Sem este corte, a comprovada de ontem voltava na frente da fila e o
+     * usuário pagava a falha de uma fonte que a própria URL dizia estar morta —
+     * e o [`TesteDeFontes`] não a pega, porque ele só mede malha de torrent.
+     */
+    private function streamExpirado(string $stream, string $tipo): bool
+    {
+        if ($tipo !== 'direto') {
+            return false;
+        }
+
+        parse_str((string) parse_url($stream, PHP_URL_QUERY), $consulta);
+
+        $expira = $consulta['expires'] ?? null;
+
+        if (! is_numeric($expira)) {
+            return false;
+        }
+
+        return (int) $expira <= time();
     }
 
     /**
