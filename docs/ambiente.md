@@ -162,6 +162,13 @@ valores reais. As variáveis que exigem atenção:
 | `TMDB_API_KEY` | **Sim** | Chave da API do TMDB. Sem ela a Home não carrega filmes. |
 | `TMDB_CACHE_TTL` | Não | Tempo de cache das respostas do TMDB no Redis (padrão `3600`s). |
 | `TMDB_MAX_PAGES` | Não | Teto de páginas da rolagem infinita (padrão `25`, ~500 filmes). |
+| `VERIFICACAO_HABILITADA` | Não | Portão da Home: só exibe o título cuja fonte foi provada (padrão `true`). Desligado, a Home volta ao TMDB cru. |
+| `VERIFICACAO_AGENDADA` | Não | Liga a rodada diária de `fontes:verificar` pelo container `scheduler` (padrão `true`). Desligada, a carga só roda sob comando. |
+| `VERIFICACAO_HORARIO` | Não | Horário da rodada diária, no fuso do container (padrão `04:00`). |
+| `VERIFICACAO_PAGINAS` | Não | Páginas verificadas por rodada (padrão: o mesmo `TMDB_MAX_PAGES`). |
+| `VERIFICACAO_VALIDADE_HORAS` | Não | Prazo da prova de cada página (padrão `24`). Vencida, a Home serve o TMDB do dia até a próxima rodada. `0` desliga o prazo. |
+| `VERIFICACAO_VALIDADE_DIAS_DEFINITIVO` | Não | Janela de reexame do veredito "sem fonte" depois de a busca ter perguntado a todos os provedores (padrão `7` dias). |
+| `VERIFICACAO_ORCAMENTO_TITULO` | Não | Teto de segundos por título na verificação (padrão `45`). Cobre o caminho do stream direto de série, que gasta três páginas. |
 | `TORRENTS_TORZNAB_KEY` | Não | Chave da API do Prowlarr. É **preenchida automaticamente** na subida; só defina para apontar a um Prowlarr externo. |
 | `TORRENTS_TORZNAB_URL` | Não | URL interna do indexador (padrão `http://prowlarr:9696`). |
 | `TORRENTS_TORZNAB_CATEGORIA` | Não | Categoria Torznab de filmes (padrão `2000`). |
@@ -245,8 +252,14 @@ como o Space se monta.
 
 O `post-start` é o equivalente ao `make up` do PC local: ele sobe o stack
 inteiro (backend, frontend, media-service, Postgres, Redis, Prowlarr,
-FlareSolverr e SearXNG) toda vez que o Space é retomado, já que o Codespaces
-suspende os containers por inatividade.
+FlareSolverr, SearXNG e o agendador) toda vez que o Space é retomado, já que o
+Codespaces suspende os containers por inatividade.
+
+> **Agendador (`scheduler`):** é o container que dá relógio ao Laravel. Ele roda
+> `php artisan schedule:work` e dispara a verificação diária das fontes da Home
+> (`fontes:verificar`, no horário de `VERIFICACAO_HORARIO`) sem depender de cron
+> na máquina hospedeira. Sem ele, a Home fica presa na última página verificada —
+> o portão de fontes continua valendo, mas a lista nunca é renovada.
 
 ### Como acessar
 

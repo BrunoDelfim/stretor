@@ -28,8 +28,11 @@ restart:
 # variáveis de ambiente só entram no container na criação dele. Este alvo recria
 # o backend e limpa os caches de config e de aplicação, que é o que faz uma
 # alteração de `.env`/`config/services.php` valer de fato.
+#
+# O `scheduler` entra junto porque herda o ambiente do backend: recriar só o
+# backend deixaria o agendador rodando com o horário e o portão antigos.
 aplicar:
-	docker compose up -d --force-recreate backend
+	docker compose up -d --force-recreate backend scheduler
 	docker compose exec -T backend php artisan config:clear
 	docker compose exec -T backend php artisan cache:clear
 

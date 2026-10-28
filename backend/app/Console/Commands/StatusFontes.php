@@ -7,14 +7,16 @@ use App\Models\Disponibilidade;
 use App\Models\VerificacaoExecucao;
 use App\Models\VerificacaoHome;
 use Illuminate\Console\Command;
+use Illuminate\Support\Carbon;
 
 /**
  * Mostra o estado da verificação sem encostar em nenhum tracker.
  *
- * É o companheiro de leitura do `fontes:verificar`: diz quantas páginas já estão
- * prontas, quanto já foi indexado e como terminou a última rodada. Serve para
- * decidir se vale disparar uma nova carga — e para confirmar, sem abrir o banco,
- * que a rotina automática está desligada onde deveria.
+ * É o companheiro de leitura do `fontes:verificar`: diz quantas páginas estão
+ * prontas, quanto já foi indexado, se a prova ainda está no prazo e como terminou
+ * a última rodada. Serve para decidir se vale disparar uma nova carga — e para
+ * perceber, sem abrir o banco, quando a Home está servindo uma lista vencida ou
+ * uma página ficou travada no meio do caminho.
  */
 class StatusFontes extends Command
 {
@@ -25,6 +27,8 @@ class StatusFontes extends Command
     public function handle(): int
     {
         $paginasAlvo = (int) config('services.verificacao.paginas', 25);
+        $validade = (int) config('services.verificacao.validade_horas', 24);
+        $limite = now()->subHours($validade);
 
         $porStatus = VerificacaoHome::query()
             ->selectRaw('status, count(*) as total')
@@ -33,7 +37,28 @@ class StatusFontes extends Command
 
         $ok = (int) ($porStatus[StatusVerificacao::OK->value] ?? 0);
         $andamento = (int) ($porStatus[StatusVerificacao::EM_ANDAMENTO->value] ?? 0);
-        $verificadas = $ok + $andamento;
+
+        // Página em andamento há mais que a validade é resíduo de uma rodada que
+        // morreu no meio: ninguém está processando-a. O `fontes:verificar` a
+        // devolve a pendente no começo da próxima execução.
+        $travadas = VerificacaoHome::query()
+            ->where('status', StatusVerificacao::EM_ANDAMENTO->value)
+            ->where('updated_at', '<', $limite)
+            ->count();
+
+        // Frescor da Home: quantas páginas prontas já passaram do prazo (nessas, a
+        // Home está servindo o TMDB do dia) e quando foi a última verificação.
+        $vencidas = VerificacaoHome::query()
+            ->where('status', StatusVerificacao::OK->value)
+            ->where(function ($query) use ($limite) {
+                $query->where('verificada_em', '<', $limite)
+                    ->orWhereNull('verificada_em');
+            })
+            ->count();
+
+        $ultimaPagina = VerificacaoHome::query()
+            ->where('status', StatusVerificacao::OK->value)
+            ->max('verificada_em');
 
         $noIndice = Disponibilidade::count();
         $comFonte = Disponibilidade::where('tem_fonte', true)->count();
@@ -46,9 +71,14 @@ class StatusFontes extends Command
         $this->info('Status da verificação de fontes');
         $this->table(['Item', 'Valor'], [
             ['Páginas alvo', $paginasAlvo],
-            ['Páginas verificadas (ok)', $ok],
+            ['Páginas prontas (ok)', $ok],
+            ["  das quais com prova vencida (> {$validade}h)", $vencidas],
             ['Páginas em andamento', $andamento],
-            ['Páginas pendentes', max(0, $paginasAlvo - $verificadas)],
+            ['  das quais travadas (execução interrompida)', $travadas],
+            ['Páginas pendentes', max(0, $paginasAlvo - $ok - $andamento)],
+            ['Última página verificada', $ultimaPagina !== null
+                ? Carbon::parse($ultimaPagina)->format('d/m/Y H:i')
+                : '—'],
             ['Títulos no índice', $noIndice],
             ['Títulos com fonte', $comFonte],
             ['Títulos sem fonte', $noIndice - $comFonte],
@@ -58,9 +88,21 @@ class StatusFontes extends Command
 
         $this->resumoUltimaExecucao();
 
-        if (! config('services.verificacao.agendada')) {
-            $this->newLine();
+        $this->newLine();
+
+        if (config('services.verificacao.agendada')) {
+            $horario = config('services.verificacao.horario', '04:00');
+            $this->line("Rotina automática LIGADA — diária às {$horario} pelo container `scheduler`.");
+        } else {
             $this->warn('Rotina automática DESLIGADA (VERIFICACAO_AGENDADA=false). Dispare sob comando.');
+        }
+
+        if ($travadas > 0) {
+            $this->warn('Há páginas travadas em "em andamento": o próximo `fontes:verificar` as libera.');
+        }
+
+        if ($vencidas > 0) {
+            $this->warn('A Home está servindo o TMDB do dia nas páginas com prova vencida até a próxima rodada.');
         }
 
         return self::SUCCESS;

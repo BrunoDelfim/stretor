@@ -67,9 +67,11 @@ return [
      */
     'verificacao' => [
         'habilitada' => (bool) env('VERIFICACAO_HABILITADA', true),
-        // A chave do VPS: fica desligada de propósito para a carga nunca
-        // disparar sozinha durante o desenvolvimento.
-        'agendada' => (bool) env('VERIFICACAO_AGENDADA', false),
+        // A rodada diária é o que mantém a Home em dia. Fica ligada por padrão
+        // porque o stack sobe com o container `scheduler` (`schedule:work`), que
+        // é quem dispara o `fontes:verificar` no horário abaixo. Desligue só para
+        // rodar a carga na mão durante um ajuste.
+        'agendada' => (bool) env('VERIFICACAO_AGENDADA', true),
         'horario' => env('VERIFICACAO_HORARIO', '04:00'),
         // Sem configurar nada, verifica o mesmo número de páginas da rolagem.
         'paginas' => (int) env('VERIFICACAO_PAGINAS', env('TMDB_MAX_PAGES', 25)),
@@ -80,7 +82,11 @@ return [
         // respondeu. Quem pediu nova chance (busca inconclusiva) usa a validade
         // curta acima.
         'validade_dias_definitivo' => (int) env('VERIFICACAO_VALIDADE_DIAS_DEFINITIVO', 7),
-        'orcamento_titulo' => (int) env('VERIFICACAO_ORCAMENTO_TITULO', 30),
+        // Orçamento por título. O stream direto de série percorre três páginas
+        // (ficha, temporada e episódio); com o teto curto de antes a cascata era
+        // cortada no meio e um título que só o acervo web tinha era gravado como
+        // "sem fonte".
+        'orcamento_titulo' => (int) env('VERIFICACAO_ORCAMENTO_TITULO', 45),
         'pausa_itens_ms' => (int) env('VERIFICACAO_PAUSA_ITENS_MS', 6000),
         'pausa_paginas_ms' => (int) env('VERIFICACAO_PAUSA_PAGINAS_MS', 45000),
     ],

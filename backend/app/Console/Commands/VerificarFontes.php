@@ -9,10 +9,14 @@ use Throwable;
 /**
  * Dispara a rotina de verificação de fontes na mão.
  *
- * Em desenvolvimento nada roda sozinho: é este comando que alimenta o portão da
- * Home. Ele mostra o que está acontecendo linha a linha — cada título testado e o
- * veredito — e fecha com o resumo da rodada, para não ser preciso abrir o banco
- * para saber o que aconteceu.
+ * O caminho normal é o agendador (container `scheduler`, diário no horário de
+ * VERIFICACAO_HORARIO); este comando é o gatilho manual — para uma rodada fora de
+ * hora, para um recorte de páginas ou para testar um ajuste no verificador sem
+ * esperar a madrugada. Ele mostra o que está acontecendo linha a linha — cada
+ * título testado e o veredito — e fecha com o resumo da rodada.
+ *
+ * A rodada também limpa resíduos: página que ficou em `em andamento` por uma
+ * execução interrompida volta a `pendente` antes de o trabalho começar.
  */
 class VerificarFontes extends Command
 {

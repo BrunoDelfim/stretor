@@ -136,11 +136,20 @@ docker compose exec backend php artisan prowlarr:provisionar --apenas-chave
 ### Verificação de fontes (gate da Home e da busca)
 
 A Home e a busca só mostram um título depois de **provar** que existe fonte para
-ele. Como provar custa requisições aos trackers, a rotina roda **sob comando** e
-em **modo furtivo** (uma requisição por vez, com pausa entre itens e entre
-páginas). Em desenvolvimento, nada dispara sozinho (`VERIFICACAO_AGENDADA=false`);
-no VPS, ligue essa chave para o agendador cuidar da rotina diária no horário de
-`VERIFICACAO_HORARIO`.
+ele. Como provar custa requisições aos trackers, a rotina roda em **modo furtivo**
+(uma requisição por vez, com pausa entre itens e entre páginas).
+
+A rodada diária é responsabilidade do container `scheduler`, que sobe junto com o
+stack e roda `php artisan schedule:work` — sem cron na máquina hospedeira. Ele
+dispara `fontes:verificar` todo dia no horário de `VERIFICACAO_HORARIO` (padrão
+`04:00`), desde que `VERIFICACAO_AGENDADA` esteja ligada (padrão: ligada). Para
+desligar a rotina automática e só rodar sob comando, basta `VERIFICACAO_AGENDADA=false`.
+
+> A prova de cada página **vence** em `VERIFICACAO_VALIDADE_HORAS` (padrão 24).
+> Vencida, a Home volta a servir o TMDB do dia até a rodada seguinte regravar a
+> lista. É o que impede a Home de congelar quando uma execução falha ou o
+> agendador fica parado — foi exatamente esse o sintoma quando a rotina diária
+> não estava no ar: as páginas seguiam `ok` com a lista de dias antes.
 
 #### `fontes:limpar` — apaga os links comprovados
 
@@ -174,13 +183,22 @@ ele, `TORRENTS_CACHE_BYPASS=true` ou `make cache-clear`.
 
 #### `fontes:status` — só leitura, não toca em tracker
 
-Diz quantas páginas já estão prontas, quanto já foi indexado e como terminou a
+Diz quantas páginas estão prontas, quanto já foi indexado e como terminou a
 última rodada. É o companheiro de leitura do `fontes:verificar` — use antes e
 depois de uma carga.
 
 ```bash
 docker compose exec backend php artisan fontes:status
 ```
+
+Além dos totais, ele responde às perguntas que explicam uma Home parada:
+
+| Linha | O que significa |
+|-------|-----------------|
+| `das quais com prova vencida` | Páginas `ok` além de `VERIFICACAO_VALIDADE_HORAS`. Nelas a Home está servindo o TMDB do dia — a lista não está congelada, mas também não passou pelo portão. |
+| `das quais travadas` | Páginas em `em andamento` há mais que a validade: resíduo de uma execução interrompida. O próximo `fontes:verificar` as devolve a `pendente`. |
+| `Última página verificada` | Data da verificação mais recente. Se está velha, a rotina diária não está rodando. |
+| `Rotina automática LIGADA/DESLIGADA` | Reflete `VERIFICACAO_AGENDADA` e mostra o horário do agendador. |
 
 #### `fontes:verificar` — a carga de verdade
 

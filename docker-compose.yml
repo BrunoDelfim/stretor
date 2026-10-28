@@ -48,6 +48,16 @@ services:
       - TMDB_LANGUAGE=${TMDB_LANGUAGE:-pt-BR}
       - TMDB_REGION=${TMDB_REGION:-BR}
       - TMDB_MAX_PAGES=${TMDB_MAX_PAGES:-25}
+      # Portão da Home e rotina diária de verificação. Os padrões repetem o
+      # config/services.php; ficam aqui para o container `scheduler` herdar o
+      # mesmo ambiente via `extends` e para a rodada diária saber quando e quanto
+      # verificar sem depender de cron na máquina hospedeira.
+      - VERIFICACAO_HABILITADA=${VERIFICACAO_HABILITADA:-true}
+      - VERIFICACAO_AGENDADA=${VERIFICACAO_AGENDADA:-true}
+      - VERIFICACAO_HORARIO=${VERIFICACAO_HORARIO:-04:00}
+      - VERIFICACAO_PAGINAS=${VERIFICACAO_PAGINAS:-25}
+      - VERIFICACAO_VALIDADE_HORAS=${VERIFICACAO_VALIDADE_HORAS:-24}
+      - VERIFICACAO_ORCAMENTO_TITULO=${VERIFICACAO_ORCAMENTO_TITULO:-45}
       - TORRENTS_TORZNAB_URL=${TORRENTS_TORZNAB_URL:-http://prowlarr:9696}
       # Servidores de DNS que o entrypoint grava no `/etc/resolv.conf` do
       # container, depois do forwarder do Docker (que resolve os nomes internos do
@@ -274,6 +284,30 @@ services:
       start_period: 60s
     networks:
       - stretor
+
+  # Agendador das rotinas diárias (a verificação das fontes da Home).
+  #
+  # O backend é php-fpm: ele responde requisição, não olha o relógio. Sem um
+  # processo chamando `schedule:run`, o `Schedule::command('fontes:verificar')`
+  # registrado em routes/console.php nunca dispara — em dev não existe cron, e na
+  # VPS teria de ser configurado à mão. Enquanto ninguém chamava, a Home ficou
+  # presa na última página verificada (a lista de 07/10 servida por semanas).
+  #
+  # Herda build, volumes, rede, DNS, dependências e o ambiente do backend via
+  # `extends`; muda o entrypoint (script próprio, que espera as migrations) e o
+  # nome do container. Sem healthcheck: o Laravel já responde no log do serviço.
+  scheduler:
+    extends:
+      service: backend
+    container_name: stretor_scheduler
+    entrypoint: ["/bin/sh", "/usr/local/bin/scheduler.sh"]
+    volumes:
+      - ./backend:/var/www/backend
+      - ./docker/backend/php.ini:/usr/local/etc/php/conf.d/custom.ini
+      - ./docker/backend/scheduler.sh:/usr/local/bin/scheduler.sh:ro
+      - prowlarr_config:/prowlarr-config:ro
+    healthcheck:
+      disable: true
 
   nginx:
     image: nginx:1.27-alpine
