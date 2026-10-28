@@ -59,6 +59,16 @@ class VerificadorHome
             'iniciada_em' => now(),
         ]);
 
+        /*
+         * Execução interrompida — queda do processo, deploy no meio, container
+         * morto — deixa a página marcada como `em_andamento` para sempre. Ela não
+         * bloqueia a rodada seguinte (o laço sempre começa na página 1), mas
+         * envenena o relatório do `fontes:status`: a página aparece "em curso" há
+         * semanas e o número de pendentes nunca fecha. A marca órfã volta a
+         * `pendente` antes de o trabalho começar.
+         */
+        $this->liberarPaginasTravadas($registrar);
+
         $testados = 0;
         $achados = 0;
         $paginasProcessadas = 0;
@@ -273,6 +283,34 @@ class VerificadorHome
             ->where('tipo', $tipo->value)
             ->where('tmdb_id', $tmdbId)
             ->first();
+    }
+
+    /**
+     * Devolve a `pendente` as páginas que ficaram marcadas como "em andamento"
+     * numa execução que não terminou.
+     *
+     * O limiar é a validade da prova por página: uma página em curso há mais de
+     * um dia não está em curso — é resíduo de uma rodada que morreu no meio. Só
+     * mexe no `status`; a lista já gravada continua intacta para a Home.
+     */
+    private function liberarPaginasTravadas(callable $registrar): void
+    {
+        $horas = max(1, (int) config('services.verificacao.validade_horas', 24));
+
+        $liberadas = VerificacaoHome::query()
+            ->where('status', StatusVerificacao::EM_ANDAMENTO->value)
+            ->where('updated_at', '<', now()->subHours($horas))
+            ->update([
+                'status' => StatusVerificacao::PENDENTE->value,
+                'updated_at' => now(),
+            ]);
+
+        if ($liberadas > 0) {
+            $registrar(sprintf(
+                'Páginas travadas em "em andamento" liberadas: %d.',
+                $liberadas
+            ));
+        }
     }
 
     /** Marca a página como "em processamento", sem tocar na lista já gravada. */

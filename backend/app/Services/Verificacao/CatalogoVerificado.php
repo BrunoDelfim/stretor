@@ -4,6 +4,7 @@ namespace App\Services\Verificacao;
 
 use App\Enums\StatusVerificacao;
 use App\Models\VerificacaoHome;
+use Illuminate\Support\Carbon;
 
 /**
  * Leitura da Home verificada.
@@ -13,6 +14,12 @@ use App\Models\VerificacaoHome;
  * [`TmdbService`] devolveria — assim o controller não sabe nem se importa de onde
  * a lista veio. Página ainda não verificada devolve `null`, e o controller cai
  * para o TMDB cru.
+ *
+ * A verificação **vence**: passado o prazo de `verificacao.validade_horas`, a
+ * página volta a valer como "não pronta" e a Home serve o TMDB do dia. Sem esse
+ * prazo a lista ficava congelada no dia em que foi verificada — foi o que
+ * aconteceu quando a rotina diária parou de rodar: as páginas 1 e 2 seguiram
+ * `ok`, com os títulos de vinte dias antes, e a Home nunca mais mudou.
  */
 class CatalogoVerificado
 {
@@ -45,6 +52,13 @@ class CatalogoVerificado
             return null;
         }
 
+        // Prova vencida não é prova: a Home volta ao TMDB do dia até a rodada
+        // seguinte regravar a lista. Sem log aqui — a checagem acontece a cada
+        // requisição da Home, e o `fontes:status` já mostra o frescor.
+        if ($this->venceu($registro)) {
+            return null;
+        }
+
         return [
             'resultados' => $registro->itens ?? [],
             'pagina' => (int) $registro->pagina,
@@ -52,5 +66,35 @@ class CatalogoVerificado
             // melhor assumir que é, do que prometer páginas que não existem.
             'total_paginas' => (int) ($registro->total_paginas ?? $registro->pagina),
         ];
+    }
+
+    /**
+     * A prova desta página já perdeu a validade?
+     *
+     * A data usada é a da verificação; `updated_at` entra como reserva para as
+     * linhas gravadas antes de a coluna `verificada_em` existir. Validade zero ou
+     * negativa desliga o prazo (a página vale para sempre) — é o que permite
+     * congelar a Home numa apresentação, se algum dia for preciso.
+     */
+    private function venceu(VerificacaoHome $registro): bool
+    {
+        $horas = $this->validadeHoras();
+
+        if ($horas <= 0) {
+            return false;
+        }
+
+        $marca = $registro->verificada_em ?? $registro->updated_at;
+
+        if (! $marca instanceof Carbon) {
+            return true;
+        }
+
+        return $marca->lessThan(now()->subHours($horas));
+    }
+
+    private function validadeHoras(): int
+    {
+        return (int) config('services.verificacao.validade_horas', 24);
     }
 }

@@ -13,6 +13,7 @@ use App\Services\Verificacao\CatalogoVerificado;
 use App\Services\Verificacao\VerificadorFontes;
 use App\Services\Verificacao\VerificadorHome;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Mockery;
 use Tests\Concerns\UsaBancoDeTeste;
 use Tests\TestCase;
@@ -250,6 +251,93 @@ class VerificacaoFontesTest extends TestCase
     public function test_catalogo_verificado_devolve_nulo_para_pagina_pendente(): void
     {
         $this->assertNull((new CatalogoVerificado())->itensDaPagina(1));
+    }
+
+    /**
+     * Prova vencida não é prova: a página `ok` de dois dias atrás deixa de valer
+     * e a Home volta ao TMDB do dia.
+     *
+     * Foi a falta desta validade que congelou a Home: a rotina diária parou de
+     * rodar, as páginas 1 e 2 continuaram `ok` e a lista de 07/10 seguiu sendo
+     * servida por semanas, como se fosse a de hoje.
+     */
+    public function test_pagina_pronta_alem_da_validade_volta_ao_tmdb(): void
+    {
+        VerificacaoHome::create([
+            'pagina' => 1,
+            'status' => StatusVerificacao::OK->value,
+            'itens' => [$this->item(1, 'movie', 'A')],
+            'total_paginas' => 25,
+            'itens_tmdb' => 20,
+            'verificada_em' => now()->subHours(48),
+        ]);
+
+        $this->assertNull(
+            (new CatalogoVerificado())->itensDaPagina(1),
+            'Página verificada há 48 h não pode continuar respondendo pela Home.'
+        );
+    }
+
+    /** Validade zero desliga o prazo: a página vale até ser regravada. */
+    public function test_validade_zero_mantem_a_pagina_pronta(): void
+    {
+        config(['services.verificacao.validade_horas' => 0]);
+
+        VerificacaoHome::create([
+            'pagina' => 1,
+            'status' => StatusVerificacao::OK->value,
+            'itens' => [$this->item(1, 'movie', 'A')],
+            'total_paginas' => 25,
+            'itens_tmdb' => 20,
+            'verificada_em' => now()->subDays(30),
+        ]);
+
+        $this->assertNotNull((new CatalogoVerificado())->itensDaPagina(1));
+    }
+
+    /**
+     * Página travada em `em andamento` por uma execução que morreu no meio volta
+     * a `pendente` no começo da rodada seguinte — inclusive quando está fora do
+     * recorte de páginas desta rodada.
+     *
+     * A marca órfã não bloqueia o trabalho (o laço sempre recomeça na página 1),
+     * mas envenena o `fontes:status`: a página aparecia "em curso" para sempre.
+     * A que está em andamento **agora** não pode ser tocada — seria roubar de uma
+     * rodada em curso.
+     */
+    public function test_rodada_libera_pagina_travada_e_preserva_a_em_curso(): void
+    {
+        VerificacaoHome::create([
+            'pagina' => 5,
+            'status' => StatusVerificacao::EM_ANDAMENTO->value,
+        ]);
+        VerificacaoHome::create([
+            'pagina' => 6,
+            'status' => StatusVerificacao::EM_ANDAMENTO->value,
+        ]);
+
+        // O `updated_at` do Eloquent é sempre "agora"; o envelhecimento precisa
+        // ser feito no query builder cru, que não mexe na coluna de controle.
+        DB::table('verificacoes_home')
+            ->where('pagina', 5)
+            ->update(['updated_at' => now()->subHours(48)]);
+
+        $chamados = [];
+        $verificador = $this->verificadorFalso([], $chamados);
+
+        (new VerificadorHome($this->tmdbComPagina([$this->item(1, 'movie', 'A')]), $verificador))
+            ->executar(limitePaginas: 1, pausas: false);
+
+        $this->assertSame(
+            StatusVerificacao::PENDENTE,
+            VerificacaoHome::find(5)->status,
+            'Página em andamento há dois dias é resíduo e precisa voltar à fila.'
+        );
+        $this->assertSame(
+            StatusVerificacao::EM_ANDAMENTO,
+            VerificacaoHome::find(6)->status,
+            'A página em andamento agora pertence a uma rodada em curso.'
+        );
     }
 
     /** Com a verificação desligada, a Home volta ao comportamento antigo. */
