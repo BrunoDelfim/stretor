@@ -4043,6 +4043,37 @@ zero, e `stream_direto_playerflix_host` acompanha a rotação de domínio da fam
    positivo, e nesse caso o scraper volta a abrir qualquer página que o motor
    devolver.
 
+   ##### A barreira das plataformas de assinatura: o caso do MUBI
+
+   A busca não distingue "onde assistir" de "onde baixar": a ficha do filme no
+   MUBI, na Netflix ou no Prime Video aparece como candidata natural para títulos
+   que só existem nessas plataformas. Abrir essas páginas custa orçamento e rende
+   **trailer** — a ficha do MUBI, por exemplo, publica os `splash-videos` do site
+   (vídeo de fundo, sem som, igual para todo título) —, e quando o endereço do
+   vídeo carrega o nome do filme ele passa pelo crivo de relevância e vira fonte
+   que abre e não toca. Foi o que aconteceu com **"Cara-de-Barro"** (Clayface):
+   `mubi.com/pt/us/films/clayface` entrou na varredura e o tempo foi gasto com o
+   fundo da página.
+
+   O conteúdo dessas plataformas é protegido por DRM (Widevine/PlayReady): não há
+   contorno possível do lado do servidor — o manifesto só abre com licença de
+   assinante. A defesa certa é não oferecer a fonte, e ela vive em
+   [`PlataformasPagas`](../backend/app/Support/PlataformasPagas.php:1), aplicada
+   em **dois pontos**: o [`MotorBuscaWeb`](../backend/app/Services/Torrents/MotorBuscaWeb.php:1085)
+   descarta a página antes de abri-la (motivo `streaming` no log de descartes) e o
+   [`ProvedorStreamDireto`](../backend/app/Services/Torrents/ProvedorStreamDireto.php:897)
+   recusa o vídeo, inclusive o que vier por um embed dentro de agregador
+   (`fonteResolvida()`).
+
+   A lista cobre os portais e os CDNs de cada serviço (`mubi.com`/`mubicdn.net`,
+   `netflix.com`/`nflxvideo.net`, `primevideo.com`/`aiv-cdn.net`,
+   `disneyplus.com`/`dssott.com`, `max.com`, `globoplay.globo.com`,
+   `crunchyroll.com`, `looke.com.br`, `telecine.com.br`, `hulu.com`,
+   `peacocktv.com`, `starz.com`, `tv.apple.com`, `pluto.tv`) e os catálogos de
+   "onde assistir" (`filmelier.com`, `thestreamable.com`, `whentostream.com`).
+   O casamento é por sufixo de host com o ponto à frente — `mubi.com` barra
+   `www.mubi.com`, mas não `naomubi.com`.
+
    ##### A query é natural: a prova de mídia substituiu a âncora de domínio
 
    A versão anterior ancorava cada termo num domínio fixo com o operador `site:`

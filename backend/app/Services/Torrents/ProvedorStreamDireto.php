@@ -6,6 +6,7 @@ use App\Contracts\ProvedorTorrents;
 use App\Enums\IdiomaFonte;
 use App\Support\FiltroConteudoAdulto;
 use App\Support\IndiciosPtBr;
+use App\Support\PlataformasPagas;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -893,6 +894,22 @@ class ProvedorStreamDireto implements ProvedorTorrents
         $urls = array_values(array_filter(
             $urls,
             function (string $url) use ($pagina, $titulo, $titulos): bool {
+                /*
+                 * Plataforma de assinatura não entra nem como vídeo solto: o
+                 * arquivo é protegido por DRM e o que a página publica é o
+                 * trailer de fundo. O endereço pode carregar o nome do título
+                 * (e passar pelo crivo de relevância), então a barreira é de
+                 * origem — o mesmo motivo da lista negra de domínios na busca.
+                 */
+                if (PlataformasPagas::bloqueiaUrl($url)) {
+                    Log::debug('Stream direto: vídeo de plataforma de assinatura descartado.', [
+                        'pagina' => $pagina,
+                        'video' => $url,
+                    ]);
+
+                    return false;
+                }
+
                 if ($this->filtroAdultoAtivo() && FiltroConteudoAdulto::urlBloqueada($url)) {
                     Log::warning('Stream direto: vídeo de origem imprópria descartado.', [
                         'pagina' => $pagina,
@@ -1024,6 +1041,22 @@ class ProvedorStreamDireto implements ProvedorTorrents
      */
     private function fonteResolvida(array $resolvido, string $titulo, string $pagina): array
     {
+        /*
+         * O embed pode terminar num player de plataforma de assinatura — o
+         * agregador embute o trailer oficial do MUBI/Netflix e a cadeia leva até
+         * ele. O `master.m3u8` dessas plataformas só abre com licença de
+         * assinante: entra na lista, o player tenta e o usuário vê "não
+         * reproduz". Melhor não oferecer.
+         */
+        if (PlataformasPagas::bloqueiaUrl($resolvido['url'])) {
+            Log::debug('Stream direto: embed de plataforma de assinatura descartado.', [
+                'pagina' => $pagina,
+                'video' => $resolvido['url'],
+            ]);
+
+            return [];
+        }
+
         if ($this->filtroAdultoAtivo() && FiltroConteudoAdulto::urlBloqueada($resolvido['url'])) {
             Log::warning('Stream direto: vídeo de origem imprópria descartado.', [
                 'pagina' => $pagina,

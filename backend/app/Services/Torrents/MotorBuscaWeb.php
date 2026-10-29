@@ -3,6 +3,7 @@
 namespace App\Services\Torrents;
 
 use App\Support\FiltroConteudoAdulto;
+use App\Support\PlataformasPagas;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Log;
 
@@ -1079,6 +1080,20 @@ class MotorBuscaWeb
          */
         if ($this->pareceLoja($host, $caminho)) {
             return 'loja';
+        }
+
+        /*
+         * Plataformas de assinatura: nunca publicam o arquivo do título — no
+         * máximo, o trailer de fundo da ficha. O MUBI entrou aqui depois de ser
+         * visitado pela busca de "Cara-de-Barro": a página existia, o extrator
+         * achou os `splash-videos` do site e o orçamento foi gasto para nada. Um
+         * trailer, porém, pode passar pelo crivo de relevância quando o endereço
+         * carrega o nome do filme — e vira fonte que abre e não toca. O bloqueio
+         * aqui evita a visita; o do provedor impede que o vídeo entre por outra
+         * porta (um embed dentro de agregador).
+         */
+        if (PlataformasPagas::bloqueiaHost($host)) {
+            return 'streaming';
         }
 
         foreach (self::DOMINIOS_IGNORADOS as $dominio) {

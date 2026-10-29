@@ -194,6 +194,21 @@ class MotorBuscaWebTest extends TestCase
         $this->assertTrue($this->invocar('dominioIgnorado', 'https://www.themoviedb.org/movie/1'));
     }
 
+    /**
+     * Plataformas de assinatura não entram como candidatas.
+     *
+     * O caso real foi o MUBI: a ficha de "Cara-de-Barro" apareceu no resultado da
+     * busca e foi aberta; o tempo foi gasto e o extrator só achou o vídeo de
+     * fundo do site. A barreira fica antes de qualquer requisição.
+     */
+    public function test_plataformas_de_assinatura_sao_ignoradas(): void
+    {
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://mubi.com/pt/us/films/clayface'));
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://assets.mubicdn.net/splash-videos/42/x.mp4'));
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://www.netflix.com/br/title/81040344'));
+        $this->assertTrue($this->invocar('dominioIgnorado', 'https://globoplay.globo.com/v/1234567/'));
+    }
+
     public function test_dominio_parecido_nao_e_ignorado(): void
     {
         // O casamento é pelo host inteiro: um domínio que apenas termina com o

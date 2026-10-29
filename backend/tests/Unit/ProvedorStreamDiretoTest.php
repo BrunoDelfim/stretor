@@ -612,4 +612,24 @@ class ProvedorStreamDiretoTest extends TestCase
 
         $this->assertSame([$completo, $parcial], $ordem);
     }
+
+    /**
+     * Embed que termina num player de plataforma de assinatura não vira fonte.
+     *
+     * O agregador embute o trailer oficial do MUBI/Netflix e a travessia chega
+     * ao `master.m3u8` deles — que só abre com licença de assinante. A fonte
+     * entrava na lista e o player ficava em "não reproduz"; sem DRM quebrado não
+     * há o que tocar, então o certo é não oferecer.
+     */
+    public function test_embed_de_plataforma_de_assinatura_nao_vira_fonte(): void
+    {
+        $fontes = $this->invocar(
+            'fonteResolvida',
+            ['url' => 'https://assets.mubicdn.net/splash-videos/42/1790975541_video_h264_desktop.mp4'],
+            'Cara-de-Barro',
+            'https://www.pobreflixtv.democrat/filme/cara-de-barro'
+        );
+
+        $this->assertSame([], $fontes);
+    }
 }
