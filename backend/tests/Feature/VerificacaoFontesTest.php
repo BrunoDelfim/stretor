@@ -6,6 +6,7 @@ use App\Enums\OrigemVerificacao;
 use App\Enums\StatusVerificacao;
 use App\Enums\TipoMidia;
 use App\Models\Disponibilidade;
+use App\Models\VerificacaoExecucao;
 use App\Models\VerificacaoHome;
 use App\Services\TmdbService;
 use App\Services\TorrentService;
@@ -225,6 +226,108 @@ class VerificacaoFontesTest extends TestCase
             ->executar(limitePaginas: 1, pausas: false);
 
         $this->assertSame([2], $chamados, 'Só o título com prova vencida volta à fila.');
+    }
+
+    /**
+     * O resgate horário não faz nada quando as provas estão frescas.
+     *
+     * É o caso normal do dia: a rodada das 04:00 passou, todas as páginas estão
+     * dentro da validade e o `--se-vencido` sai em silêncio. Nenhuma execução
+     * pode ser registrada — se fosse, o status passaria a mostrar rodadas de
+     * hora em hora sem trabalho nenhum.
+     */
+    public function test_resgate_nao_roda_sem_prova_vencida(): void
+    {
+        VerificacaoHome::create([
+            'pagina' => 1,
+            'status' => StatusVerificacao::OK->value,
+            'itens' => [$this->item(1, 'movie', 'A')],
+            'total_paginas' => 25,
+            'itens_tmdb' => 20,
+            'verificada_em' => now()->subHours(2),
+        ]);
+
+        $verificador = Mockery::mock(VerificadorHome::class);
+        $verificador->shouldNotReceive('executar');
+        $this->instance(VerificadorHome::class, $verificador);
+
+        $this->artisan('fontes:verificar', ['--se-vencido' => true])
+            ->expectsOutputToContain('nenhuma prova vencida')
+            ->assertSuccessful();
+
+        $this->assertSame(0, VerificacaoExecucao::count());
+    }
+
+    /**
+     * Prova vencida aciona a rodada completa.
+     *
+     * Foi a situação criada por um deploy depois das 04:00: o `schedule:work`
+     * perde a tarefa diária do dia (`isDue()` olha o minuto corrente) e as provas
+     * vencem sem substituição. O resgate horário é o que devolve a Home ao
+     * catálogo verificado.
+     */
+    public function test_resgate_roda_quando_a_prova_venceu(): void
+    {
+        VerificacaoHome::create([
+            'pagina' => 1,
+            'status' => StatusVerificacao::OK->value,
+            'itens' => [$this->item(1, 'movie', 'A')],
+            'total_paginas' => 25,
+            'itens_tmdb' => 20,
+            'verificada_em' => now()->subHours(30),
+        ]);
+
+        $execucao = VerificacaoExecucao::create([
+            'origem' => OrigemVerificacao::COMANDO->value,
+            'status' => VerificacaoExecucao::STATUS_OK,
+            'iniciada_em' => now(),
+            'finalizada_em' => now(),
+            'paginas_processadas' => 1,
+            'titulos_testados' => 1,
+            'titulos_com_fonte' => 1,
+        ]);
+
+        $verificador = Mockery::mock(VerificadorHome::class);
+        $verificador->shouldReceive('executar')->once()->andReturn($execucao);
+        $this->instance(VerificadorHome::class, $verificador);
+
+        $this->artisan('fontes:verificar', ['--se-vencido' => true])
+            ->expectsOutputToContain('1 página(s) com prova vencida')
+            ->assertSuccessful();
+    }
+
+    /**
+     * Rodada em curso bloqueia o resgate, mesmo com prova vencida.
+     *
+     * A diária e o resgate são entradas de agenda diferentes, com travas
+     * diferentes; sem esta checagem, o resgate das 04:20 começaria por cima da
+     * rodada completa que ainda está rodando — duas varreduras disputando os
+     * mesmos títulos.
+     */
+    public function test_resgate_espera_a_rodada_em_curso(): void
+    {
+        VerificacaoHome::create([
+            'pagina' => 1,
+            'status' => StatusVerificacao::OK->value,
+            'itens' => [$this->item(1, 'movie', 'A')],
+            'total_paginas' => 25,
+            'itens_tmdb' => 20,
+            'verificada_em' => now()->subHours(30),
+        ]);
+
+        VerificacaoExecucao::create([
+            'origem' => OrigemVerificacao::COMANDO->value,
+            'status' => VerificacaoExecucao::STATUS_EM_ANDAMENTO,
+            'iniciada_em' => now()->subMinutes(10),
+        ]);
+
+        $verificador = Mockery::mock(VerificadorHome::class);
+        $verificador->shouldNotReceive('executar');
+        $this->instance(VerificadorHome::class, $verificador);
+
+        $this->artisan('fontes:verificar', ['--se-vencido' => true])
+            ->expectsOutputToContain('execução em andamento')
+            ->assertSuccessful();
     }
 
     /** Página `ok` no banco vira a resposta da Home, no formato do TMDB. */

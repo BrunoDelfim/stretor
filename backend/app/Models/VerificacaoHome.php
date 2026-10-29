@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\StatusVerificacao;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 
 /**
@@ -41,5 +42,26 @@ class VerificacaoHome extends Model
     public function pronta(): bool
     {
         return $this->status === StatusVerificacao::OK;
+    }
+
+    /**
+     * Páginas prontas cuja prova passou da validade.
+     *
+     * É a definição de "a Home está devendo uma rodada": o [`CatalogoVerificado`]
+     * ignora `itens` vencido e volta ao TMDB do dia, então contar essas linhas é
+     * o mesmo que contar quantas páginas estão servindo o catálogo cru. O escopo
+     * existe para o `fontes:status` e para o resgate do agendador usarem a
+     * **mesma** régua — se divergissem, o status diria "tudo fresco" e o resgate
+     * não rodaria.
+     */
+    public function scopeComProvaVencida(Builder $query, int $horas): Builder
+    {
+        $limite = now()->subHours($horas);
+
+        return $query->where('status', StatusVerificacao::OK->value)
+            ->where(function (Builder $query) use ($limite): void {
+                $query->where('verificada_em', '<', $limite)
+                    ->orWhereNull('verificada_em');
+            });
     }
 }

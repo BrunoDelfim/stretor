@@ -48,13 +48,7 @@ class StatusFontes extends Command
 
         // Frescor da Home: quantas páginas prontas já passaram do prazo (nessas, a
         // Home está servindo o TMDB do dia) e quando foi a última verificação.
-        $vencidas = VerificacaoHome::query()
-            ->where('status', StatusVerificacao::OK->value)
-            ->where(function ($query) use ($limite) {
-                $query->where('verificada_em', '<', $limite)
-                    ->orWhereNull('verificada_em');
-            })
-            ->count();
+        $vencidas = VerificacaoHome::query()->comProvaVencida($validade)->count();
 
         $ultimaPagina = VerificacaoHome::query()
             ->where('status', StatusVerificacao::OK->value)

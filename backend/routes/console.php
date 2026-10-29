@@ -21,5 +21,24 @@ Artisan::command('inspire', function () {
 if (config('services.verificacao.habilitada') && config('services.verificacao.agendada')) {
     Schedule::command('fontes:verificar')
         ->dailyAt(config('services.verificacao.horario', '04:00'))
-        ->withoutOverlapping();
+        ->withoutOverlapping(240);
+
+    /*
+     * Resgate horário: a tarefa diária não se repete quando o horário passa em
+     * branco.
+     *
+     * O `schedule:work` decide cada tarefa por `isDue()`, que olha o minuto
+     * corrente da expressão cron — não "desde quando não roda". Se o container do
+     * agendador for recriado depois das 04:00 (o `make aplicar` faz isso), a
+     * rodada do dia simplesmente não acontece. A prova das páginas vence em
+     * VERIFICACAO_VALIDADE_HORAS e a Home passa a servir o TMDB cru até a
+     * madrugada seguinte: foi o que aconteceu depois de um deploy às 10h.
+     *
+     * O `--se-vencido` só varre quando há página pronta com prova vencida, e o
+     * próprio comando recusa iniciar se houver execução em curso. No dia normal,
+     * depois da rodada das 04:00, ele sai em silêncio de hora em hora.
+     */
+    Schedule::command('fontes:verificar --se-vencido')
+        ->hourlyAt(20)
+        ->withoutOverlapping(240);
 }

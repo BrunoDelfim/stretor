@@ -145,6 +145,17 @@ dispara `fontes:verificar` todo dia no horário de `VERIFICACAO_HORARIO` (padrã
 `04:00`), desde que `VERIFICACAO_AGENDADA` esteja ligada (padrão: ligada). Para
 desligar a rotina automática e só rodar sob comando, basta `VERIFICACAO_AGENDADA=false`.
 
+> **Resgate de hora em hora.** O `schedule:work` decide cada tarefa pelo minuto
+> corrente da expressão cron — ele **não** recupera a rodada diária se o horário
+> passar com o container parado (um `make aplicar` às 10h, por exemplo, perde as
+> 04:00 daquele dia). Por isso a agenda tem uma segunda entrada,
+> `fontes:verificar --se-vencido`, que roda a cada hora no minuto 20 e só varre
+> quando existe página `ok` com prova vencida. No dia normal ela sai em silêncio;
+> depois de um deploy fora de hora, é ela que devolve a Home ao catálogo
+> verificado sem esperar a madrugada. O comando também se recusa a começar
+> enquanto há rodada em curso (registro `em_andamento` nas últimas 4h), para não
+> duplicar a carga.
+
 > A prova de cada página **vence** em `VERIFICACAO_VALIDADE_HORAS` (padrão 24).
 > Vencida, a Home volta a servir o TMDB do dia até a rodada seguinte regravar a
 > lista. É o que impede a Home de congelar quando uma execução falha ou o
@@ -214,6 +225,7 @@ bate nos trackers nos títulos ainda sem prova e fecha com o resumo da rodada.
 |-------|----------------|
 | `--paginas=N` | Limita a rodada às N primeiras páginas. `--paginas=1` é o teste rápido do dia a dia. |
 | `--limite=N` | Teto de títulos testados nesta rodada, para tirar só uma amostra. |
+| `--se-vencido` | Só roda se houver página pronta com prova vencida. É o modo do resgate horário do agendador; manualmente, serve para saber se a Home está devendo rodada sem disparar carga à toa. |
 | `--sem-pausa` | Desliga as pausas de furtividade. **Só em teste** — contra trackers reais, o ritmo acelerado pode derrubar o teu acesso. |
 
 ```bash
