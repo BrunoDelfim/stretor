@@ -57,10 +57,16 @@ de tendências do dia (veja [API](api.md)). A store
 [`movies.js`](../frontend/src/stores/movies.js:1) carrega as tendências por
 padrão e a busca continua reaproveitando a mesma lista.
 
-Cada item traz o campo `tipo` (`movie`/`tv`), que decide qual modal abre. O card
+Cada item traz o campo `tipo` (`movie`/`tv`), que decide qual modal abre, e o
+campo `verificado` (booleano), que alimenta o selo de verificação. O card
 [`MovieCard.vue`](../frontend/src/components/MovieCard.vue:1) exibe título, ano,
 classificação e um selo de tipo sobre a capa (verde-lima para filme, violeta para
-série), sem alteração de layout.
+série), sem alteração de layout. Na base da capa, o
+[`SeloVerificacao.vue`](../frontend/src/components/SeloVerificacao.vue:1) mostra
+**Verificado** (verde, com a data da prova no tooltip) quando o título tem fonte
+provada e válida, e **Não verificado** (cinza) para prova vencida, veredito "sem
+fonte" ou título que ainda não passou pelo agendador. O selo não intercepta o
+clique (`pointer-events-none`), então não muda o comportamento do card.
 
 ## Modal de série
 

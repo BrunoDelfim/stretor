@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from 'vue'
+import SeloVerificacao from '@/components/SeloVerificacao.vue'
 
 const props = defineProps({
   filme: {
@@ -50,6 +51,18 @@ const rotuloTipo = computed(() => (ehSerie.value ? 'Série' : 'Filme'))
       >
         ★ {{ filme.nota }}
       </span>
+
+      <!--
+        Selo de verificação na base da capa: os dois cantos de cima já pertencem
+        ao tipo e à nota. Só aparece quando o backend marcou o campo — assim uma
+        resposta antiga (sem o selo) não inventa estado.
+      -->
+      <SeloVerificacao
+        v-if="typeof filme.verificado === 'boolean'"
+        class="absolute bottom-2 left-2"
+        :verificado="filme.verificado"
+        :verificado-em="filme.verificado_em"
+      />
     </div>
 
     <div class="flex flex-1 flex-col gap-1 p-3">

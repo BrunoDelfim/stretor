@@ -51,6 +51,38 @@ O campo `has_more` é o que o frontend usa para decidir se continua pedindo
 páginas. Quando ele vem `false`, a rolagem infinita para. O comportamento do lado
 do cliente está detalhado em [Frontend](frontend.md).
 
+### Selo de verificação nos cards
+
+**Todas** as respostas de `trending` trazem dois campos por item:
+
+```json
+{
+  "id": 1339713,
+  "titulo": "Obsessão",
+  "tipo": "movie",
+  "verificado": false,
+  "verificado_em": null
+}
+```
+
+- `verificado` — `true` quando o título tem fonte **provada e ainda válida** em
+  `disponibilidades`; `false` para veredito "sem fonte", prova além do prazo e
+  título que nunca passou pelo agendador.
+- `verificado_em` — data ISO da última prova (só quando `verificado` é `true`),
+  usada no tooltip do selo.
+
+A regra de validade é a mesma da rotina, via `Disponibilidade::expirado()`: com
+fonte, a prova vale a janela longa (`VERIFICACAO_VALIDADE_DIAS_DEFINITIVO`,
+padrão 7 dias); sem fonte, depende de `deve_retentar` (24h para o inconclusivo,
+7 dias para o veredito definitivo). O selo é calculado em lote, uma consulta por
+tipo, com a chave `tipo:id` — filme e série podem compartilhar o mesmo id
+numérico no TMDB.
+
+O `meta.verificada` continua dizendo se **a página** já foi verificada; como a
+lista de uma página verificada só contém títulos que tinham fonte no dia da
+rodada, é normal haver card verde e card cinza na mesma página. O cinza é a
+prova que venceu depois da rodada — a próxima execução a reexamina.
+
 ### Limite de páginas
 
 O TMDB reporta cerca de 1000 páginas em `popular`/`trending`, o que representaria

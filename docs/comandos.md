@@ -242,13 +242,17 @@ docker compose exec backend php artisan fontes:verificar --paginas=3 --limite=20
 > mesmo quando não há nada a testar, uma rodada completa leva de ~20 a ~70 min —
 > rode em primeiro plano e aguarde.
 
-> **Idempotente e parcimonioso.** Título que já tem fonte não é re-testado. Quem
-> volta à fila é quem ainda não tem veredito, e o prazo depende do que aconteceu
-> na última tentativa: a busca que **não pôde concluir** (inconclusivo) volta na
-> virada do dia (`VERIFICACAO_VALIDADE_HORAS`, padrão 24h), e o veredito
-> **definitivo** — perguntou-se a todos os provedores e não havia nada — só é
-> reexaminado depois da janela longa (`VERIFICACAO_VALIDADE_DIAS_DEFINITIVO`,
-> padrão 7 dias), porque o acervo não muda de um dia para o outro.
+> **Idempotente e parcimonioso.** Título com fonte provada não é re-testado
+> enquanto a prova estiver de pé — a janela é a longa
+> (`VERIFICACAO_VALIDADE_DIAS_DEFINITIVO`, padrão 7 dias). Vencida, ele volta à
+> fila como qualquer outro: um release que tinha peers há uma semana pode estar
+> morto hoje, e o selo do card passaria a mentir. Quem ainda não tem veredito
+> também volta, e o prazo depende do que aconteceu na última tentativa: a busca
+> que **não pôde concluir** (inconclusivo) volta na virada do dia
+> (`VERIFICACAO_VALIDADE_HORAS`, padrão 24h), e o veredito **definitivo** —
+> perguntou-se a todos os provedores e não havia nada — só é reexaminado depois
+> da janela longa (`VERIFICACAO_VALIDADE_DIAS_DEFINITIVO`, padrão 7 dias), porque
+> o acervo não muda de um dia para o outro.
 
 Parâmetros lidos de `config/services.php` (todos com override em `.env`):
 

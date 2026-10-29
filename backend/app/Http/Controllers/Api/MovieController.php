@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Services\TmdbService;
 use App\Services\Verificacao\CatalogoVerificado;
+use App\Services\Verificacao\SeloVerificacao;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use RuntimeException;
@@ -18,6 +19,7 @@ class MovieController extends Controller
     public function __construct(
         private readonly TmdbService $tmdb,
         private readonly CatalogoVerificado $verificado,
+        private readonly SeloVerificacao $selo,
     ) {
     }
 
@@ -56,6 +58,11 @@ class MovieController extends Controller
      * fonte provada. Enquanto a verificação não chega nela, é o TMDB cru que
      * responde: a Home preenche na hora e vai ficando mais seletiva sozinha,
      * página a página, conforme a rotina avança.
+     *
+     * Cada item leva o selo do banco (`verificado`), independentemente da origem
+     * da lista. A página verificada só guarda o que tinha fonte no dia da rodada;
+     * a prova pode ter vencido depois, e o selo é o que conta essa diferença no
+     * card sem obrigar o usuário a abrir o título.
      */
     public function tendencias(Request $request): JsonResponse
     {
@@ -66,7 +73,7 @@ class MovieController extends Controller
             $resultado = $verificado ?? $this->tmdb->tendenciasDoDia($pagina);
 
             return [
-                'data' => $resultado['resultados'],
+                'data' => $this->selo->marcar($resultado['resultados']),
                 'meta' => [
                     'page' => $resultado['pagina'],
                     'total_pages' => $resultado['total_paginas'],

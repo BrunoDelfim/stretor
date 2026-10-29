@@ -242,26 +242,27 @@ class VerificadorHome
     /**
      * Este título precisa ser testado hoje?
      *
-     * Título com fonte já provada **nunca** é re-testado pela rotina — não faz
-     * sentido gastar requisição com o que já está resolvido. Os demais voltam à
-     * fila quando a prova vence, e quem decide quando isso acontece é a marca
-     * `deve_retentar`, lida por [`Disponibilidade::expirado()`]: quem pediu nova
-     * chance volta na virada do dia; o veredito definitivo só é reexaminado
-     * depois da janela longa.
+     * Título com fonte já provada fica fora da fila **enquanto a prova estiver de
+     * pé** — não faz sentido gastar requisição com o que já está resolvido. Mas a
+     * prova vence: um release que tinha peers em julho pode estar morto em
+     * outubro, e continuar oferecendo essa fonte sem nunca reexaminá-la deixa a
+     * Home presa a um veredito que o acervo já desmentiu (havia títulos com prova
+     * de 22 dias ainda na lista). Passada a janela de [`Disponibilidade::expirado()`],
+     * o título volta à fila como qualquer outro.
      *
-     * A marca também é o que separa "sem fonte" de "não deu para concluir": o
-     * inconclusivo não é negativo do acervo, e sim resultado de uma busca que não
-     * teve como perguntar a todos — travar esse título pelo prazo longo seria
-     * punir o acervo por uma falha da tentativa.
+     * A marca `deve_retentar` decide o prazo: quem pediu nova chance volta na
+     * virada do dia; o veredito — inclusive o de fonte — só é reexaminado depois
+     * da janela longa.
+     *
+     * Ela também separa "sem fonte" de "não deu para concluir": o inconclusivo não
+     * é negativo do acervo, e sim resultado de uma busca que não teve como
+     * perguntar a todos — travar esse título pelo prazo longo seria punir o acervo
+     * por uma falha da tentativa.
      */
     private function precisaVerificar(?Disponibilidade $disponibilidade): bool
     {
         if ($disponibilidade === null) {
             return true;
-        }
-
-        if ($disponibilidade->tem_fonte) {
-            return false;
         }
 
         return $disponibilidade->expirado();

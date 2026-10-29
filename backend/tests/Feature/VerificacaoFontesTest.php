@@ -330,6 +330,31 @@ class VerificacaoFontesTest extends TestCase
             ->assertSuccessful();
     }
 
+    /**
+     * Prova de fonte vencida volta à fila.
+     *
+     * O título com fonte ficava fora da rotina **para sempre**: `precisaVerificar`
+     * devolvia `false` antes de olhar o prazo, e a Home seguia oferecendo um
+     * release de vinte dias atrás sem nunca perguntar se ele ainda tinha peers. O
+     * selo do card escancarou isso (título "não verificado" dentro de uma página
+     * verificada). A janela de `expirado()` é o que impede a prova zumbi — com
+     * fonte, ela é a longa (7 dias).
+     */
+    public function test_titulo_com_fonte_vencida_volta_para_a_fila(): void
+    {
+        $itens = [$this->item(606, 'movie', 'Filme com prova velha')];
+
+        $this->disponibilidade(606, true, horasAtras: (string) (8 * 24));
+
+        $chamados = [];
+        $verificador = $this->verificadorFalso([606 => true], $chamados);
+
+        (new VerificadorHome($this->tmdbComPagina($itens), $verificador))
+            ->executar(limitePaginas: 1, pausas: false);
+
+        $this->assertSame([606], $chamados, 'A prova de fonte vencida precisa ser reexaminada.');
+    }
+
     /** Página `ok` no banco vira a resposta da Home, no formato do TMDB. */
     public function test_catalogo_verificado_serve_pagina_pronta(): void
     {
