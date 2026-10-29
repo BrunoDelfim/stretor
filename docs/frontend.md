@@ -68,6 +68,12 @@ provada e válida, e **Não verificado** (cinza) para prova vencida, veredito "s
 fonte" ou título que ainda não passou pelo agendador. O selo não intercepta o
 clique (`pointer-events-none`), então não muda o comportamento do card.
 
+O selo reflete a **mesma busca** que o botão Assistir dispara, e é por isso que a
+verificação resolve o `imdb_id` da lista de tendências antes de perguntar aos
+provedores (veja [Comandos](comandos.md#fontesverificar--a-carga-de-verdade)). Um
+selo verde é a promessa de que existe uma fonte naquele momento — não apenas de que
+alguém respondeu.
+
 ## Modal de série
 
 O clique em um item `tv` abre o

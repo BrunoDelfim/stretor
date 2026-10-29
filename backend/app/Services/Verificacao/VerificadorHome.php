@@ -92,6 +92,12 @@ class VerificadorHome
 
                 $registrar(sprintf('Página %d: %d itens no TMDB.', $pagina, count($itens)));
 
+                // O `/trending` não traz o `imdb_id`, e sem ele o Torrentio e o
+                // addon Stremio — que procuram por identificador — ficam de fora da
+                // verificação. O player busca a ficha completa e acha; a Home
+                // gravava "sem fonte" para o mesmo título.
+                $itens = $this->comIdentificadores($itens);
+
                 $pendentes = $this->itensPendentes($itens);
                 $completa = true;
 
@@ -145,6 +151,40 @@ class VerificadorHome
         }
 
         return $execucao;
+    }
+
+    /**
+     * Completa o `imdb_id` que a lista de tendências não traz.
+     *
+     * O identificador é o que o Torrentio e o addon Stremio usam para procurar —
+     * título sozinho gera falso positivo e, no caso de release internacional,
+     * falso negativo. A ficha do player (`/fontes`) já vinha com ele; a rotina da
+     * Home usava o item cru do trending e saía em desvantagem.
+     *
+     * A resolução é em lote, uma rajada por página, e fica em cache: o custo é
+     * uma requisição por título por janela — não uma por rodada.
+     *
+     * @param  array<int, array<string, mixed>>  $itens
+     * @return array<int, array<string, mixed>>
+     */
+    private function comIdentificadores(array $itens): array
+    {
+        $identificadores = $this->tmdb->identificadoresEmLote($itens);
+
+        foreach ($itens as $indice => $item) {
+            if (! empty($item['imdb_id'])) {
+                continue;
+            }
+
+            $chave = ($item['tipo'] ?? 'movie') === 'tv' ? 'tv' : 'movie';
+            $chave .= ':'.($item['id'] ?? 0);
+
+            if (isset($identificadores[$chave])) {
+                $itens[$indice]['imdb_id'] = $identificadores[$chave];
+            }
+        }
+
+        return $itens;
     }
 
     /**

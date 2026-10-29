@@ -301,12 +301,19 @@ class ResolvedorVod
     }
 
     /**
-     * Diz se o CDN está servindo o arquivo por trás da URL, ou se a API mentiu.
+     * Diz se o CDN está servindo **vídeo** por trás da URL, ou se a API mentiu.
      *
-     * A política mora no [`ClienteHttp::arquivoServido()`], porque os addons
+     * A política mora no [`ClienteHttp::pareceVideoServido()`], porque os addons
      * Stremio passam pela mesma conferência quando devolvem um link direto. Aqui
      * fica só a ponte: o `$host` entra no log para apontar qual espelho entregou
      * a fonte recusada.
+     *
+     * A pergunta é a mais forte de propósito. A sonda de cabeçalho
+     * (`arquivoServido()`) aprova quase tudo — e foi ela que deixou passar o
+     * `401 Credenciais inválidas.` do `nixplay.lat`, transformando um link morto
+     * em "verificado" na Home. O passo zero é a primeira tentativa da busca e
+     * não tem página para provar relevância: se ele entregar um link, esse link
+     * precisa entregar bytes de mídia.
      *
      * Desligada pela configuração, a resposta é `true` — é o comportamento de
      * antes da sonda, para poder desligar este passo sem desligar o passo zero.
@@ -315,7 +322,7 @@ class ResolvedorVod
      */
     private function arquivoVivo(string $url, string $host): bool
     {
-        $vivo = $this->cliente->arquivoServido($url, self::TEMPO_DA_SONDA_SEGUNDOS);
+        $vivo = $this->cliente->pareceVideoServido($url, self::TEMPO_DA_SONDA_SEGUNDOS);
 
         if (! $vivo) {
             Log::debug('Stream direto: o VOD apontou para uma fonte sem arquivo; a busca segue adiante.', [

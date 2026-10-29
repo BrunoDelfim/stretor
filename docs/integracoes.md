@@ -3760,13 +3760,15 @@ por trás dele) nunca perguntado: o degrau que teria a fonte ficava de fora por
 causa de um endereço vazio. A correção força o provedor a **provar o arquivo**
 antes de aceitá-lo. Um `HEAD` no CDN
 ([`ClienteHttp::sondarArquivo()`](../backend/app/Services/Torrents/ClienteHttp.php:315))
-devolve só os cabeçalhos, e `404`/`410` — e o `503`, que leva uma segunda leitura
-porque oscila — condenam o link. Recusado, o retorno é `null` e o passo zero recua
-como se não existisse, deixando a cascata correr. A sonda é propositalmente
-**tímida**: qualquer status inesperado é lido como "vivo", porque o custo de
-descartar uma fonte boa é maior do que o de deixar passar uma morta — essa o
-FFmpeg corrige adiante. A chave `stream_direto_sondar_url` desliga a conferência
-sem desligar o passo zero.
+devolve só os cabeçalhos, e `404`/`410`/`401` — e o `503`, que leva uma segunda
+leitura porque oscila — condenam o link. Recusado, o retorno é `null` e o passo zero
+recua como se não existisse, deixando a cascata correr. A sonda de cabeçalho é
+propositalmente **tímida**: qualquer status inesperado é lido como "vivo", porque o
+custo de descartar uma fonte boa é maior do que o de deixar passar uma morta — essa o
+FFmpeg corrige adiante. O passo zero, porém, não se contenta com o cabeçalho: ele
+pede a prova de mídia descrita adiante (`pareceVideoServido()`), porque é o único
+degrau que dispensa a cascata. A chave `stream_direto_sondar_url` desliga a
+conferência sem desligar o passo zero.
 
 **A conta expirada: o `403` que o cabeçalho não explica.** A sonda de cabeçalho
 tinha um ponto cego que apareceu no acervo inteiro: o `nixplay.lat` (o CDN deste
@@ -3792,6 +3794,28 @@ backend.
 A mesma régua vale para os addons Stremio que devolvem `url` (veja *Stream com
 `url`*), e a chave `stream_direto_sondar_url` desliga as duas sem desligar o
 passo zero.
+
+**O `401` e a prova de mídia: o selo verificado que não tocava.** Em 29/10 o passo
+zero voltou a mentir por outro caminho. O espelho entregou
+`nixplay.lat/movie/testelogado-vods/GwXanZ3Dj/1384216.mp4` ("Ponto Sem Retorno") e o
+host respondeu `401 Credenciais inválidas.` — um status que não estava em lista
+nenhuma. A sonda de cabeçalho o lia como "não decidido" e aprovava: o título entrava
+na Home marcado como verificado e o player abria com *as fontes conectaram, mas não
+enviaram dados*. Duas correções:
+
+- O `401` entrou em `STATUS_DE_ARQUIVO_MORTO`: sem credencial válida o link nunca
+  vira vídeo, é arquivo morto por definição. O `403` da conta expirada continua
+  dependendo do corpo, porque ali o anti-hotlink é indistinguível.
+- O passo zero trocou `arquivoServido()` por
+  [`pareceVideoServido()`](../backend/app/Services/Torrents/ClienteHttp.php:588): a
+  pergunta deixou de ser "o host respondeu?" e passou a ser "os primeiros bytes são
+  mídia?". Vale para o VOD e para o catálogo do playerflix, ao custo de um `Range` de
+  1 KB por link candidato — o mesmo que já se pagava no caminho de página.
+
+Na prática, o passo zero é o único degrau que **dispensa a cascata** e alimenta o
+selo da Home; por isso ele não pode aprovar por timidez. Os addons Stremio seguem em
+`arquivoServido()`, onde um `403`/`500` transitório ainda pode ser resolvido adiante.
+A régua das duas sondas está travada em `ClienteHttpSondaTest`.
 
 **O muro do CDN: o `403` sem `User-Agent`.** Resolvida a URL, faltava a segunda
 metade — o media-service conseguir *lê-la*. O CDN do provedor recusa quem não se
@@ -3876,7 +3900,7 @@ completa devolve **uma** fonte `direto`, em PT-BR, em ~4 s, sem chegar ao torren
 |---|---|
 | Consulta ao catálogo | `status: true`, opções em `pt-br` |
 | Página do watchplay | `MyPlayerAudio="Dublado"`, `type: 'm3u8'` |
-| Sonda do arquivo (`arquivoServido`) | playlist 200 |
+| Sonda do arquivo (`pareceVideoServido`) | playlist 200 com `#EXTM3U` |
 | `ffprobe` na origem | áudio `aac` 2 canais, `language=por` |
 | Sessão no media-service (`/sessao-direta`) | `pronto`, `idioma_audio: por`, duração 8700 s |
 | Playlist e segmento pelo proxy | 200; segmento com sync de MPEG-TS (`0x47`) |

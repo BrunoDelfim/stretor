@@ -68,6 +68,10 @@ class VerificacaoFontesTest extends TestCase
             'total_paginas' => $totalPaginas,
         ]);
 
+        // A rotina completa o `imdb_id` em lote antes de testar. O dublê devolve
+        // vazio: o interessado aqui é a fila de títulos, não o identificador.
+        $mock->shouldReceive('identificadoresEmLote')->andReturn([]);
+
         return $mock;
     }
 

@@ -341,13 +341,13 @@ class ResolvedorVodTest extends TestCase
     }
 
     /**
-     * Corpo sem marca conhecida segue a timidez: não condena.
+     * Recusa ambígua que ainda entrega vídeo continua valendo.
      *
-     * Um `403` de manutenção, um HTML de WAF ou uma amostra vazia não provam que
-     * a conta morreu. Quem decide adiante é o FFmpeg, e o custo de derrubar uma
-     * fonte boa é maior que o de deixar passar uma morta.
+     * O `403` do anti-hotlink (a URL está boa, falta o `Referer`) chega igual no
+     * `HEAD`, mas o `GET` com `Range` devolve os bytes do arquivo — e é isso que
+     * o player precisa. A sonda de vídeo continua aprovando esse caso.
      */
-    public function test_recusa_sem_marca_de_conta_mantem_a_fonte(): void
+    public function test_recusa_ambigua_com_video_mantem_a_fonte(): void
     {
         $this->comHosts(['https://vizer.autos']);
 
@@ -360,19 +360,21 @@ class ResolvedorVodTest extends TestCase
                 return Http::response('', 403);
             }
 
-            return Http::response('<html><body>Acesso restrito</body></html>', 403, ['Content-Type' => 'text/html']);
+            return Http::response("\x00\x00\x00\x18ftypmp42", 206, ['Content-Type' => 'video/mp4']);
         });
 
         $this->assertNotNull($this->resolvedor()->resolver('550', null, null, 10));
     }
 
     /**
-     * Cabeçalho saudável não paga a leitura do corpo.
+     * Recusa ambígua que devolve HTML não é fonte.
      *
-     * A amostra só é pedida quando o `HEAD` não decide; um `200` com
-     * `Content-Type` de vídeo encerra a conferência ali.
+     * Este era o ponto cego: sem marca de conta no corpo, o `403` com página de
+     * WAF/manutenção era aceito "pela timidez". Na prática, a fonte abria o
+     * player e não entregava dados — o mesmo desfecho do `401 Credenciais
+     * inválidas.` que marcou "Ponto Sem Retorno" como verificado.
      */
-    public function test_cabecalho_saudavel_nao_le_o_corpo(): void
+    public function test_recusa_ambigua_sem_video_descarta_a_fonte(): void
     {
         $this->comHosts(['https://vizer.autos']);
 
@@ -381,12 +383,35 @@ class ResolvedorVodTest extends TestCase
                 return Http::response($this->respostaNativa(self::URL_FILME));
             }
 
-            return Http::response('', 200, ['Content-Type' => 'video/mp4']);
+            return Http::response('<html><body>Acesso restrito</body></html>', 403, ['Content-Type' => 'text/html']);
+        });
+
+        $this->assertNull($this->resolvedor()->resolver('550', null, null, 10));
+    }
+
+    /**
+     * O cabeçalho saudável não basta: a leitura de bytes confirma a mídia.
+     *
+     * A sonda parava no `HEAD 200 video/mp4` para economizar uma requisição — e
+     * foi essa economia que deixou o `nixplay.lat` passar: o cabeçalho não dizia
+     * nada e o corpo entregava credencial recusada. Um `Range` de 1 KB é barato
+     * perto de abrir o player sem dados.
+     */
+    public function test_cabecalho_saudavel_e_confirmado_pela_leitura(): void
+    {
+        $this->comHosts(['https://vizer.autos']);
+
+        Http::fake(function (Request $pedido) {
+            if (str_contains($pedido->url(), 'wp-json/api/v1/player')) {
+                return Http::response($this->respostaNativa(self::URL_FILME));
+            }
+
+            return Http::response("\x00\x00\x00\x18ftypmp42", 200, ['Content-Type' => 'video/mp4']);
         });
 
         $this->assertNotNull($this->resolvedor()->resolver('550', null, null, 10));
 
-        Http::assertNotSent(fn (Request $pedido): bool => $pedido->method() === 'GET'
+        Http::assertSent(fn (Request $pedido): bool => $pedido->method() === 'GET'
             && str_contains($pedido->url(), 'cdn.test'));
     }
 }

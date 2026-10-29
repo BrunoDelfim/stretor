@@ -488,7 +488,11 @@ class TmdbService
      */
     private function tipoDe(array $item): string
     {
-        return ($item['media_type'] ?? 'movie') === 'tv' ? 'tv' : 'movie';
+        // Itens crus das listagens trazem `media_type`; os já normalizados, `tipo`.
+        // Aceitar os dois é o que permite usar a mesma chave nos dois formatos.
+        $tipo = $item['media_type'] ?? $item['tipo'] ?? 'movie';
+
+        return $tipo === 'tv' ? 'tv' : 'movie';
     }
 
     /**
@@ -567,6 +571,97 @@ class TmdbService
         }
 
         return $classificacoes;
+    }
+
+    /**
+     * Resolve o `imdb_id` de vários itens de uma vez.
+     *
+     * A lista de tendências não traz o identificador — ele só existe no endpoint
+     * de detalhes —, e é justamente ele que o Torrentio e o addon Stremio usam
+     * para procurar. Sem o `imdb_id`, a verificação da Home ficava em desvantagem
+     * em relação ao player (que busca a ficha completa no `/fontes`) e gravava
+     * "sem fonte" para títulos que o usuário conseguia assistir.
+     *
+     * O endpoint escolhido é o `/external_ids`, que responde só o identificador e
+     * é mais barato que a ficha inteira. A consulta vai em rajada por página, com
+     * cache por título — inclusive para o "não tem imdb", que também é resposta.
+     *
+     * @param  array<int, array<string, mixed>>  $itens
+     * @return array<string, string>  Mapa "tipo:id" => imdb_id
+     */
+    public function identificadoresEmLote(array $itens): array
+    {
+        $ttl = (int) config('services.tmdb.cache_ttl', 3600);
+
+        $identificadores = [];
+        $pendentes = [];
+
+        foreach ($itens as $item) {
+            if (empty($item['id'])) {
+                continue;
+            }
+
+            $chave = $this->chaveClassificacao($item);
+
+            if (! empty($item['imdb_id'])) {
+                $identificadores[$chave] = (string) $item['imdb_id'];
+
+                continue;
+            }
+
+            $valor = Cache::get("tmdb:imdb:{$chave}");
+
+            if ($valor !== null) {
+                if ($valor !== '') {
+                    $identificadores[$chave] = $valor;
+                }
+
+                continue;
+            }
+
+            $pendentes[$chave] = $item;
+        }
+
+        if ($pendentes === []) {
+            return $identificadores;
+        }
+
+        $respostas = Http::pool(function ($pool) use ($pendentes) {
+            return array_map(
+                function ($item) use ($pool) {
+                    $tipo = $this->tipoDe($item);
+                    $id = $item['id'];
+
+                    return $pool->as($this->chaveClassificacao($item))
+                        ->baseUrl(config('services.tmdb.base_url'))
+                        ->acceptJson()
+                        ->timeout(15)
+                        ->get("/{$tipo}/{$id}/external_ids", [
+                            'api_key' => config('services.tmdb.key'),
+                        ]);
+                },
+                $pendentes
+            );
+        });
+
+        foreach ($pendentes as $chave => $item) {
+            $resposta = $respostas[$chave] ?? null;
+
+            // Falha de rede não é veredito: sem cache, a próxima rodada tenta de novo.
+            if (! $resposta || $resposta->failed()) {
+                continue;
+            }
+
+            $imdb = (string) ($resposta->json('imdb_id') ?? '');
+
+            Cache::put("tmdb:imdb:{$chave}", $imdb, $ttl);
+
+            if ($imdb !== '') {
+                $identificadores[$chave] = $imdb;
+            }
+        }
+
+        return $identificadores;
     }
 
     /**

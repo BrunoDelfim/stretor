@@ -418,9 +418,17 @@ class ClienteHttp
      * atrás dele está fora — e ele, diferente dos outros, muda de ideia, por isso
      * leva uma segunda leitura antes de condenar (ver [`arquivoServido()`]).
      *
+     * O `401` entrou depois do caso "Ponto Sem Retorno": o VOD por id entregou
+     * `nixplay.lat/.../1384216.mp4` e o host respondeu `401 Credenciais
+     * inválidas.`. O status não estava em lista nenhuma, então a sonda de
+     * cabeçalho o tratava como "não decidido" e aprovava — a fonte entrava na
+     * lista, o título era marcado como verificado e o player recebia "as fontes
+     * conectaram, mas não enviaram dados". Sem credencial válida, um `401` nunca
+     * vira vídeo: é arquivo morto por definição.
+     *
      * @var array<int, int>
      */
-    private const STATUS_DE_ARQUIVO_MORTO = [404, 410, 503];
+    private const STATUS_DE_ARQUIVO_MORTO = [401, 404, 410, 503];
 
     /**
      * Status que o cabeçalho não decide, e por isso levam uma leitura do corpo.

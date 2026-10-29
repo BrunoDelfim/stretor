@@ -294,3 +294,32 @@ feita: o caminho que resolveu o caso foi o degrau da temporada, não o navegador
 proxy. Se algum host novo passar a resolver pelo FlareSolverr, a conta acima é o
 ponto de partida.
 
+
+## O `401` do `nixplay.lat` marcava link morto como verificado — resolvido
+
+**Observado em 2026-10-29, com "Ponto Sem Retorno" (TMDB 1384216).** A Home
+mostrava o selo **Verificado** e, ao abrir o player, a mensagem era *as fontes
+conectaram, mas não enviaram dados*. A fonte gravada era
+`nixplay.lat/movie/testelogado-vods/GwXanZ3Dj/1384216.mp4`, e uma leitura direta
+com `Range` devolvia `HTTP 401` com o corpo `Credenciais inválidas.` (25 bytes).
+
+**Diagnóstico.** Duas peças se somaram. O `401` não estava na lista de status que
+condenam o link (`404`/`410`/`503`), então a sonda de cabeçalho o lia como "não
+decidido" e aprovava — a postura tímida da sonda existia para não perder fonte
+boa. E o passo zero do stream direto usava só essa sonda de existência: uma URL
+que respondia qualquer coisa entrava na lista e **dispensava a cascata**, que é
+quem teria achado o torrent do Torrentio.
+
+**Correção.** O `401` entrou em `STATUS_DE_ARQUIVO_MORTO` (sem credencial não há
+vídeo), e o passo zero passou a exigir `pareceVideoServido()`: um `Range` de 1 KB
+cujo conteúdo precisa ter cara de mídia (`ftyp`, `#EXTM3U`, `Content-Type` de
+vídeo). O mesmo vale para o catálogo do playerflix. Depois da correção, o mesmo
+título foi re-testado: o link do `nixplay` foi descartado no log (`o VOD apontou
+para uma fonte sem arquivo`) e a busca fechou com o torrent do Torrentio em
+`pt-BR`.
+
+**Efeito colateral encontrado no caminho.** A verificação da Home perguntava aos
+provedores **sem o `imdb_id`** (a lista de tendências não o traz), e Torrentio e
+addon Stremio só procuram por identificador. O mesmo título saía "sem fonte" na
+rotina e com fonte no player. A rotina agora resolve os identificadores em lote
+(`TmdbService::identificadoresEmLote()`, com cache) antes de testar cada página.

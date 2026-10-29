@@ -341,7 +341,14 @@ class ResolvedorPlayerflix
             return null;
         }
 
-        if (! $this->cliente->arquivoServido($url, self::TEMPO_DA_SONDA_SEGUNDOS)) {
+        /*
+         * A prova aqui é a mesma do VOD: o catálogo pode apontar para um player
+         * que só devolve página de erro ou credencial recusada. `arquivoServido`
+         * aprova demais — foi ele que deixou passar um `401` do `nixplay.lat` e
+         * transformou o link morto em fonte "verificada". O que entra na lista
+         * precisa entregar bytes de mídia.
+         */
+        if (! $this->cliente->pareceVideoServido($url, self::TEMPO_DA_SONDA_SEGUNDOS)) {
             Log::debug('Stream direto: player do catálogo apontou para fonte sem arquivo.', [
                 'embed' => $embed,
                 'url' => $url,

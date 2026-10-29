@@ -254,6 +254,14 @@ docker compose exec backend php artisan fontes:verificar --paginas=3 --limite=20
 > da janela longa (`VERIFICACAO_VALIDADE_DIAS_DEFINITIVO`, padrão 7 dias), porque
 > o acervo não muda de um dia para o outro.
 
+> **A rodada pergunta igual ao player.** A lista de tendências do TMDB não traz o
+> `imdb_id`, e é por ele que o Torrentio e o addon Stremio procuram. Antes de
+> testar cada página, a rotina resolve os identificadores em lote
+> (`TmdbService::identificadoresEmLote()`, com cache por título) e passa a busca
+> exatamente como o `/fontes` faz. Sem esse passo, a verificação ficava cega para
+> os dois provedores por identificador e gravava "sem fonte" em títulos que o
+> player encontrava.
+
 Parâmetros lidos de `config/services.php` (todos com override em `.env`):
 
 | Chave `.env` | Padrão | O que controla |
@@ -261,7 +269,7 @@ Parâmetros lidos de `config/services.php` (todos com override em `.env`):
 | `VERIFICACAO_PAGINAS` | 25 | Quantas páginas do `/trending/all/day` verificar. |
 | `VERIFICACAO_VALIDADE_HORAS` | 24 | Validade da prova de quem pediu nova chance (busca inconclusiva): vencida, o título volta à fila na virada do dia. |
 | `VERIFICACAO_VALIDADE_DIAS_DEFINITIVO` | 7 | Janela longa do veredito definitivo, em dias: um "sem fonte" que perguntou a todos só volta a ser testado depois disso. |
-| `VERIFICACAO_ORCAMENTO_TITULO` | 30 | Tempo (s) que uma busca de fonte pode gastar. Curto demais faz o corte no meio e a série nasce "sem fonte". |
+| `VERIFICACAO_ORCAMENTO_TITULO` | 45 | Tempo (s) que uma busca de fonte pode gastar. Curto demais faz o corte no meio e a série nasce "sem fonte". |
 | `VERIFICACAO_PAUSA_ITENS_MS` | 6000 | Pausa entre um título e o próximo (base, recebe jitter). |
 | `VERIFICACAO_PAUSA_PAGINAS_MS` | 45000 | Pausa entre uma página e a seguinte. |
 
