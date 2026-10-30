@@ -13,6 +13,7 @@ import {
   caminhoPlaylist,
   diretorioSessao,
   verificarFonte,
+  provarFonte,
   inspecionarTorrent,
   reposicionarSessao,
 } from '../services/sessoes.js'
@@ -122,6 +123,47 @@ router.post('/verificar', async (req, res, next) => {
     }
 
     const resultado = await verificarFonte(magnet, Number(esperaMs) || undefined)
+
+    res.json(resultado)
+  } catch (err) {
+    next(err)
+  }
+})
+
+/**
+ * Prova que a fonte entrega dados até o ponto de executar.
+ *
+ * Diferente de `/verificar`, que mede malha, esta rota escolhe o arquivo do
+ * episódio e lê os primeiros bytes dele (ou, na fonte direta, o começo do
+ * stream). É a prova que sustenta o selo "fonte verificada": se o vídeo não
+ * abre, o selo não deveria existir.
+ *
+ * O custo é alto e o chamador é a verificação — que roda em segundo plano —,
+ * nunca a busca do player.
+ */
+router.post('/provar', async (req, res, next) => {
+  try {
+    const {
+      magnet,
+      url,
+      temporada,
+      episodio,
+      espera_ms: esperaMs,
+      bytes_minimos: bytesMinimos,
+    } = req.body ?? {}
+
+    if (!magnet && !url) {
+      return res.status(400).json({ error: 'Informe "magnet" ou "url".' })
+    }
+
+    const resultado = await provarFonte({
+      magnet: magnet || null,
+      url: url || null,
+      temporada: temporada ?? null,
+      episodio: episodio ?? null,
+      esperaMs: Number(esperaMs) || undefined,
+      bytesMinimos: Number(bytesMinimos) || undefined,
+    })
 
     res.json(resultado)
   } catch (err) {

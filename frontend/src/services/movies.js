@@ -90,18 +90,25 @@ export const moviesService = {
   },
 
   /**
-   * Verifica um punhado de episódios da temporada e devolve os selos atualizados.
+   * Pede a verificação da temporada e devolve os selos que já existem.
    *
-   * O backend fatia o trabalho: cada chamada testa alguns episódios e informa
-   * quantos faltam. A fila é retomada quando o usuário abre a temporada de novo,
-   * porque o que já foi provado fica gravado.
+   * O caminho normal não espera a conta: o backend enfileira o trabalho
+   * (`VerificarTemporada`) e responde com `na_fila: true`. O modal acompanha o
+   * progresso pelo `temporada()`, que já devolve o selo de cada linha.
+   *
+   * `sincrono` é a rede de segurança para quando o worker da fila não está no
+   * ar: aí o backend verifica uma fatia na hora e devolve o resultado, em vez de
+   * deixar o selo parado.
    */
-  async verificarTemporada(id, numero) {
-    const { data } = await cliente().post(`/${id}/temporada/${numero}/verificar`)
+  async verificarTemporada(id, numero, { sincrono = false } = {}) {
+    const { data } = await cliente().post(
+      `/${id}/temporada/${numero}/verificar${sincrono ? '?sincrono=1' : ''}`
+    )
 
     return {
       episodios: data.data?.episodios ?? [],
       testados: data.data?.testados ?? [],
+      naFila: data.data?.na_fila ?? false,
       pendentes: data.meta?.pendentes ?? 0,
     }
   },

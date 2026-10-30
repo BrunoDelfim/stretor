@@ -32,5 +32,11 @@
             teste do padrão quebrar.
         -->
         <env name="TORRENTS_STREAM_DIRETO_HABILITADO" value="false"/>
+        <!--
+            A prova de bytes faz uma requisição real ao media-service e baixa
+            tráfego de verdade. Nos testes ela fica desligada; os testes que
+            precisam dela ligam a chave e fingem o HTTP.
+        -->
+        <env name="VERIFICACAO_PROVA_BYTES" value="false"/>
     </php>
 </phpunit>

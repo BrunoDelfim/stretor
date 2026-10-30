@@ -70,7 +70,33 @@ const verificandoEpisodios = ref(false)
 // temporada no meio da espera não pode sobrescrever a lista nova.
 let geracaoVerificacao = 0
 
-const temporadas = computed(() => props.serie?.temporadas ?? [])
+/**
+ * Temporadas do seletor.
+ *
+ * O piso é o `numero_temporadas` que o próprio TMDB informa no cabeçalho do
+ * modal. Quando a lista detalhada vem curta — resposta antiga em cache, payload
+ * do catálogo verificado que só traz o contador, temporada nova que ainda não
+ * entrou em `seasons` —, completamos a numeração até o total. Sem isso, o modal
+ * esconde temporada que existe: foi assim que "Dexter" apareceu com duas de
+ * oito, e o usuário não tinha como chegar às outras.
+ */
+const temporadas = computed(() => {
+  const lista = props.serie?.temporadas ?? []
+  const total = Number(props.serie?.numero_temporadas ?? 0)
+
+  if (!total || lista.length >= total) return lista
+
+  const conhecidas = new Set(lista.map((temporada) => temporada.numero))
+  const completas = [...lista]
+
+  for (let numero = 1; numero <= total; numero += 1) {
+    if (conhecidas.has(numero)) continue
+
+    completas.push({ numero, nome: null, qtd_episodios: 0, ano: null, capa: null })
+  }
+
+  return completas.sort((a, b) => a.numero - b.numero)
+})
 
 /**
  * Arte da série, repassada à lista de episódios como reserva.
@@ -168,13 +194,59 @@ async function carregarEpisodios(numero) {
 }
 
 /**
- * Passa pela verificação dos episódios desta temporada, um turno por vez.
+ * Ritmo do acompanhamento da fila de verificação.
  *
- * O backend testa alguns episódios por requisição e devolve os selos já
- * atualizados; o laço continua enquanto sobrar pendente e a temporada ainda for
- * a que está na tela. Se um turno não testar nada — provedores fora do ar, tempo
- * esgotado —, o laço para: insistir repetiria a mesma requisição sem mudar o
- * resultado, e o que falta volta na próxima abertura da temporada.
+ * O backend enfileira o trabalho e volta na hora; cada episódio leva de 15 a
+ * 40 s para ser provado. Quatro segundos é curto o bastante para o selo aparecer
+ * logo depois de ficar pronto e longo o bastante para não martelar a API.
+ */
+const INTERVALO_DO_POLLING_MS = 4000
+
+/**
+ * Rodadas sem progresso até desconfiar de que o worker não está no ar.
+ *
+ * Três rodadas (12 s) sem o contador de pendentes mexer não provam que a fila
+ * parou — o primeiro episódio é o mais caro —, mas é o ponto em que vale gastar
+ * uma requisição no caminho síncrono em vez de deixar o selo congelado.
+ */
+const RODADAS_SEM_PROGRESSO = 3
+
+/** Teto do acompanhamento: ~3 minutos de fila, o bastante para uma temporada. */
+const RODADAS_MAXIMAS = 45
+
+/** Espera simples entre duas leituras do estado. */
+function esperar(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * Aplica um retorno de verificação (fila ou síncrono) à tela.
+ *
+ * @param {{episodios?: Array, pendentes?: number}|null} resposta
+ */
+function aplicarVerificacao(resposta) {
+  if (!resposta) return
+
+  if (Array.isArray(resposta.episodios) && resposta.episodios.length) {
+    episodios.value = resposta.episodios
+  }
+
+  if (typeof resposta.pendentes === 'number') {
+    pendentes.value = resposta.pendentes
+  }
+}
+
+/**
+ * Acompanha a verificação da temporada.
+ *
+ * O trabalho pesado é do backend, num worker de fila: aqui só pedimos a rodada,
+ * lemos o estado de tempos em tempos e desenhamos os selos que chegaram. Se o
+ * contador de pendentes parar de cair, caímos no caminho síncrono — fila sem
+ * worker não pode virar um selo parado sem explicação.
+ *
+ * O laço desiste quando a temporada sai da tela, quando acaba o pendente ou
+ * quando o caminho síncrono não testa nada (provedores fora do ar): insistir
+ * repetiria a mesma requisição sem mudar o resultado.
  */
 async function continuarVerificacao(numero) {
   if (pendentes.value <= 0 || !props.serie?.id) return
@@ -182,20 +254,58 @@ async function continuarVerificacao(numero) {
   const serieId = props.serie.id
   const geracao = ++geracaoVerificacao
 
+  const donoDaTela = () => geracao === geracaoVerificacao && props.temporadaAtiva === numero
+
   verificandoEpisodios.value = true
 
   try {
-    while (geracao === geracaoVerificacao && props.temporadaAtiva === numero && pendentes.value > 0) {
-      const resultado = await moviesService.verificarTemporada(serieId, numero)
+    const abertura = await moviesService.verificarTemporada(serieId, numero)
 
-      // A temporada trocou (ou o modal fechou) durante a espera: o resultado é
-      // de outra tela e não pode sobrescrever a lista atual.
-      if (geracao !== geracaoVerificacao || props.temporadaAtiva !== numero) return
+    if (!donoDaTela()) return
 
-      episodios.value = resultado.episodios
-      pendentes.value = resultado.pendentes
+    aplicarVerificacao(abertura)
 
-      if (!resultado.testados.length) break
+    // `na_fila: false` significa que não havia o que fazer ou que a fila rodou
+    // na hora (ambiente sem worker assíncrono). Nos dois casos, não há o que
+    // acompanhar.
+    if (!abertura?.naFila) return
+
+    let semProgresso = 0
+    let ultimoPendente = pendentes.value
+
+    for (let rodada = 0; rodada < RODADAS_MAXIMAS; rodada += 1) {
+      await esperar(INTERVALO_DO_POLLING_MS)
+
+      if (!donoDaTela() || pendentes.value <= 0) return
+
+      const estado = await moviesService.temporada(serieId, numero)
+
+      if (!donoDaTela()) return
+
+      episodios.value = estado?.episodios ?? episodios.value
+      pendentes.value = estado?.pendentes ?? pendentes.value
+
+      if (pendentes.value < ultimoPendente) {
+        semProgresso = 0
+        ultimoPendente = pendentes.value
+
+        continue
+      }
+
+      semProgresso += 1
+
+      if (semProgresso < RODADAS_SEM_PROGRESSO) continue
+
+      const sincrono = await moviesService.verificarTemporada(serieId, numero, { sincrono: true })
+
+      if (!donoDaTela()) return
+
+      aplicarVerificacao(sincrono)
+
+      semProgresso = 0
+      ultimoPendente = pendentes.value
+
+      if (!sincrono?.testados?.length) break
     }
   } catch {
     // Falha na verificação não derruba o modal: os selos que já vieram valem, e

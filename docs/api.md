@@ -156,13 +156,26 @@ cada um com o **próprio** selo:
 - `meta.pendentes` — quantos episódios da temporada ainda não têm prova. O modal
   usa esse número para continuar a verificação em segundo plano.
 
-`POST /api/v1/movies/{id}/temporada/{numero}/verificar` testa uma fatia dos
-pendentes (`VERIFICACAO_EPISODIOS_POR_REQUISICAO`, padrão 2) e devolve a mesma
-lista já atualizada, mais `data.testados` e `meta.pendentes`. A requisição tem
-teto de tempo (`VERIFICACAO_ORCAMENTO_REQUISICAO`, padrão 40 s): o que não couber
-volta na chamada seguinte. Não existe fila de trabalho no projeto — é o próprio
-modal que puxa a fila enquanto está aberto, e o comando `fontes:episodios` faz o
-backfill do acervo fora dele.
+`POST /api/v1/movies/{id}/temporada/{numero}/verificar` coloca a verificação da
+temporada **na fila** e responde na hora (em ~1 s), com a mesma lista de
+episódios já marcada e:
+
+```json
+{
+  "data": { "episodios": [ ... ], "na_fila": true },
+  "meta": { "pendentes": 9, "na_fila": true }
+}
+```
+
+O trabalho fica com o worker `queue` (`VerificarTemporada`), que percorre a
+temporada inteira e grava cada prova assim que a mede. O modal acompanha pelo
+`GET` da temporada, que já devolve `verificado` por linha — não há resposta longa
+esperando o navegador. `na_fila: false` significa "não havia nada pendente".
+
+`POST .../verificar?sincrono=1` mantém o caminho antigo: verifica uma fatia agora
+(`VERIFICACAO_EPISODIOS_POR_REQUISICAO`, padrão 2), respeita o teto de
+`VERIFICACAO_ORCAMENTO_REQUISICAO` (padrão 40 s) e devolve `data.testados` com os
+números testados. É a rede de segurança para quando o worker não está no ar.
 
 ### Fontes de torrent
 
@@ -319,6 +332,13 @@ Quem controla é `TORRENTS_FONTES_SALVAS` (padrão `true`) e o teto por título 
   É o **teste de malha**: o backend descarta a fonte que não conecta antes de
   oferecê-la ao player (ver `TORRENTS_LIVENESS_*`). Não cria sessão nem deixa
   torrent vivo.
+- `POST /api/media/provar` — **abre o arquivo e lê os primeiros bytes**, provando
+  que a fonte entrega vídeo de verdade. Aceita `{ magnet, temporada, episodio,
+  espera_ms, bytes_minimos }` ou `{ url, ... }` e responde `{ ok, motivo, bytes,
+  ms, arquivo?, tipo? }`. É a prova que sustenta o selo da verificação (ver
+  `VERIFICACAO_PROVA_*`): escolhe o arquivo do episódio com a mesma função do
+  player e lê o começo do arquivo; na fonte direta, lê um `Range` e confere a
+  assinatura de mídia. Não cria sessão nem deixa torrent vivo.
 
 ### Sessões de reprodução
 

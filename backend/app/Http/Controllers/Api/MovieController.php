@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Jobs\VerificarTemporada;
 use App\Services\TmdbService;
 use App\Services\Verificacao\CatalogoVerificado;
 use App\Services\Verificacao\SeloVerificacao;
@@ -151,26 +152,61 @@ class MovieController extends Controller
     }
 
     /**
-     * Verifica alguns episódios da temporada e devolve os selos atualizados.
+     * Coloca a verificação da temporada na fila.
      *
-     * O modal chama esta rota enquanto houver `pendentes`: cada resposta testa
-     * um punhado (três por padrão), e a próxima chamada continua de onde a
-     * anterior parou. Assim a temporada inteira é coberta sem prender a abertura
-     * da tela e sem uma fila de trabalho que o projeto não tem.
+     * O modal não espera a conta: uma temporada de doze episódios leva minutos,
+     * e a requisição morreria no limite do navegador. Aqui só conferimos o que
+     * falta, enfileiramos o trabalho e devolvemos os selos que já existem; o
+     * frontend acompanha o resto pelo `GET` da temporada.
+     *
+     * `?sincrono=1` mantém o caminho antigo (verifica uma fatia agora e devolve o
+     * resultado na resposta). É a rede de segurança para quando o worker da fila
+     * não está no ar — sem ele, o selo ficaria parado sem o usuário entender por
+     * quê.
      */
-    public function verificarTemporada(int $id, int $numero): JsonResponse
+    public function verificarTemporada(Request $request, int $id, int $numero): JsonResponse
     {
-        return $this->responder(function () use ($id, $numero) {
+        return $this->responder(function () use ($request, $id, $numero) {
             $dados = $this->tmdb->temporada($id, $numero);
-            $resultado = $this->episodios->verificar($id, $numero, $dados['episodios'] ?? []);
+            $episodios = $dados['episodios'] ?? [];
+            $pendentes = $this->episodios->pendentes($id, $numero, $episodios);
+
+            if ($pendentes === []) {
+                return [
+                    'data' => [
+                        'episodios' => $this->selo->marcarEpisodios($episodios, $id, $numero),
+                        'na_fila' => false,
+                    ],
+                    'meta' => ['pendentes' => 0, 'na_fila' => false],
+                ];
+            }
+
+            if ($request->boolean('sincrono')) {
+                $resultado = $this->episodios->verificar($id, $numero, $episodios);
+
+                return [
+                    'data' => [
+                        'episodios' => $this->selo->marcarEpisodios($episodios, $id, $numero),
+                        'na_fila' => false,
+                        'testados' => $resultado['testados'],
+                    ],
+                    'meta' => [
+                        'pendentes' => $resultado['restantes'],
+                        'na_fila' => false,
+                    ],
+                ];
+            }
+
+            VerificarTemporada::dispatch($id, $numero);
 
             return [
                 'data' => [
-                    'episodios' => $this->selo->marcarEpisodios($dados['episodios'] ?? [], $id, $numero),
-                    'testados' => $resultado['testados'],
+                    'episodios' => $this->selo->marcarEpisodios($episodios, $id, $numero),
+                    'na_fila' => true,
                 ],
                 'meta' => [
-                    'pendentes' => $resultado['restantes'],
+                    'pendentes' => count($pendentes),
+                    'na_fila' => true,
                 ],
             ];
         });

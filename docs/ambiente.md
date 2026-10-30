@@ -169,6 +169,10 @@ valores reais. As variáveis que exigem atenção:
 | `VERIFICACAO_VALIDADE_HORAS` | Não | Prazo da prova de cada página (padrão `24`). Vencida, a Home serve o TMDB do dia até a próxima rodada. `0` desliga o prazo. |
 | `VERIFICACAO_VALIDADE_DIAS_DEFINITIVO` | Não | Janela de reexame do veredito "sem fonte" depois de a busca ter perguntado a todos os provedores (padrão `7` dias). |
 | `VERIFICACAO_ORCAMENTO_TITULO` | Não | Teto de segundos por título na verificação (padrão `45`). Cobre o caminho do stream direto de série, que gasta três páginas. |
+| `VERIFICACAO_PROVA_BYTES` | Não | Prova, no media-service, que a fonte entrega os primeiros bytes do vídeo antes de marcar o selo (padrão `true`). É o que separa "tem seed" de "toca"; desligue para economizar tráfego. |
+| `VERIFICACAO_PROVA_TEMPO` | Não | Prazo da prova de bytes por fonte, em segundos (padrão `20`). |
+| `VERIFICACAO_PROVA_BYTES_MINIMOS` | Não | Bytes do começo do arquivo que já bastam como prova (padrão `262144`, 256 KB). |
+| `VERIFICACAO_PROVA_MAX_FONTES` | Não | Fontes da lista provadas por verificação (padrão `2`). |
 | `TORRENTS_TORZNAB_KEY` | Não | Chave da API do Prowlarr. É **preenchida automaticamente** na subida; só defina para apontar a um Prowlarr externo. |
 | `TORRENTS_TORZNAB_URL` | Não | URL interna do indexador (padrão `http://prowlarr:9696`). |
 | `TORRENTS_TORZNAB_CATEGORIA` | Não | Categoria Torznab de filmes (padrão `2000`). |
@@ -252,14 +256,20 @@ como o Space se monta.
 
 O `post-start` é o equivalente ao `make up` do PC local: ele sobe o stack
 inteiro (backend, frontend, media-service, Postgres, Redis, Prowlarr,
-FlareSolverr, SearXNG e o agendador) toda vez que o Space é retomado, já que o
-Codespaces suspende os containers por inatividade.
+FlareSolverr, SearXNG, o agendador e o worker de fila) toda vez que o Space é
+retomado, já que o Codespaces suspende os containers por inatividade.
 
 > **Agendador (`scheduler`):** é o container que dá relógio ao Laravel. Ele roda
 > `php artisan schedule:work` e dispara a verificação diária das fontes da Home
 > (`fontes:verificar`, no horário de `VERIFICACAO_HORARIO`) sem depender de cron
 > na máquina hospedeira. Sem ele, a Home fica presa na última página verificada —
 > o portão de fontes continua valendo, mas a lista nunca é renovada.
+
+> **Worker (`queue`):** é quem executa a verificação por episódio que o modal
+> enfileira (`VerificarTemporada`). Ele roda `php artisan queue:work` na fila
+> `verificacao` e recicla o processo de hora em hora para não acumular memória.
+> Sem ele o modal ainda funciona — cai no caminho síncrono —, mas cada fatia
+> volta a prender a resposta por dezenas de segundos.
 
 ### Como acessar
 

@@ -1520,6 +1520,38 @@ marca o título como quem pede nova chance: ele volta à fila **na virada do dia
 Chaves: `TORRENTS_LIVENESS_FONTES`, `TORRENTS_LIVENESS_MAX_FONTES`,
 `TORRENTS_LIVENESS_TEMPO_LIMITE` e `TORRENTS_LIVENESS_ESPERA_MS`.
 
+#### A prova de bytes: o selo só existe se o vídeo abrir
+
+Malha saudável não é a mesma coisa que vídeo tocando. Um pack de temporada pode
+ter dezenas de peers e nenhum arquivo do episódio pedido; um CDN de agregador
+pode responder `200` com a página de erro no lugar do MP4. Nos dois casos a
+sondagem de malha aprova e o selo mente — o usuário só descobre no player.
+
+Por isso a **verificação** (nunca a busca do player, que precisa ser rápida) faz
+uma segunda pergunta ao media-service: `POST /api/media/provar`. A rota
+[`provarFonte()`](../media-service/src/services/sessoes.js:3134):
+
+1. no torrent, espera os metadados, escolhe o arquivo com a **mesma**
+   [`escolherArquivoDeVideo()`](../media-service/src/services/sessoes.js:2004)
+   que a sessão usa (respeitando `temporada`/`episodio`) e lê os primeiros bytes
+   do começo do arquivo — onde ficam o `ftyp`/`moov` que o FFmpeg abre;
+2. na fonte direta, faz um `Range: bytes=0-N` com agente de navegador e confere
+   se o corpo tem cara de mídia ([`pareceMidia()`](../media-service/src/utils/assinatura-midia.js:1)):
+   `ftyp` de MP4/MOV, `#EXTM3U` de HLS ou `ID3`, ou um `Content-Type` de vídeo.
+
+O veredito é tri-estado e **fail-open**, como o resto das sondas: `nao_e_midia`,
+arquivo vazio, torrent sem vídeo, `404`/`410` reprovam a fonte; timeout, `403`
+de anti-bot, queda do media-service e erro de rede são "não sei" e mantêm a fonte.
+A lista só cai para vazia quando **todas** as fontes provadas recusam de forma
+definitiva — e aí o "sem fonte" é veredito, não dúvida. Chaves:
+`VERIFICACAO_PROVA_BYTES`, `VERIFICACAO_PROVA_TEMPO`,
+`VERIFICACAO_PROVA_BYTES_MINIMOS` e `VERIFICACAO_PROVA_MAX_FONTES`.
+
+> A prova deixa o torrent de teste no cliente só durante a leitura e o remove no
+> fim (`destroyStore`). Se ele já estava lá — uma sessão tocando —, a seleção de
+> arquivos **não** é mexida e o torrent não é removido: a sonda nunca derruba uma
+> reprodução em andamento.
+
 #### A fonte que tocou até o fim volta na frente da fila
 
 A malha responde se a fonte *deve* conectar. Quem responde se ela **serviu o

@@ -5,6 +5,54 @@ permite reproduzir, que ainda não tem correção fechada. Não é o diário de 
 (esse é [`plans/`](../plans/), que guarda o "porquê" das decisões já tomadas) —
 aqui só entra o que ainda precisa de ação.
 
+## O modal de série só mostrava parte das temporadas — resolvido no seletor
+
+**Observado em 2026-10-30, com "Dexter" (TMDB 1405) e "Lupin" (TMDB 96677).** O
+usuário abriu Dexter e o modal ofereceu só a 1ª e a 2ª temporada, embora a série
+tenha oito. Em Lupin, viu "T1, T2 e T3" e concluiu que a Parte 4 recém-lançada
+não estava ali.
+
+**Diagnóstico.** São dois problemas diferentes.
+
+1. *Dexter*: o backend devolve as oito temporadas (`/tv/1405` →
+   `number_of_seasons: 8`, oito itens em `seasons`); o seletor desenhava a faixa
+   com `overflow-x-auto`. Quando a lista detalhada chega curta — cache antigo ou
+   payload do catálogo verificado, que só carrega o contador —, nada completava a
+   numeração, e as temporadas que faltavam simplesmente não existiam na tela.
+2. *Lupin*: o TMDB agrupa as partes. A temporada 1 é "Parte 1 & 2", a 2 é "Parte
+   3" e a 3 é "Parte 4" (2026). O balão mostrava só "T3", sem o nome — daí a
+   impressão de que a temporada nova estava fora.
+
+**Correção.** O `temporadas` do
+[`SerieModal.vue`](../frontend/src/components/SerieModal.vue:83) usa
+`numero_temporadas` como piso e completa a numeração até o total; a faixa do
+[`SeletorTemporada.vue`](../frontend/src/components/SeletorTemporada.vue:1)
+quebra linha (`flex-wrap`) em vez de rolar, e o balão mostra o nome quando ele
+acrescenta algo ("T3 Parte 4"), com número, nome, episódios e ano no `title`.
+
+## A verificação por episódio prendia a requisição — resolvido na fila
+
+**Observado na abertura de temporadas longas.** Cada episódio custa uma busca
+inteira (15 a 40 s); o modal puxava dois por requisição, o navegador desistia em
+60 s e a temporada só ficava completa depois de várias aberturas.
+
+**Correção.** `POST /movies/{id}/temporada/{n}/verificar` agora **enfileira**
+(`VerificarTemporada`) e responde em ~1 s; o container `queue`
+([`queue.sh`](../docker/backend/queue.sh:1)) é quem percorre a temporada. O modal
+acompanha pelo `GET` e cai em `?sincrono=1` se o contador parar de cair por três
+leituras — fila sem worker não deixa o selo congelado.
+
+## O selo aprovava fonte que não abria — resolvido na prova de bytes
+
+**Observado com packs de temporada e agregadores.** A sondagem de malha mede
+peers e tráfego; um pack sem o episódio pedido, ou um CDN que devolve a página de
+erro com `200`, passava como "fonte verificada" e falhava só no player.
+
+**Correção.** Na verificação, o media-service agora escolhe o arquivo do episódio
+e **lê os primeiros bytes** (`POST /api/media/provar`), com veredito tri-estado:
+só recusa definitiva reprova; timeout e `403` de anti-bot mantêm a fonte. Detalhes
+em [Integrações](integracoes.md#a-prova-de-bytes-o-selo-só-existe-se-o-vídeo-abrir).
+
 ## Escolha de arquivo entrega o filme no lugar do episódio — resolvido no fallback
 
 **Observado nos logs do media-service.** O pack

@@ -29,10 +29,11 @@ restart:
 # o backend e limpa os caches de config e de aplicação, que é o que faz uma
 # alteração de `.env`/`config/services.php` valer de fato.
 #
-# O `scheduler` entra junto porque herda o ambiente do backend: recriar só o
-# backend deixaria o agendador rodando com o horário e o portão antigos.
+# O `scheduler` e o `queue` entram junto porque herdam o ambiente do backend:
+# recriar só o backend deixaria o agendador com o horário antigo e o worker com
+# as chaves de verificação antigas.
 aplicar:
-	docker compose up -d --force-recreate backend scheduler
+	docker compose up -d --force-recreate backend scheduler queue
 	docker compose exec -T backend php artisan config:clear
 	docker compose exec -T backend php artisan cache:clear
 

@@ -24,6 +24,7 @@ import {
 import { logger } from '../utils/logger.js'
 import { contemIndicioPtBr } from '../utils/idiomas.js'
 import { EXTENSOES_DIRETAS } from '../utils/formato-fonte.js'
+import { pareceMidia } from '../utils/assinatura-midia.js'
 
 /**
  * Gerenciador de sessões de reprodução.
@@ -100,6 +101,17 @@ const TIMEOUT_DADOS_MS = Number(process.env.MEDIA_TIMEOUT_DADOS_MS) || 30000
  * dados: a entrada no DHT varia com a rede e com a saúde dos trackers.
  */
 const TIMEOUT_METADADOS_MS = Number(process.env.MEDIA_TIMEOUT_METADADOS_MS) || 20000
+
+/*
+ * Agente de navegador da prova de bytes.
+ *
+ * Os CDNs atrás dos agregadores recusam clientes crus: o FFmpeg se apresenta
+ * como `Lavf/...` e leva `403` antes de qualquer negociação. A sonda precisa se
+ * apresentar como o navegador que o usuário usa — a mesma escolha que o backend
+ * já faz em `ClienteHttp::cabecalhosDeNavegador()`.
+ */
+const AGENTE_DE_NAVEGADOR =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 
 /*
  * Prazos fixos não servem para fonte de poucos seeds.
@@ -3101,6 +3113,276 @@ export async function verificarFonte(magnet, esperaMs = 6000) {
   }
 
   return resultado
+}
+
+/**
+ * Prova que a fonte entrega **dados**, e não só que tem malha.
+ *
+ * `verificarFonte()` mede conexão: peers conectados, algum tráfego. É uma
+ * pergunta barata e necessária, mas não suficiente — um pack pode ter malha
+ * saudável e nenhum arquivo do episódio pedido, e um MP4 pode responder `200`
+ * numa página de erro do CDN. O selo de "fonte verificada" promete que o vídeo
+ * toca, então a prova precisa chegar onde o player chega: escolher o arquivo do
+ * episódio com a **mesma** função que a sessão usa e ler os primeiros bytes
+ * dele.
+ *
+ * A leitura é do começo do arquivo porque é ali que mora o `moov`/`ftyp` que o
+ * FFmpeg abre antes de qualquer segmento. Se esses bytes chegam, a fonte
+ * entrega mídia; se não chegam no prazo, a fonte não serve para assistir mesmo
+ * que apareça com dezenas de seeds.
+ *
+ * O custo é alto (segundos por fonte e tráfego real), por isso esta sonda é
+ * exclusiva da verificação — a busca do player continua com a sondagem de
+ * malha, que é rápida.
+ *
+ * @param {object} opcoes
+ * @param {string|null} [opcoes.magnet] magnet do torrent a provar
+ * @param {string|null} [opcoes.url] endereço direto (MP4/HLS) a provar
+ * @param {number|string|null} [opcoes.temporada] temporada do episódio
+ * @param {number|string|null} [opcoes.episodio] episódio procurado no pack
+ * @param {number} [opcoes.esperaMs] prazo total da prova
+ * @param {number} [opcoes.bytesMinimos] quantos bytes do começo já bastam
+ */
+export async function provarFonte({
+  magnet = null,
+  url = null,
+  temporada = null,
+  episodio = null,
+  esperaMs = 20000,
+  bytesMinimos = 262144,
+} = {}) {
+  const prazo = Math.max(2000, Number(esperaMs) || 20000)
+  const alvo = Math.max(65536, Number(bytesMinimos) || 262144)
+
+  const numeroTemporada = Number.parseInt(temporada, 10) || null
+  const numeroEpisodio = Number.parseInt(episodio, 10) || null
+
+  if (magnet) {
+    return provarTorrent(magnet, numeroTemporada, numeroEpisodio, prazo, alvo)
+  }
+
+  if (url) {
+    return provarUrl(url, prazo, alvo)
+  }
+
+  return { ok: false, motivo: 'fonte_ausente', bytes: 0, ms: 0 }
+}
+
+/**
+ * A prova no fluxo de torrent.
+ *
+ * O torrent de teste é removido no fim — como em `verificarFonte()` —, mas um
+ * torrent que já está no cliente (uma sessão em andamento) é preservado:
+ * removê-lo derrubaria a reprodução de quem está assistindo.
+ *
+ * @param {string} magnet
+ * @param {number|null} temporada
+ * @param {number|null} episodio
+ * @param {number} prazo
+ * @param {number} bytesMinimos
+ */
+async function provarTorrent(magnet, temporada, episodio, prazo, bytesMinimos) {
+  const inicio = Date.now()
+  const prazoMetadados = Math.min(prazo, TIMEOUT_METADADOS_MS)
+
+  let torrent
+  let jaEstavaNoCliente = false
+
+  try {
+    const existente = await cliente.get(magnet)
+
+    if (existente) {
+      jaEstavaNoCliente = true
+      torrent = existente.ready ? existente : await esperarMetadados(existente, prazoMetadados)
+    } else {
+      torrent = await adicionarTorrent(magnet, prazoMetadados)
+    }
+  } catch (erro) {
+    logger.warn('[provar] a fonte não entregou metadados:', erro.message)
+
+    return {
+      ok: false,
+      motivo: erro.motivo ?? 'sem_metadados',
+      mensagem: erro.message ?? null,
+      bytes: 0,
+      ms: Date.now() - inicio,
+    }
+  }
+
+  try {
+    const arquivo = escolherArquivoDeVideo(torrent, temporada, episodio)
+
+    if (!arquivo) {
+      return {
+        ok: false,
+        motivo: 'sem_arquivo_de_video',
+        mensagem: `O torrent tem ${torrent.files.length} arquivo(s), nenhum de vídeo.`,
+        bytes: 0,
+        ms: Date.now() - inicio,
+      }
+    }
+
+    /*
+     * Num pack de temporada, deixar todos os episódios selecionados espalha a
+     * banda entre arquivos e a sonda demora mais do que precisa. Só o arquivo
+     * escolhido interessa aqui.
+     *
+     * A seleção só é mexida quando o torrent é **nosso**: se ele já estava no
+     * cliente, há uma sessão tocando, e desselecionar arquivos dela quebraria a
+     * reprodução de quem está assistindo.
+     */
+    if (! jaEstavaNoCliente) {
+      for (const outro of torrent.files) {
+        if (outro !== arquivo) outro.deselect()
+      }
+
+      arquivo.select()
+    }
+
+    const restante = Math.max(2000, prazo - (Date.now() - inicio))
+    const leitura = await lerPrimeirosBytes(arquivo, bytesMinimos, restante)
+
+    return {
+      ok: leitura.ok,
+      motivo: leitura.ok ? null : leitura.motivo,
+      mensagem: leitura.mensagem ?? null,
+      bytes: leitura.bytes,
+      arquivo: arquivo.path ?? arquivo.name,
+      tamanho: arquivo.length,
+      peers: torrent.numPeers ?? 0,
+      velocidade: torrent.downloadSpeed ?? 0,
+      ms: Date.now() - inicio,
+    }
+  } finally {
+    if (!jaEstavaNoCliente) {
+      try {
+        cliente.remove(torrent, { destroyStore: true })
+      } catch (erro) {
+        logger.warn('[provar] falha ao remover o torrent de teste:', erro.message)
+      }
+    }
+  }
+}
+
+/**
+ * Lê os primeiros bytes de um arquivo do torrent, com prazo.
+ *
+ * `createReadStream` é o mesmo caminho que a sessão usa para entregar o vídeo
+ * ao FFmpeg: ele pede as peças ao enxame e emite `data` quando os bytes chegam
+ * do disco. Ler aqui é a prova mais próxima de "executar" que não abre um
+ * processo de transcodificação inteiro.
+ *
+ * @param {import('webtorrent').File} arquivo
+ * @param {number} limite quantos bytes bastam
+ * @param {number} timeoutMs prazo da leitura
+ */
+function lerPrimeirosBytes(arquivo, limite, timeoutMs) {
+  return new Promise((resolve) => {
+    let total = 0
+    let finalizado = false
+
+    const fim = Math.max(0, Math.min(limite, arquivo.length) - 1)
+    const fluxo = arquivo.createReadStream({ start: 0, end: fim })
+
+    const finalizar = (resultado) => {
+      if (finalizado) return
+
+      finalizado = true
+      clearTimeout(temporizador)
+      fluxo.destroy()
+      resolve(resultado)
+    }
+
+    const temporizador = setTimeout(
+      () => finalizar({ ok: false, bytes: total, motivo: 'sem_bytes' }),
+      Math.max(1000, timeoutMs)
+    )
+
+    fluxo.on('data', (pedaco) => {
+      total += pedaco.length
+
+      if (total >= limite) {
+        finalizar({ ok: true, bytes: total, motivo: null })
+      }
+    })
+
+    fluxo.on('end', () =>
+      finalizar({
+        ok: total > 0,
+        bytes: total,
+        motivo: total > 0 ? null : 'arquivo_vazio',
+      })
+    )
+
+    fluxo.on('error', (erro) =>
+      finalizar({ ok: false, bytes: total, motivo: 'erro_de_leitura', mensagem: erro.message })
+    )
+  })
+}
+
+/**
+ * A prova no fluxo de fonte direta.
+ *
+ * O `Range` limita o custo: pedimos só o começo do arquivo, que é o bastante
+ * para reconhecer a mídia. Um CDN que devolve a página de erro com `200` falha
+ * aqui — e não no player, com o usuário já esperando.
+ *
+ * @param {string} url
+ * @param {number} prazo
+ * @param {number} bytesMinimos
+ */
+async function provarUrl(url, prazo, bytesMinimos) {
+  const inicio = Date.now()
+  const controle = new AbortController()
+  const temporizador = setTimeout(() => controle.abort(), prazo)
+
+  try {
+    const resposta = await fetch(url, {
+      headers: {
+        Range: `bytes=0-${bytesMinimos - 1}`,
+        // O mesmo agente de navegador das sondas do backend: sem ele, os CDNs
+        // atrás dos agregadores respondem 403 antes de olhar o conteúdo — e um
+        // 403 de anti-bot não prova que a fonte está morta.
+        'User-Agent': AGENTE_DE_NAVEGADOR,
+        Accept: 'video/*,*/*;q=0.8',
+      },
+      redirect: 'follow',
+      signal: controle.signal,
+    })
+
+    if (!resposta.ok && resposta.status !== 206) {
+      return {
+        ok: false,
+        motivo: `http_${resposta.status}`,
+        bytes: 0,
+        ms: Date.now() - inicio,
+      }
+    }
+
+    const tipo = (resposta.headers.get('content-type') ?? '').toLowerCase()
+    const corpo = Buffer.from(await resposta.arrayBuffer())
+    const prova = pareceMidia(corpo, tipo)
+
+    return {
+      ok: prova,
+      motivo: prova ? null : 'nao_e_midia',
+      bytes: corpo.length,
+      tipo,
+      ms: Date.now() - inicio,
+    }
+  } catch (erro) {
+    const abortada = erro?.name === 'AbortError'
+
+    return {
+      ok: false,
+      motivo: abortada ? 'sem_resposta' : 'erro_de_rede',
+      mensagem: erro.message ?? null,
+      bytes: 0,
+      ms: Date.now() - inicio,
+    }
+  } finally {
+    clearTimeout(temporizador)
+  }
 }
 
 /**

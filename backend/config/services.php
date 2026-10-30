@@ -104,6 +104,28 @@ return [
         'episodios_limite_diario' => (int) env('VERIFICACAO_EPISODIOS_LIMITE', 40),
         'pausa_itens_ms' => (int) env('VERIFICACAO_PAUSA_ITENS_MS', 6000),
         'pausa_paginas_ms' => (int) env('VERIFICACAO_PAUSA_PAGINAS_MS', 45000),
+
+        /*
+         * Prova de bytes.
+         *
+         * O selo promete que o vídeo toca, e "tem seed" não promete isso: o pack
+         * pode não ter o episódio, e o CDN pode devolver HTML com `200`. Ligada,
+         * a verificação pede ao media-service que escolha o arquivo e leia os
+         * primeiros bytes — a mesma etapa que o player faria. Nasce ligada porque
+         * é isso que dá sentido ao selo; o `phpunit.xml` a desliga nos testes, onde
+         * a sonda gastaria tráfego real.
+         */
+        'prova_bytes' => (bool) env('VERIFICACAO_PROVA_BYTES', true),
+        // Prazo da prova por fonte. Um torrent de seed único precisa de mais
+        // tempo que a sondagem de malha; a fonte direta responde em segundos.
+        'prova_tempo' => (int) env('VERIFICACAO_PROVA_TEMPO', 20),
+        // Quantos bytes do começo já provam que o arquivo abre. 256 KB cobrem o
+        // `ftyp`/`moov` de um MP4 e o começo da playlist de um HLS.
+        'prova_bytes_minimos' => (int) env('VERIFICACAO_PROVA_BYTES_MINIMOS', 262144),
+        // Fontes testadas por verificação. A lista já vem ordenada pela melhor
+        // fonte; duas cobrem o caso de a primeira ter morrido sem encarecer a
+        // rodada inteira.
+        'prova_max_fontes' => (int) env('VERIFICACAO_PROVA_MAX_FONTES', 2),
     ],
 
     /*

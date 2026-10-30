@@ -309,6 +309,32 @@ services:
     healthcheck:
       disable: true
 
+  # Worker da fila de verificação por episódio.
+  #
+  # O modal enfileira `VerificarTemporada` e volta na hora; este container é
+  # quem paga a conta (uma busca por episódio, às vezes com a prova de bytes em
+  # cima). Sem ele, o `POST .../verificar` só enche a fila e nada acontece — o
+  # modal tem um plano B síncrono, mas o caminho normal é este.
+  queue:
+    extends:
+      service: backend
+    container_name: stretor_queue
+    entrypoint: ["/bin/sh", "/usr/local/bin/queue.sh"]
+    # `retry_after` precisa ser maior que o timeout do job; senão o Redis
+    # devolve o job à fila no meio da verificação e ele é executado de novo.
+    environment:
+      QUEUE_RETRY_AFTER: 3700
+    volumes:
+      - ./backend:/var/www/backend
+      - ./docker/backend/php.ini:/usr/local/etc/php/conf.d/custom.ini
+      - ./docker/backend/queue.sh:/usr/local/bin/queue.sh:ro
+      - prowlarr_config:/prowlarr-config:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+
   nginx:
     image: nginx:1.27-alpine
     container_name: stretor_nginx

@@ -96,6 +96,7 @@ class VerificadorEpisodios
         array $episodios,
         ?int $limite = null,
         OrigemVerificacao $origem = OrigemVerificacao::PLAY,
+        ?int $tetoSegundos = null,
     ): array {
         $pendentes = $this->pendentes($serieId, $temporada, $episodios);
 
@@ -110,7 +111,10 @@ class VerificadorEpisodios
         }
 
         $serie = $this->tmdb->detalhesSerie($serieId);
-        $tetoDaRequisicao = (int) config('services.verificacao.orcamento_requisicao', 50);
+        // O teto da requisição existe porque o navegador desiste em 60 s. No job
+        // em segundo plano quem chama passa um teto maior (ou o do próprio job),
+        // e o trabalho pode ir até o fim da temporada.
+        $tetoDaRequisicao = $tetoSegundos ?? (int) config('services.verificacao.orcamento_requisicao', 50);
         $inicio = microtime(true);
 
         $testados = [];

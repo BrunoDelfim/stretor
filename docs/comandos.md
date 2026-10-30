@@ -145,6 +145,21 @@ dispara `fontes:verificar` todo dia no horário de `VERIFICACAO_HORARIO` (padrã
 `04:00`), desde que `VERIFICACAO_AGENDADA` esteja ligada (padrão: ligada). Para
 desligar a rotina automática e só rodar sob comando, basta `VERIFICACAO_AGENDADA=false`.
 
+A verificação **por episódio** do modal não roda na requisição: o `POST .../verificar`
+enfileira e o container `queue` executa (`php artisan queue:work
+--queue=verificacao,default`). Ele sobe junto com o stack, espera a sentinela de
+migrations do backend e recicla o processo de hora em hora (`--max-time=3600`)
+para não acumular memória. Sem ele, o modal cai no plano B síncrono — funciona,
+mas cada fatia volta a prender a resposta por dezenas de segundos.
+
+```bash
+# Conferir se o worker está no ar e o que ele está processando
+docker compose logs -f queue
+
+# Reprocessar um job que ficou preso (worker reiniciado no meio)
+docker compose exec queue php artisan queue:retry all
+```
+
 > **Resgate de hora em hora.** O `schedule:work` decide cada tarefa pelo minuto
 > corrente da expressão cron — ele **não** recupera a rodada diária se o horário
 > passar com o container parado (um `make aplicar` às 10h, por exemplo, perde as
@@ -272,6 +287,10 @@ Parâmetros lidos de `config/services.php` (todos com override em `.env`):
 | `VERIFICACAO_ORCAMENTO_TITULO` | 45 | Tempo (s) que uma busca de fonte pode gastar. Curto demais faz o corte no meio e a série nasce "sem fonte". |
 | `VERIFICACAO_PAUSA_ITENS_MS` | 6000 | Pausa entre um título e o próximo (base, recebe jitter). |
 | `VERIFICACAO_PAUSA_PAGINAS_MS` | 45000 | Pausa entre uma página e a seguinte. |
+| `VERIFICACAO_PROVA_BYTES` | true | Depois de achar e conectar, pede ao media-service para **abrir o arquivo e ler os primeiros bytes**. É o que separa "tem seed" de "toca". |
+| `VERIFICACAO_PROVA_TEMPO` | 20 | Prazo da prova por fonte, em segundos. |
+| `VERIFICACAO_PROVA_BYTES_MINIMOS` | 262144 | Bytes do começo que já bastam como prova (256 KB). |
+| `VERIFICACAO_PROVA_MAX_FONTES` | 2 | Quantas fontes da lista são provadas por verificação. |
 
 #### `fontes:episodios` — o selo de cada episódio
 

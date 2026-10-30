@@ -6,6 +6,7 @@ use App\Enums\OrigemVerificacao;
 use App\Enums\TipoMidia;
 use App\Models\Disponibilidade;
 use App\Models\DisponibilidadeEpisodio;
+use App\Services\Torrents\TesteDeFontes;
 use App\Services\TorrentService;
 use InvalidArgumentException;
 
@@ -38,7 +39,10 @@ class VerificadorFontes
 
     private const EPISODIO_SONDA = 1;
 
-    public function __construct(private readonly TorrentService $torrents) {}
+    public function __construct(
+        private readonly TorrentService $torrents,
+        private readonly ?TesteDeFontes $testeDeFontes = null,
+    ) {}
 
     /**
      * Verifica um item e persiste o veredito.
@@ -167,16 +171,36 @@ class VerificadorFontes
         );
 
         /*
+         * A malha já filtrou o que não conecta; esta etapa responde outra
+         * pergunta — o arquivo **abre**? A prova custa segundos e tráfego real,
+         * então roda só na verificação (nunca na busca do player) e só sobre as
+         * primeiras fontes da lista.
+         *
+         * Reprovada de forma definitiva, a lista cai para vazio e "sem fonte"
+         * passa a significar "nada aqui toca". Se a prova for inconclusiva
+         * (timeout, 403 de anti-bot), a lista fica como está: dúvida não é
+         * prova de morte.
+         */
+        $prova = $this->testeDeFontes?->provarMelhor($fontes, $temporada, $episodio);
+
+        if ($prova === false) {
+            $fontes = [];
+        }
+
+        /*
          * Lista vazia nem sempre é veredito. Quando nenhum provedor estava
          * utilizável, o orçamento cortou a cascata no meio ou um provedor quebrou,
          * o "sem fonte" fala da busca — não do acervo. A marca `inconclusivo`
          * registra isso: a linha continua candidata, em vez de travar com uma
          * prova que não houve. Só lemos o censo no caminho vazio; com fonte na
          * mão, não há o que relativizar.
+         *
+         * A reprovação pela prova de bytes é veredito, não dúvida: aí o censo
+         * não entra, porque a fonte foi medida e recusou.
          */
         return [
             'fontes' => $fontes,
-            'inconclusivo' => $fontes === [] && $this->torrents->buscaInconclusiva(),
+            'inconclusivo' => $fontes === [] && $prova !== false && $this->torrents->buscaInconclusiva(),
         ];
     }
 

@@ -146,8 +146,6 @@ class TesteDeFontes
      *
      * `true` a malha confirmou conexão; `false` a fonte foi medida e está morta;
      * `null` não deu para concluir — e é o que faz a fonte sobreviver.
-     *
-     * @return bool|null
      */
     private function veredito(mixed $resposta): ?bool
     {
@@ -162,5 +160,141 @@ class TesteDeFontes
         }
 
         return $dados['ok'];
+    }
+
+    /**
+     * Prova, no media-service, que a fonte entrega **bytes de vídeo**.
+     *
+     * A malha responde "há peers?"; esta prova responde "abre?". O media-service
+     * escolhe o arquivo do episódio com a mesma função que o player usa e lê os
+     * primeiros bytes dele — é o mais perto de executar sem transcodificar. Sem
+     * isso, um pack com malha saudável e nenhum arquivo do episódio passava como
+     * "fonte verificada" e o selo mentia.
+     *
+     * O veredito é tri-estado de propósito. Só uma recusa **definitiva** reprova:
+     * `nao_e_midia` (a URL devolveu HTML), arquivo vazio, torrent sem vídeo,
+     * `404`/`410`. Timeout, `403` de anti-bot e falha de rede não provam nada —
+     * e nesses a fonte é mantida, como no resto das sondas.
+     *
+     * @param  array<string, mixed>  $fonte
+     * @return bool|null `true` entrega, `false` não entrega, `null` inconclusivo
+     */
+    public function provar(array $fonte, ?int $temporada = null, ?int $episodio = null, ?int $tempoLimite = null): ?bool
+    {
+        if (! (bool) config('services.verificacao.prova_bytes', false)) {
+            return null;
+        }
+
+        $base = rtrim((string) config('services.media_service.url', ''), '/');
+
+        if ($base === '') {
+            return null;
+        }
+
+        $magnet = (string) ($fonte['magnet'] ?? '');
+        $url = (string) ($fonte['stream'] ?? $fonte['url'] ?? '');
+
+        if ($magnet === '' && $url === '') {
+            return null;
+        }
+
+        $teto = max(2, (int) config('services.verificacao.prova_tempo', 20));
+
+        if ($tempoLimite !== null) {
+            $teto = min($teto, max(2, $tempoLimite));
+        }
+
+        $corpo = array_filter([
+            'magnet' => $magnet !== '' ? $magnet : null,
+            // O `magnet` manda: quando há os dois, o torrent é o que o player
+            // escolheria (a lista já vem ordenada com o torrent na frente quando
+            // ele é a melhor fonte).
+            'url' => $magnet === '' ? $url : null,
+            'temporada' => $temporada,
+            'episodio' => $episodio,
+            'espera_ms' => $teto * 1000,
+            'bytes_minimos' => (int) config('services.verificacao.prova_bytes_minimos', 262144),
+        ], fn ($valor) => $valor !== null);
+
+        try {
+            $resposta = Http::connectTimeout(3)
+                ->timeout($teto + 5)
+                ->acceptJson()
+                ->post($base.'/api/media/provar', $corpo);
+        } catch (\Throwable $excecao) {
+            report($excecao);
+
+            return null;
+        }
+
+        if (! $resposta->successful()) {
+            return null;
+        }
+
+        $dados = $resposta->json();
+
+        if (! is_array($dados) || ! is_bool($dados['ok'] ?? null)) {
+            return null;
+        }
+
+        $contexto = [
+            'id' => $fonte['id'] ?? null,
+            'titulo' => $fonte['titulo'] ?? null,
+            'tipo' => $fonte['tipo'] ?? 'torrent',
+            'motivo' => $dados['motivo'] ?? null,
+            'bytes' => $dados['bytes'] ?? 0,
+            'ms' => $dados['ms'] ?? null,
+        ];
+
+        if ($dados['ok'] === true) {
+            Log::info('Prova de bytes: a fonte entregou vídeo.', $contexto);
+
+            return true;
+        }
+
+        $definitivos = ['nao_e_midia', 'arquivo_vazio', 'sem_arquivo_de_video', 'http_404', 'http_410'];
+
+        if (! in_array((string) ($dados['motivo'] ?? ''), $definitivos, true)) {
+            return null;
+        }
+
+        Log::info('Prova de bytes: a fonte não entrega mídia.', $contexto);
+
+        return false;
+    }
+
+    /**
+     * Prova as melhores fontes da lista e diz se alguma entrega vídeo.
+     *
+     * Não adianta reprovar pelo insucesso de uma fonte só: a lista tem
+     * alternativas, e o player passaria para a próxima. Só quando **todas** as
+     * testadas recusam de forma definitiva é que o veredito é `false`; se
+     * qualquer uma entregou bytes, a resposta é `true`; e qualquer inconclusivo
+     * mantém o benefício da dúvida (`null`).
+     *
+     * @param  array<int, array<string, mixed>>  $fontes
+     */
+    public function provarMelhor(array $fontes, ?int $temporada = null, ?int $episodio = null, ?int $tempoLimite = null): ?bool
+    {
+        if (! (bool) config('services.verificacao.prova_bytes', false) || $fontes === []) {
+            return null;
+        }
+
+        $max = max(1, (int) config('services.verificacao.prova_max_fontes', 2));
+        $inconclusivo = false;
+
+        foreach (array_slice($fontes, 0, $max) as $fonte) {
+            $veredito = $this->provar($fonte, $temporada, $episodio, $tempoLimite);
+
+            if ($veredito === true) {
+                return true;
+            }
+
+            if ($veredito === null) {
+                $inconclusivo = true;
+            }
+        }
+
+        return $inconclusivo ? null : false;
     }
 }

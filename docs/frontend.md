@@ -85,11 +85,16 @@ selo **de cada linha**, alimentado pelo `verificado` que o backend devolve por
 episódio (veja [API](api.md#episódios-da-temporada)).
 
 Quando a temporada é aberta, o modal chama
-`POST /movies/{id}/temporada/{n}/verificar` enquanto houver `pendentes`: cada
-resposta testa dois episódios e devolve os selos atualizados, sem prender a
-tela. A faixa "Verificando fontes dos episódios — restam N" mostra a fila
-andando, e o que não couber numa abertura volta na próxima — o veredito fica
-gravado. O backfill do acervo é do comando `fontes:episodios`
+`POST /movies/{id}/temporada/{n}/verificar`, que **enfileira** o trabalho no
+backend e responde na hora. Quem verifica é o worker `queue`; o modal só
+acompanha o `GET` da temporada a cada quatro segundos, redesenhando os selos
+conforme cada episódio fica pronto. A faixa "Verificando fontes dos episódios —
+restam N" mostra a fila andando, e fechar o modal não perde o que já foi medido.
+
+Se o contador de `pendentes` não mexer por três leituras seguidas (12 s), o
+modal desconfia de worker parado e chama `?sincrono=1` uma vez: o backend testa
+uma fatia na hora e devolve os selos, em vez de deixar a tela congelada. O
+backfill do acervo é do comando `fontes:episodios`
 (veja [Comandos](comandos.md#fontesepisodios--o-selo-de-cada-episódio)).
 
 ## Modal de série
@@ -122,7 +127,25 @@ com uma troca de série.
 
 - [`SeletorTemporada.vue`](../frontend/src/components/SeletorTemporada.vue:1) —
   balões clicáveis, um por temporada, com a ativa destacada. É o padrão dos
-  streamings: todas as temporadas visíveis, troca com um clique.
+  streamings: todas as temporadas visíveis, troca com um clique. A faixa **quebra
+  linha** em vez de rolar na horizontal: série longa (as oito temporadas de
+  *Dexter*) escondia as últimas atrás de um scroll que ninguém percebia, e o modal
+  parecia ter só as primeiras.
+
+#### O número da temporada nem sempre é o que o público chama de temporada
+
+O TMDB agrupa temporadas à sua maneira: em *Lupin*, a Parte 1 e a Parte 2 vivem
+na temporada 1, a Parte 3 é a temporada 2 e a Parte 4 é a temporada 3. Um balão
+escrito só "T3" faz o usuário concluir que a temporada nova não está ali. Por
+isso o botão mostra o **nome** junto do número quando ele acrescenta algo
+("T3 Parte 4"), e o `title`/`aria-label` trazem o texto completo — número, nome,
+quantidade de episódios e ano. Quando o nome é o genérico do TMDB ("Temporada
+3"), o balão fica só com o número.
+
+O `temporadas` do [`SerieModal.vue`](../frontend/src/components/SerieModal.vue:1)
+usa `numero_temporadas` como **piso**: se a lista detalhada vier curta (cache
+antigo, payload do catálogo verificado que só traz o contador), a numeração é
+completada até o total. Sem isso, o modal esconde temporada que existe.
 - [`ListaEpisodios.vue`](../frontend/src/components/ListaEpisodios.vue:1) — cada
   episódio com capa, número, título, sinopse, nota e duração, além do skeleton de
   carregamento.
