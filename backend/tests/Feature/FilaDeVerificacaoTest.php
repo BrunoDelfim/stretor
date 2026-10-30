@@ -55,7 +55,7 @@ class FilaDeVerificacaoTest extends TestCase
         return $mock;
     }
 
-    private function prova(int $episodio): void
+    private function prova(int $episodio, int $diasAtras = 0): void
     {
         DisponibilidadeEpisodio::create([
             'tmdb_id' => 295778,
@@ -65,7 +65,7 @@ class FilaDeVerificacaoTest extends TestCase
             'inconclusivo' => false,
             'deve_retentar' => false,
             'origem' => OrigemVerificacao::PLAY->value,
-            'verificado_em' => now(),
+            'verificado_em' => now()->subDays($diasAtras),
         ]);
     }
 
@@ -153,6 +153,25 @@ class FilaDeVerificacaoTest extends TestCase
             ->assertJsonPath('meta.pendentes', 0);
 
         Queue::assertNothingPushed();
+    }
+
+    /**
+     * A abertura só trabalha com o que nunca foi verificado: prova vencida não
+     * faz o modal voltar a testar o episódio — isso é da varredura diária.
+     */
+    public function test_abertura_nao_reverifica_prova_vencida(): void
+    {
+        Queue::fake();
+
+        $this->mock(TmdbService::class, fn ($mock) => $mock->shouldReceive('temporada')
+            ->andReturn(['temporada' => 1, 'episodios' => $this->episodios(1, 2)]));
+
+        $this->prova(1, diasAtras: 30);
+
+        $this->postJson('/api/v1/movies/295778/temporada/1/verificar')
+            ->assertOk()
+            ->assertJsonPath('data.na_fila', true)
+            ->assertJsonPath('meta.pendentes', 1);
     }
 
     /**

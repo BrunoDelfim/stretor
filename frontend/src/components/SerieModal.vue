@@ -588,6 +588,7 @@ onUnmounted(() => {
                   :episodios="episodios"
                   :carregando="carregandoEpisodios"
                   :capa-serie="arteDaSerie"
+                  :total="episodios.length"
                   :pendentes="verificandoEpisodios ? pendentes : 0"
                   @assistir="assistirEpisodio"
                 />

@@ -101,7 +101,11 @@ return [
         // Fica antes da rodada principal para não disputar a rede com ela, e o
         // limite mantém a execução curta o bastante para caber numa madrugada.
         'horario_episodios' => env('VERIFICACAO_HORARIO_EPISODIOS', '02:30'),
-        'episodios_limite_diario' => (int) env('VERIFICACAO_EPISODIOS_LIMITE', 40),
+        // 0 = sem teto: a varredura da madrugada percorre o acervo inteiro,
+        // temporada a temporada, até não sobrar episódio sem prova. O que já foi
+        // provado não volta (a fila é do que falta), então a rodada seguinte é
+        // mais curta que a primeira.
+        'episodios_limite_diario' => (int) env('VERIFICACAO_EPISODIOS_LIMITE', 0),
         'pausa_itens_ms' => (int) env('VERIFICACAO_PAUSA_ITENS_MS', 6000),
         'pausa_paginas_ms' => (int) env('VERIFICACAO_PAUSA_PAGINAS_MS', 45000),
 

@@ -34,7 +34,7 @@ class VerificarEpisodios extends Command
     protected $signature = 'fontes:episodios
         {--serie= : Verifica apenas esta série (id do TMDB)}
         {--temporada= : Limita a verificação a uma temporada}
-        {--limite=40 : Máximo de episódios testados nesta execução}
+        {--limite=0 : Máximo de episódios nesta execução (0 = sem teto)}
         {--sem-pausa : Desliga as pausas entre episódios (use só em teste)}';
 
     protected $description = 'Verifica cada episódio das séries que já têm fonte provada.';
@@ -44,7 +44,9 @@ class VerificarEpisodios extends Command
         VerificadorEpisodios $verificador,
         VerificadorFontes $fontes,
     ): int {
-        $limite = max(1, (int) $this->option('limite'));
+        $limite = max(0, (int) $this->option('limite'));
+        $semTeto = $limite === 0;
+        $limite = $semTeto ? PHP_INT_MAX : $limite;
         $apenasSerie = $this->option('serie') !== null ? (int) $this->option('serie') : null;
         $apenasTemporada = $this->option('temporada') !== null ? (int) $this->option('temporada') : null;
         $pausaMs = $this->option('sem-pausa')
@@ -72,7 +74,9 @@ class VerificarEpisodios extends Command
         }
 
         $this->info('Verificação por episódio — começando.');
-        $this->line('  Limite desta execução: '.$limite.' episódio(s)');
+        $this->line($semTeto
+            ? '  Sem teto: todas as séries do acervo, temporada a temporada.'
+            : '  Limite desta execução: '.$limite.' episódio(s)');
 
         $testados = 0;
         $comFonte = 0;

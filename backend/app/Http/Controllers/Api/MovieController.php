@@ -169,7 +169,17 @@ class MovieController extends Controller
         return $this->responder(function () use ($request, $id, $numero) {
             $dados = $this->tmdb->temporada($id, $numero);
             $episodios = $dados['episodios'] ?? [];
-            $pendentes = $this->episodios->pendentes($id, $numero, $episodios);
+
+            /*
+             * A abertura do modal só trabalha com o que **nunca** foi verificado.
+             * Prova vencida é assunto da varredura diária: revisar o acervo
+             * enquanto o usuário olha a lista faria a tela parecer instável. O
+             * caminho síncrono (plano B) continua usando a fila completa, porque
+             * ali o objetivo é entregar selo na hora.
+             */
+            $pendentes = $request->boolean('sincrono')
+                ? $this->episodios->pendentes($id, $numero, $episodios)
+                : $this->episodios->nuncaTestados($id, $numero, $episodios);
 
             if ($pendentes === []) {
                 return [

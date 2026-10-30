@@ -295,7 +295,7 @@ Parâmetros lidos de `config/services.php` (todos com override em `.env`):
 #### `fontes:episodios` — o selo de cada episódio
 
 ```bash
-# Backfill do acervo: 40 episódios por noite, das séries com fonte provada
+# Backfill do acervo inteiro: percorre todas as séries com fonte provada, temporada a temporada
 docker compose exec backend php artisan fontes:episodios
 
 # Uma série só, e só a primeira temporada
@@ -311,7 +311,7 @@ com a mesma régua do card (fonte provada e prova dentro do prazo).
 |-------|----------------|
 | `--serie=ID` | Verifica só esta série (id do TMDB). |
 | `--temporada=N` | Limita a uma temporada — útil para conferir uma estreia. |
-| `--limite=N` | Teto de episódios nesta execução (padrão 40). O que sobra volta amanhã. |
+| `--limite=N` | Teto de episódios nesta execução. Padrão `0` = **sem teto**: percorre o acervo até não sobrar episódio sem prova. |
 | `--sem-pausa` | Desliga a pausa entre episódios. **Só em teste.** |
 
 O trabalho é incremental de propósito: uma temporada de vinte episódios custa

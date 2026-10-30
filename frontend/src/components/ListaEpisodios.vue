@@ -1,4 +1,5 @@
 <script setup>
+import { computed } from 'vue'
 import SkeletonBlock from '@/components/SkeletonBlock.vue'
 import SeloVerificacao from '@/components/SeloVerificacao.vue'
 
@@ -42,9 +43,32 @@ const props = defineProps({
     type: Number,
     default: 0,
   },
+  /** Total de episódios da temporada; sem ele, o tamanho da lista serve. */
+  total: {
+    type: Number,
+    default: 0,
+  },
 })
 
 const emit = defineEmits(['assistir'])
+
+const totalDaTemporada = computed(() => props.total || props.episodios.length)
+
+const verificados = computed(() =>
+  Math.max(0, Math.min(totalDaTemporada.value, totalDaTemporada.value - props.pendentes))
+)
+
+/**
+ * Percentual já coberto pela verificação.
+ *
+ * A barra mede a temporada inteira, e não a fila da sessão: o usuário vê o
+ * quanto falta para a lista toda estar selada, sem precisar contar linhas.
+ */
+const progresso = computed(() => {
+  if (!totalDaTemporada.value) return 0
+
+  return Math.round((verificados.value / totalDaTemporada.value) * 100)
+})
 
 function assistir(episodio) {
   emit('assistir', episodio)
@@ -78,16 +102,34 @@ function imagemDoEpisodio(episodio) {
     </template>
 
     <template v-else>
-      <!-- A verificação em segundo plano passa linha por linha; enquanto houver
-           episódio sem prova, esta faixa lembra que o selo cinza ainda pode
-           virar verde sem o usuário fazer nada. -->
-      <p
+      <!-- A verificação em segundo plano passa linha por linha. A barra mede a
+           temporada inteira (não a fila da sessão), para o usuário ver o quanto
+           falta de verdade — e não um contador que parece nunca acabar. -->
+      <div
         v-if="pendentes > 0 && episodios.length"
-        class="flex items-center gap-2 text-xs text-slate-400"
+        class="space-y-1.5"
+        role="progressbar"
+        :aria-valuenow="progresso"
+        aria-valuemin="0"
+        aria-valuemax="100"
+        :aria-label="`Verificando fontes: ${verificados} de ${totalDaTemporada} episódios`"
       >
-        <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" aria-hidden="true" />
-        Verificando fontes dos episódios — restam {{ pendentes }}.
-      </p>
+        <div class="flex items-center justify-between gap-3 text-xs">
+          <span class="flex items-center gap-2 text-slate-400">
+            <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" aria-hidden="true" />
+            Verificando fontes dos episódios
+          </span>
+          <span class="shrink-0 tabular-nums text-slate-500">
+            {{ verificados }} de {{ totalDaTemporada }} · {{ progresso }}%
+          </span>
+        </div>
+        <div class="h-1 w-full overflow-hidden rounded-full bg-white/10">
+          <div
+            class="h-full rounded-full bg-emerald-400 transition-all duration-500"
+            :style="{ width: `${progresso}%` }"
+          />
+        </div>
+      </div>
 
       <div
         v-for="episodio in episodios"

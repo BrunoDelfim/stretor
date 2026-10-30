@@ -86,10 +86,11 @@ episódio (veja [API](api.md#episódios-da-temporada)).
 
 Quando a temporada é aberta, o modal chama
 `POST /movies/{id}/temporada/{n}/verificar`, que **enfileira** o trabalho no
-backend e responde na hora. Quem verifica é o worker `queue`; o modal só
-acompanha o `GET` da temporada a cada quatro segundos, redesenhando os selos
-conforme cada episódio fica pronto. A faixa "Verificando fontes dos episódios —
-restam N" mostra a fila andando, e fechar o modal não perde o que já foi medido.
+backend e responde na hora. A abertura só enfileira episódio **nunca verificado**:
+prova vencida é assunto da varredura diária, e re-testar o acervo enquanto o
+usuário olha a lista faria a tela parecer instável. Quem verifica é o worker
+`queue`; o modal acompanha o `GET` da temporada a cada quatro segundos, e a barra
+de progresso mostra `verificados de total · %` da temporada inteira.
 
 Se o contador de `pendentes` não mexer por três leituras seguidas (12 s), o
 modal desconfia de worker parado e chama `?sincrono=1` uma vez: o backend testa

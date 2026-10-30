@@ -306,7 +306,7 @@ class TmdbService
         return [
             'temporada' => (int) ($payload['season_number'] ?? $numero),
             'nome' => $payload['name'] ?? null,
-            'sinopse' => $payload['overview'] ?: null,
+            'sinopse' => ($payload['overview'] ?? null) ?: null,
             'capa' => $this->montarImagem($payload['poster_path'] ?? null, TamanhoImagem::POSTER),
             'ano' => $this->extrairAno($payload['air_date'] ?? null),
             'episodios' => $episodios,
@@ -379,16 +379,42 @@ class TmdbService
      */
     private function normalizarEpisodio(array $episodio): array
     {
+        $numero = (int) ($episodio['episode_number'] ?? 0);
+
         return [
-            'numero' => (int) ($episodio['episode_number'] ?? 0),
+            'numero' => $numero,
             'temporada' => (int) ($episodio['season_number'] ?? 0),
-            'titulo' => $episodio['name'] ?: MensagensFilme::TITULO_INDISPONIVEL,
+            'titulo' => $this->tituloDoEpisodio($episodio['name'] ?? null, $numero),
             'sinopse' => $episodio['overview'] ?: MensagensFilme::SINOPSE_INDISPONIVEL,
             'capa' => $this->montarImagem($episodio['still_path'] ?? null, TamanhoImagem::POSTER),
             'nota' => isset($episodio['vote_average']) ? round((float) $episodio['vote_average'], 1) : null,
             'duracao' => $this->formatarDuracao($episodio['runtime'] ?? null),
             'data_exibicao' => $episodio['air_date'] ?? null,
         ];
+    }
+
+    /**
+     * Nome do episódio, ou o rótulo de capítulo quando o TMDB não tem nome.
+     *
+     * Séries de catálogo grande (novelas, anime longo) vêm com o nome genérico
+     * do próprio TMDB — "Episódio 3", "Capítulo 3", "Episode 3" — em vez de um
+     * título. Repetir isso na linha é ruído: o número já está na frente. Nesses
+     * casos, e só neles, o rótulo vira "Capítulo N" para a linha não ficar sem
+     * identificação.
+     */
+    private function tituloDoEpisodio(?string $nome, int $numero): string
+    {
+        $nome = trim((string) $nome);
+
+        if ($nome === '' || $nome === MensagensFilme::TITULO_INDISPONIVEL) {
+            return 'Capítulo '.$numero;
+        }
+
+        if (preg_match('/^(epis[oó]dio|cap[ií]tulo|episode|chapter)\s*\d*$/iu', $nome)) {
+            return 'Capítulo '.$numero;
+        }
+
+        return $nome;
     }
 
     /**
@@ -501,7 +527,7 @@ class TmdbService
      * repetidas não geram requisições novas.
      *
      * @param  array<int, array<string, mixed>>  $itens
-     * @return array<string, string>  Mapa "tipo:id" => classificação
+     * @return array<string, string> Mapa "tipo:id" => classificação
      */
     private function classificacoesEmLote(array $itens): array
     {
@@ -587,7 +613,7 @@ class TmdbService
      * cache por título — inclusive para o "não tem imdb", que também é resposta.
      *
      * @param  array<int, array<string, mixed>>  $itens
-     * @return array<string, string>  Mapa "tipo:id" => imdb_id
+     * @return array<string, string> Mapa "tipo:id" => imdb_id
      */
     public function identificadoresEmLote(array $itens): array
     {

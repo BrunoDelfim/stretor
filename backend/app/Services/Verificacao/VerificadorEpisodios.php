@@ -75,6 +75,39 @@ class VerificadorEpisodios
     }
 
     /**
+     * Os episódios que **nunca** passaram por verificação.
+     *
+     * É a fila da abertura do modal. Prova vencida não volta por aqui: ela é
+     * assunto da varredura diária, que revisa o acervo sem prender a tela do
+     * usuário. Assim a abertura só gasta trabalho quando há algo novo para
+     * descobrir.
+     *
+     * @param  array<int, array<string, mixed>>  $episodios
+     * @return array<int, int>
+     */
+    public function nuncaTestados(int $serieId, int $temporada, array $episodios): array
+    {
+        $numeros = array_values(array_filter(array_map(
+            fn (array $episodio): int => (int) ($episodio['numero'] ?? 0),
+            $episodios
+        )));
+
+        if ($numeros === []) {
+            return [];
+        }
+
+        $conhecidos = DisponibilidadeEpisodio::query()
+            ->where('tmdb_id', $serieId)
+            ->where('temporada', $temporada)
+            ->whereIn('episodio', $numeros)
+            ->pluck('episodio')
+            ->map(fn ($numero): int => (int) $numero)
+            ->all();
+
+        return array_values(array_diff($numeros, $conhecidos));
+    }
+
+    /**
      * Verifica até `$limite` episódios pendentes e conta o que sobrou.
      *
      * A ficha da série é buscada no TMDB porque a busca de fontes precisa de

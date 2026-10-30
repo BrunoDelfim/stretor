@@ -168,9 +168,10 @@ episódios já marcada e:
 ```
 
 O trabalho fica com o worker `queue` (`VerificarTemporada`), que percorre a
-temporada inteira e grava cada prova assim que a mede. O modal acompanha pelo
-`GET` da temporada, que já devolve `verificado` por linha — não há resposta longa
-esperando o navegador. `na_fila: false` significa "não havia nada pendente".
+temporada inteira e grava cada prova assim que a mede. A abertura só enfileira
+episódio **nunca verificado** — prova vencida é da varredura diária (`fontes:episodios`).
+O modal acompanha pelo `GET` da temporada, que já devolve `verificado` por linha.
+`na_fila: false` significa "não havia nada novo para verificar".
 
 `POST .../verificar?sincrono=1` mantém o caminho antigo: verifica uma fatia agora
 (`VERIFICACAO_EPISODIOS_POR_REQUISICAO`, padrão 2), respeita o teto de

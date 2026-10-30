@@ -51,7 +51,7 @@ if (config('services.verificacao.habilitada') && config('services.verificacao.ag
      * primeiro episódio, e uma temporada inteira não cabe numa requisição nem
      * numa noite do notebook.
      */
-    Schedule::command('fontes:episodios --limite='.(int) config('services.verificacao.episodios_limite_diario', 40))
+    Schedule::command('fontes:episodios --limite='.(int) config('services.verificacao.episodios_limite_diario', 0))
         ->dailyAt(config('services.verificacao.horario_episodios', '02:30'))
-        ->withoutOverlapping(180);
+        ->withoutOverlapping(600);
 }

@@ -125,4 +125,28 @@ class TemporadasDaSerieTest extends TestCase
         $this->assertSame(3, $serie['numero_temporadas']);
         $this->assertSame([], $serie['temporadas']);
     }
+
+    /**
+     * Nome genérico do TMDB não vira título: a linha mostra "Capítulo N" só
+     * quando não há nome próprio.
+     */
+    public function test_episodio_sem_nome_recebe_rotulo_de_capitulo(): void
+    {
+        Http::fake([
+            '*/tv/96677/season/1*' => Http::response([
+                'season_number' => 1,
+                'episodes' => [
+                    ['episode_number' => 1, 'name' => 'Capítulo 1', 'overview' => ''],
+                    ['episode_number' => 2, 'name' => 'O colar da rainha', 'overview' => ''],
+                    ['episode_number' => 3, 'name' => '', 'overview' => ''],
+                ],
+            ]),
+        ]);
+
+        $episodios = $this->service()->temporada(96677, 1)['episodios'];
+
+        $this->assertSame('Capítulo 1', $episodios[0]['titulo']);
+        $this->assertSame('O colar da rainha', $episodios[1]['titulo']);
+        $this->assertSame('Capítulo 3', $episodios[2]['titulo']);
+    }
 }
