@@ -46,6 +46,28 @@ trait ProvaDeFonte
             return (int) config('services.verificacao.validade_horas', 24);
         }
 
-        return (int) config('services.verificacao.validade_dias_definitivo', 7) * 24;
+        return $this->janelaLongaEmDias() * 24;
+    }
+
+    /**
+     * Janela do veredito definitivo, em dias — mais curta para série.
+     *
+     * Fonte de episódio envelhece muito mais rápido: o pack sai do ar, o CDN
+     * troca o token, a temporada nova muda a lista. Uma prova de episódio com
+     * sete dias de validade esconde exatamente o que o usuário percebe primeiro
+     * (o E04 não abre mais). Para filme, a janela longa continua valendo.
+     *
+     * O episódio não tem coluna `tipo` — é série por definição.
+     */
+    private function janelaLongaEmDias(): int
+    {
+        $ehSerie = ! array_key_exists('tipo', $this->getAttributes())
+            || ($this->getAttributes()['tipo'] ?? null) === 'serie';
+
+        if ($ehSerie) {
+            return (int) config('services.verificacao.validade_dias_serie', 2);
+        }
+
+        return (int) config('services.verificacao.validade_dias_definitivo', 7);
     }
 }

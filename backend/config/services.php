@@ -82,6 +82,10 @@ return [
         // respondeu. Quem pediu nova chance (busca inconclusiva) usa a validade
         // curta acima.
         'validade_dias_definitivo' => (int) env('VERIFICACAO_VALIDADE_DIAS_DEFINITIVO', 7),
+        // Série e episódio usam janela curta: fonte de episódio cai do ar (pack
+        // removido, token do CDN trocado) muito mais rápido que a de filme. Dois
+        // dias é o ponto em que a prova ainda vale e o selo não mente.
+        'validade_dias_serie' => (int) env('VERIFICACAO_VALIDADE_DIAS_SERIE', 2),
         // Orçamento por título. O stream direto de série percorre três páginas
         // (ficha, temporada e episódio); com o teto curto de antes a cascata era
         // cortada no meio e um título que só o acervo web tinha era gravado como

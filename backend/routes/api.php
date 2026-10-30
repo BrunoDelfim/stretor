@@ -46,6 +46,9 @@ Route::prefix('v1')->group(function () {
         // playback para a busca: a fonte comprovada vira histórico e volta na
         // frente da fila na próxima abertura deste título.
         Route::post('/{id}/fontes/reproduzida', [TorrentController::class, 'fonteReproduzida'])->whereNumber('id');
+        // A prova do playback: o vídeo começou (ou falhou) e isso vale mais que
+        // qualquer sonda. Grava o selo na hora, sem depender da rotina.
+        Route::post('/{id}/prova-de-playback', [MovieController::class, 'provaDePlayback'])->whereNumber('id');
     });
 
     /*

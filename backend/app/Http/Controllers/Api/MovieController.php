@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Jobs\VerificarTemporada;
 use App\Services\TmdbService;
 use App\Services\Verificacao\CatalogoVerificado;
+use App\Services\Verificacao\ProvaDePlayback;
 use App\Services\Verificacao\SeloVerificacao;
 use App\Services\Verificacao\VerificadorEpisodios;
 use Illuminate\Http\JsonResponse;
@@ -23,6 +24,7 @@ class MovieController extends Controller
         private readonly CatalogoVerificado $verificado,
         private readonly SeloVerificacao $selo,
         private readonly VerificadorEpisodios $episodios,
+        private readonly ProvaDePlayback $prova,
     ) {}
 
     /**
@@ -220,6 +222,32 @@ class MovieController extends Controller
                 ],
             ];
         });
+    }
+
+    /**
+     * Registra o desfecho de uma reprodução.
+     *
+     * É a prova mais direta que existe: `ok: true` quando o vídeo começa a
+     * tocar, `ok: false` quando o player falha antes. O episódio que abre deixa
+     * de gastar uma busca na verificação; o que falha perde o selo na hora, para
+     * o verde não continuar prometendo o que o usuário acabou de ver quebrar.
+     */
+    public function provaDePlayback(Request $request, int $id): JsonResponse
+    {
+        $dados = $request->validate([
+            'temporada' => ['nullable', 'integer', 'min:1'],
+            'episodio' => ['nullable', 'integer', 'min:1'],
+            'ok' => ['required', 'boolean'],
+        ]);
+
+        $this->prova->registrar(
+            $id,
+            isset($dados['temporada']) ? (int) $dados['temporada'] : null,
+            isset($dados['episodio']) ? (int) $dados['episodio'] : null,
+            (bool) $dados['ok'],
+        );
+
+        return response()->json(['data' => ['registrado' => true]]);
     }
 
     /**

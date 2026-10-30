@@ -127,6 +127,15 @@ function atualizarTemporadaSerie(numero) {
  * exatamente ao ponto em que estava.
  */
 function assistir(filme) {
+  /*
+   * Série: enquanto o usuário assiste, a temporada continua sendo verificada em
+   * segundo plano. O worker adianta os episódios inéditos e a próxima abertura
+   * do modal já os encontra com selo — sem prender nada na tela.
+   */
+  if (filme?.tipo === 'tv' && filme?.id && filme?.temporada) {
+    moviesService.verificarTemporada(filme.id, filme.temporada).catch(() => {})
+  }
+
   filmeEmReproducao.value = filme
 }
 

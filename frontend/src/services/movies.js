@@ -112,4 +112,15 @@ export const moviesService = {
       pendentes: data.meta?.pendentes ?? 0,
     }
   },
+
+  /**
+   * Conta ao backend o desfecho do playback.
+   *
+   * `ok: true` quando o vídeo começa — o episódio/filme ganha o selo sem gastar
+   * busca; `ok: false` quando o player falha antes de tocar — o selo cai na hora,
+   * porque o usuário acabou de ver que não abre.
+   */
+  async registrarProvaDePlayback(id, { temporada = null, episodio = null, ok }) {
+    await cliente().post(`/${id}/prova-de-playback`, { temporada, episodio, ok })
+  },
 }

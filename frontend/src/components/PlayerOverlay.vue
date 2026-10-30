@@ -5,6 +5,7 @@ import Hls from 'hls.js'
 import 'plyr/dist/plyr.css'
 
 import { streamingService } from '@/services/streaming'
+import { moviesService } from '@/services/movies'
 import {
   ESPERA_ENTRE_RODADAS_MS,
   ESPERA_ENTRE_TENTATIVAS_MS,
@@ -61,6 +62,12 @@ const mensagem = ref('Procurando fontes...')
 const tentativaAtual = ref(0)
 const totalFontes = ref(0)
 const erro = ref(null)
+
+/*
+ * A prova de playback é enviada uma vez por abertura: verde quando o vídeo
+ * começa, cinza quando o player falha antes. Não é reenviada depois.
+ */
+let provaEnviada = false
 
 /*
  * Telemetria do download, exibida no overlay enquanto a fonte prepara o vídeo.
@@ -1220,6 +1227,8 @@ function vigiarReproducao() {
     // Já toca: o vigia cumpriu o papel.
     if (!midia.paused) {
       anotarDiagnostico('reprodução iniciada')
+      // O vídeo abriu: é a prova mais forte que o selo pode ter.
+      registrarProvaDePlayback(true)
 
       return
     }
@@ -2242,6 +2251,41 @@ async function limparSessaoAtual() {
 }
 
 /** Inicia o fluxo completo: busca as fontes e percorre até uma conectar. */
+/**
+ * Envia o desfecho da reprodução para o backend.
+ *
+ * É a prova mais forte do sistema: `ok: true` quando o vídeo começa e
+ * `ok: false` quando o player falha antes de tocar. Uma vez por abertura —
+ * depois do verde, um erro de busca no meio do filme não pode derrubar o selo,
+ * e repetir a mesma prova não acrescenta nada.
+ */
+async function registrarProvaDePlayback(ok) {
+  const filme = props.filme
+
+  if (provaEnviada || !filme?.id) return
+
+  provaEnviada = true
+
+  try {
+    await moviesService.registrarProvaDePlayback(filme.id, {
+      temporada: filme.temporada ?? null,
+      episodio: filme.episodio ?? null,
+      ok,
+    })
+  } catch {
+    // Falha ao registrar não pode atrapalhar a reprodução.
+  }
+}
+
+/*
+ * O desfecho do play alimenta o selo: verde quando o vídeo começa, cinza quando
+ * o player desiste. O `estado` cobre todos os caminhos de falha (nenhuma fonte,
+ * playlist vazia, elemento <video> ausente), então um único vigia basta.
+ */
+watch(estado, (novo) => {
+  if (novo === 'erro') registrarProvaDePlayback(false)
+})
+
 async function iniciar() {
   /*
    * Cada abertura recebe um número próprio, que só avança aqui. É esta marca —
@@ -2300,6 +2344,8 @@ async function iniciar() {
   buscandoTrecho.value = false
   // As legendas pertenciam à fonte (e ao filme) anterior.
   legendasDaFonteAtual = []
+  // A prova de playback pertence à abertura anterior.
+  provaEnviada = false
 
   /*
    * O filme é congelado aqui, no começo do fluxo. Todo o resto — a busca e a

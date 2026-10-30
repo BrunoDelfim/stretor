@@ -12,6 +12,7 @@ Endpoints expostos pelo backend (Laravel) e pelo media-service (Node).
 - `GET /api/v1/movies/{id}` — detalhes do filme (modal)
 - `GET /api/v1/movies/{id}/fontes` — fontes de torrent para reprodução
 - `POST /api/v1/movies/{id}/fontes/reproduzida` — relato do player de que a fonte serviu o título até o fim (vira histórico e volta na frente da fila)
+- `POST /api/v1/movies/{id}/prova-de-playback` — `{ temporada?, episodio?, ok }`: o vídeo começou (`ok: true`) ou o player falhou antes (`ok: false`). Grava o selo na hora — verde sem gastar busca, cinza imediato no erro — e devolve `registrado`
 - `GET /api/v1/movies/legenda?url=...` — converte uma legenda SRT em WebVTT para o `<track>` do Plyr (usado pelo fallback legendado)
 
 > As respostas do TMDB são cacheadas no Redis (`TMDB_CACHE_TTL`, padrão 3600s)
