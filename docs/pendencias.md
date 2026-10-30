@@ -5,30 +5,37 @@ permite reproduzir, que ainda não tem correção fechada. Não é o diário de 
 (esse é [`plans/`](../plans/), que guarda o "porquê" das decisões já tomadas) —
 aqui só entra o que ainda precisa de ação.
 
-## O modal de série só mostrava parte das temporadas — resolvido no seletor
+## O modal de série parecia esconder temporadas — resolvido no rótulo do seletor
 
-**Observado em 2026-10-30, com "Dexter" (TMDB 1405) e "Lupin" (TMDB 96677).** O
-usuário abriu Dexter e o modal ofereceu só a 1ª e a 2ª temporada, embora a série
-tenha oito. Em Lupin, viu "T1, T2 e T3" e concluiu que a Parte 4 recém-lançada
-não estava ali.
+**Observado em 2026-10-30, com o "Dexter" da Home e com "Lupin".** O usuário
+abriu o Dexter que estava em alta e o modal ofereceu 1ª e 2ª temporada; esperava
+as oito do Dexter clássico. Em Lupin, viu "T1, T2 e T3" e concluiu que a Parte 4
+recém-lançada não estava ali.
 
-**Diagnóstico.** São dois problemas diferentes.
+**Diagnóstico (com os dados na mão).** Nenhum truncamento:
 
-1. *Dexter*: o backend devolve as oito temporadas (`/tv/1405` →
-   `number_of_seasons: 8`, oito itens em `seasons`); o seletor desenhava a faixa
-   com `overflow-x-auto`. Quando a lista detalhada chega curta — cache antigo ou
-   payload do catálogo verificado, que só carrega o contador —, nada completava a
-   numeração, e as temporadas que faltavam simplesmente não existiam na tela.
-2. *Lupin*: o TMDB agrupa as partes. A temporada 1 é "Parte 1 & 2", a 2 é "Parte
-   3" e a 3 é "Parte 4" (2026). O balão mostrava só "T3", sem o nome — daí a
-   impressão de que a temporada nova estava fora.
+| Título na Home | TMDB | Temporadas |
+| --- | --- | --- |
+| Dexter: Ressurreição | 259909 | **2** (T1 2025, T2 2026) |
+| Dexter (clássico) | 1405 | 8 (2006–2013) — é **outro título**, não estava na lista |
+| Lupin | 96677 | **3** — a T1 é "Parte 1 & 2", a T2 é "Parte 3" e a **T3 é a Parte 4** (2026) |
 
-**Correção.** O `temporadas` do
-[`SerieModal.vue`](../frontend/src/components/SerieModal.vue:83) usa
-`numero_temporadas` como piso e completa a numeração até o total; a faixa do
+O backend devolvia exatamente o que o TMDB informa (`number_of_seasons` e a lista
+completa). O que confundia era a **apresentação**: o balão mostrava só "T3", sem
+o nome que o público usa, e a faixa rolava na horizontal — em série longa, as
+últimas temporadas ficavam atrás de um scroll que ninguém percebia.
+
+**Correção.** A faixa do
 [`SeletorTemporada.vue`](../frontend/src/components/SeletorTemporada.vue:1)
-quebra linha (`flex-wrap`) em vez de rolar, e o balão mostra o nome quando ele
-acrescenta algo ("T3 Parte 4"), com número, nome, episódios e ano no `title`.
+quebra linha (`flex-wrap`) e o botão mostra o nome quando ele acrescenta algo
+("T3 Parte 4"), com número, nome, episódios e ano no `title`; nomes genéricos
+("Temporada 3") continuam fora do balão. O `temporadas` do
+[`SerieModal.vue`](../frontend/src/components/SerieModal.vue:83) usa
+`numero_temporadas` como piso e completa a numeração se a lista chegar curta —
+defesa para cache antigo ou payload sem a lista, não a causa deste caso. O
+contrato do backend está travado em
+[`TemporadasDaSerieTest`](../backend/tests/Feature/TemporadasDaSerieTest.php:1)
+(os oito do clássico, os nomes do Lupin e o Especiais fora).
 
 ## A verificação por episódio prendia a requisição — resolvido na fila
 
