@@ -1,5 +1,6 @@
 <script setup>
 import SkeletonBlock from '@/components/SkeletonBlock.vue'
+import SeloVerificacao from '@/components/SeloVerificacao.vue'
 
 /**
  * Lista de episódios de uma temporada.
@@ -8,9 +9,14 @@ import SkeletonBlock from '@/components/SkeletonBlock.vue'
  * número, título, sinopse curta e nota. O botão de play emite o episódio
  * escolhido para o modal, que abre o player com a temporada e o episódio
  * corretos — é isso que faz a busca de fontes montar o termo "SxxExx".
+ *
+ * O selo é do **episódio**, não da série: o E01 estar no ar não garante o resto
+ * da temporada, e repetir o selo da série aqui seria prometer o que não foi
+ * testado. Enquanto a verificação em segundo plano não passa por uma linha, ela
+ * aparece como não verificada.
  */
 const props = defineProps({
-  /** Episódios normalizados pelo backend. */
+  /** Episódios normalizados pelo backend, já com o selo de cada um. */
   episodios: {
     type: Array,
     default: () => [],
@@ -30,6 +36,11 @@ const props = defineProps({
   capaSerie: {
     type: String,
     default: null,
+  },
+  /** Quantos episódios desta temporada ainda estão sem prova de fonte. */
+  pendentes: {
+    type: Number,
+    default: 0,
   },
 })
 
@@ -67,6 +78,17 @@ function imagemDoEpisodio(episodio) {
     </template>
 
     <template v-else>
+      <!-- A verificação em segundo plano passa linha por linha; enquanto houver
+           episódio sem prova, esta faixa lembra que o selo cinza ainda pode
+           virar verde sem o usuário fazer nada. -->
+      <p
+        v-if="pendentes > 0 && episodios.length"
+        class="flex items-center gap-2 text-xs text-slate-400"
+      >
+        <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" aria-hidden="true" />
+        Verificando fontes dos episódios — restam {{ pendentes }}.
+      </p>
+
       <div
         v-for="episodio in episodios"
         :key="episodio.numero"
@@ -113,6 +135,12 @@ function imagemDoEpisodio(episodio) {
           <div class="mt-2 flex items-center gap-3 text-xs text-slate-500">
             <span v-if="episodio.duracao">{{ episodio.duracao }}</span>
             <span v-if="episodio.data_exibicao">{{ episodio.data_exibicao }}</span>
+            <!-- O selo da linha é o do episódio: verde só quando este E## tem
+                 prova de fonte dentro do prazo. -->
+            <SeloVerificacao
+              :verificado="Boolean(episodio.verificado)"
+              :verificado-em="episodio.verificado_em"
+            />
           </div>
         </div>
       </div>

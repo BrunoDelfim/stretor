@@ -87,6 +87,21 @@ return [
         // cortada no meio e um título que só o acervo web tinha era gravado como
         // "sem fonte".
         'orcamento_titulo' => (int) env('VERIFICACAO_ORCAMENTO_TITULO', 45),
+        // Episódios verificados por requisição do modal. Cada um custa uma busca
+        // inteira nos provedores; dois cabem no tempo de uma resposta — medido em
+        // 18 s por episódio no pior caso — e a fila continua na chamada seguinte.
+        'episodios_por_requisicao' => (int) env('VERIFICACAO_EPISODIOS_POR_REQUISICAO', 2),
+        // Teto de cada episódio na verificação sob demanda. É mais curto que o do
+        // título porque aqui a resposta é síncrona e o navegador desiste em 60 s.
+        'orcamento_episodio' => (int) env('VERIFICACAO_ORCAMENTO_EPISODIO', 20),
+        // Quanto tempo a requisição do modal pode gastar antes de devolver o que
+        // já tem. Os episódios que sobrarem voltam na chamada seguinte.
+        'orcamento_requisicao' => (int) env('VERIFICACAO_ORCAMENTO_REQUISICAO', 40),
+        // Horário e tamanho da varredura diária de episódios (`fontes:episodios`).
+        // Fica antes da rodada principal para não disputar a rede com ela, e o
+        // limite mantém a execução curta o bastante para caber numa madrugada.
+        'horario_episodios' => env('VERIFICACAO_HORARIO_EPISODIOS', '02:30'),
+        'episodios_limite_diario' => (int) env('VERIFICACAO_EPISODIOS_LIMITE', 40),
         'pausa_itens_ms' => (int) env('VERIFICACAO_PAUSA_ITENS_MS', 6000),
         'pausa_paginas_ms' => (int) env('VERIFICACAO_PAUSA_PAGINAS_MS', 45000),
     ],

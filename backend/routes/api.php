@@ -33,6 +33,12 @@ Route::prefix('v1')->group(function () {
         Route::get('/{id}/temporada/{numero}', [MovieController::class, 'temporada'])
             ->whereNumber('id')
             ->whereNumber('numero');
+        // Verificação sob demanda dos episódios de uma temporada. O modal chama
+        // esta rota enquanto houver episódio sem prova, para que cada linha
+        // ganhe ou perca o selo sem prender a abertura da tela.
+        Route::post('/{id}/temporada/{numero}/verificar', [MovieController::class, 'verificarTemporada'])
+            ->whereNumber('id')
+            ->whereNumber('numero');
         // Fontes de torrent para o fluxo de reprodução. Fica depois da rota de
         // detalhes porque o segmento extra ("/fontes") não colide com o id.
         Route::get('/{id}/fontes', [TorrentController::class, 'fontes'])->whereNumber('id');

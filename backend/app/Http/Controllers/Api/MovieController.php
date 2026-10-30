@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Services\TmdbService;
 use App\Services\Verificacao\CatalogoVerificado;
 use App\Services\Verificacao\SeloVerificacao;
+use App\Services\Verificacao\VerificadorEpisodios;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use RuntimeException;
@@ -20,8 +21,8 @@ class MovieController extends Controller
         private readonly TmdbService $tmdb,
         private readonly CatalogoVerificado $verificado,
         private readonly SeloVerificacao $selo,
-    ) {
-    }
+        private readonly VerificadorEpisodios $episodios,
+    ) {}
 
     /**
      * Filmes mais assistidos do Brasil — alimenta o carrossel e o grid da Home.
@@ -123,9 +124,56 @@ class MovieController extends Controller
     /**
      * Episódios de uma temporada específica da série.
      */
+    /**
+     * Episódios de uma temporada, cada um com o próprio selo.
+     *
+     * O `verificado` do episódio é o que o modal mostra na linha: o primeiro
+     * episódio ter fonte não garante o resto, e o selo esconde essa diferença se
+     * for o da série repetido dez vezes. O `meta.pendentes` diz quantos episódios
+     * dessa temporada ainda não têm prova — é o que o modal usa para decidir se
+     * continua pedindo a verificação em segundo plano.
+     */
     public function temporada(int $id, int $numero): JsonResponse
     {
-        return $this->responder(fn () => $this->tmdb->temporada($id, $numero), singular: true);
+        return $this->responder(function () use ($id, $numero) {
+            $dados = $this->tmdb->temporada($id, $numero);
+            $episodios = $this->selo->marcarEpisodios($dados['episodios'] ?? [], $id, $numero);
+
+            $dados['episodios'] = $episodios;
+
+            return [
+                'data' => $dados,
+                'meta' => [
+                    'pendentes' => count($this->episodios->pendentes($id, $numero, $episodios)),
+                ],
+            ];
+        });
+    }
+
+    /**
+     * Verifica alguns episódios da temporada e devolve os selos atualizados.
+     *
+     * O modal chama esta rota enquanto houver `pendentes`: cada resposta testa
+     * um punhado (três por padrão), e a próxima chamada continua de onde a
+     * anterior parou. Assim a temporada inteira é coberta sem prender a abertura
+     * da tela e sem uma fila de trabalho que o projeto não tem.
+     */
+    public function verificarTemporada(int $id, int $numero): JsonResponse
+    {
+        return $this->responder(function () use ($id, $numero) {
+            $dados = $this->tmdb->temporada($id, $numero);
+            $resultado = $this->episodios->verificar($id, $numero, $dados['episodios'] ?? []);
+
+            return [
+                'data' => [
+                    'episodios' => $this->selo->marcarEpisodios($dados['episodios'] ?? [], $id, $numero),
+                    'testados' => $resultado['testados'],
+                ],
+                'meta' => [
+                    'pendentes' => $resultado['restantes'],
+                ],
+            ];
+        });
     }
 
     /**

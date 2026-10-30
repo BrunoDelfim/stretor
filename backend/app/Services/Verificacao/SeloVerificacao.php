@@ -4,6 +4,7 @@ namespace App\Services\Verificacao;
 
 use App\Enums\TipoMidia;
 use App\Models\Disponibilidade;
+use App\Models\DisponibilidadeEpisodio;
 
 /**
  * Selo de verificação dos cards da Home.
@@ -94,6 +95,55 @@ class SeloVerificacao
         }
 
         return $provados;
+    }
+
+    /**
+     * Acrescenta `verificado`/`verificado_em` a cada episódio de uma temporada.
+     *
+     * A régua é a mesma do card: prova dentro do prazo e `tem_fonte` verdadeiro.
+     * O que muda é o escopo — aqui a pergunta é por episódio, não pela série. Um
+     * episódio nunca testado, com prova vencida ou com veredito "sem fonte"
+     * aparece como não verificado, e é assim que o usuário enxerga que o E01
+     * estar no ar não garante o resto da temporada.
+     *
+     * @param  array<int, array<string, mixed>>  $episodios
+     * @return array<int, array<string, mixed>>
+     */
+    public function marcarEpisodios(array $episodios, int $serieId, int $temporada): array
+    {
+        if ($episodios === []) {
+            return $episodios;
+        }
+
+        $numeros = array_map(
+            fn (array $episodio): int => (int) ($episodio['numero'] ?? 0),
+            $episodios
+        );
+
+        $provas = [];
+
+        $linhas = DisponibilidadeEpisodio::query()
+            ->where('tmdb_id', $serieId)
+            ->where('temporada', $temporada)
+            ->whereIn('episodio', array_values(array_filter($numeros)))
+            ->get(['episodio', 'tem_fonte', 'deve_retentar', 'verificado_em']);
+
+        foreach ($linhas as $linha) {
+            if (! $linha->tem_fonte || $linha->expirado()) {
+                continue;
+            }
+
+            $provas[$linha->episodio] = $linha;
+        }
+
+        return array_map(function (array $episodio) use ($provas): array {
+            $prova = $provas[(int) ($episodio['numero'] ?? 0)] ?? null;
+
+            $episodio['verificado'] = $prova !== null;
+            $episodio['verificado_em'] = $prova?->verificado_em?->toIso8601String();
+
+            return $episodio;
+        }, $episodios);
     }
 
     /**

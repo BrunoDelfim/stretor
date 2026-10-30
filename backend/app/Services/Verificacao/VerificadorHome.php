@@ -30,8 +30,7 @@ class VerificadorHome
     public function __construct(
         private readonly TmdbService $tmdb,
         private readonly VerificadorFontes $verificador,
-    ) {
-    }
+    ) {}
 
     /**
      * Percorre as páginas e verifica o que falta.
@@ -216,7 +215,7 @@ class VerificadorHome
      *
      * @param  array<int, array<string, mixed>>  $lista  A testar nesta rodada.
      * @param  array<int, array<string, mixed>>  $itens  A página inteira, para remontar a saída.
-     * @return array<int, array<string, mixed>>  Itens com fonte, na ordem do TMDB.
+     * @return array<int, array<string, mixed>> Itens com fonte, na ordem do TMDB.
      */
     private function verificarLista(
         array $lista,

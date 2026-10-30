@@ -118,7 +118,8 @@ temporada 0 (Especiais) é descartada para não confundir a numeração regular.
 
 ### Episódios da temporada
 
-`GET /api/v1/movies/{id}/temporada/{numero}` devolve os episódios normalizados:
+`GET /api/v1/movies/{id}/temporada/{numero}` devolve os episódios normalizados,
+cada um com o **próprio** selo:
 
 ```json
 {
@@ -135,12 +136,33 @@ temporada 0 (Especiais) é descartada para não confundir a numeração regular.
         "capa": "https://image.tmdb.org/t/p/w500/...",
         "nota": 8.1,
         "duracao": "58min",
-        "data_exibicao": "2019-07-25"
+        "data_exibicao": "2019-07-25",
+        "verificado": true,
+        "verificado_em": "2026-10-30T01:00:12+00:00"
       }
     ]
+  },
+  "meta": {
+    "pendentes": 9
   }
 }
 ```
+
+- `verificado` — `true` quando **aquele episódio** tem fonte provada e dentro do
+  prazo. O verde do card responde só pelo E01; aqui cada linha responde por si,
+  e é a diferença entre "a série tem fonte" e "este episódio toca".
+- `verificado_em` — data da prova do episódio, ausente quando ele não é
+  verificado.
+- `meta.pendentes` — quantos episódios da temporada ainda não têm prova. O modal
+  usa esse número para continuar a verificação em segundo plano.
+
+`POST /api/v1/movies/{id}/temporada/{numero}/verificar` testa uma fatia dos
+pendentes (`VERIFICACAO_EPISODIOS_POR_REQUISICAO`, padrão 2) e devolve a mesma
+lista já atualizada, mais `data.testados` e `meta.pendentes`. A requisição tem
+teto de tempo (`VERIFICACAO_ORCAMENTO_REQUISICAO`, padrão 40 s): o que não couber
+volta na chamada seguinte. Não existe fila de trabalho no projeto — é o próprio
+modal que puxa a fila enquanto está aberto, e o comando `fontes:episodios` faz o
+backfill do acervo fora dele.
 
 ### Fontes de torrent
 

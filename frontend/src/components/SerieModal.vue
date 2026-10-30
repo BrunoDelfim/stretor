@@ -60,6 +60,16 @@ const trailerUrl = computed(() =>
 const episodios = ref([])
 const carregandoEpisodios = ref(false)
 
+// Quantos episódios da temporada ainda não têm prova de fonte. Alimenta a faixa
+// "Verificando…" da lista e decide se a fila continua.
+const pendentes = ref(0)
+const verificandoEpisodios = ref(false)
+
+// Cada abertura de temporada (ou fechamento do modal) ganha um número. A fila de
+// verificação só aplica o resultado se ainda for dona da tela: trocar de
+// temporada no meio da espera não pode sobrescrever a lista nova.
+let geracaoVerificacao = 0
+
 const temporadas = computed(() => props.serie?.temporadas ?? [])
 
 /**
@@ -140,14 +150,59 @@ async function carregarEpisodios(numero) {
 
     if (props.temporadaAtiva === numero) {
       episodios.value = dados?.episodios ?? []
+      pendentes.value = dados?.pendentes ?? 0
+      // A temporada abriu: se há episódio sem prova, a fila começa agora e
+      // segue em segundo plano enquanto o usuário lê a lista.
+      continuarVerificacao(numero)
     }
   } catch {
     if (props.temporadaAtiva === numero) {
       episodios.value = []
+      pendentes.value = 0
     }
   } finally {
     if (props.temporadaAtiva === numero) {
       carregandoEpisodios.value = false
+    }
+  }
+}
+
+/**
+ * Passa pela verificação dos episódios desta temporada, um turno por vez.
+ *
+ * O backend testa alguns episódios por requisição e devolve os selos já
+ * atualizados; o laço continua enquanto sobrar pendente e a temporada ainda for
+ * a que está na tela. Se um turno não testar nada — provedores fora do ar, tempo
+ * esgotado —, o laço para: insistir repetiria a mesma requisição sem mudar o
+ * resultado, e o que falta volta na próxima abertura da temporada.
+ */
+async function continuarVerificacao(numero) {
+  if (pendentes.value <= 0 || !props.serie?.id) return
+
+  const serieId = props.serie.id
+  const geracao = ++geracaoVerificacao
+
+  verificandoEpisodios.value = true
+
+  try {
+    while (geracao === geracaoVerificacao && props.temporadaAtiva === numero && pendentes.value > 0) {
+      const resultado = await moviesService.verificarTemporada(serieId, numero)
+
+      // A temporada trocou (ou o modal fechou) durante a espera: o resultado é
+      // de outra tela e não pode sobrescrever a lista atual.
+      if (geracao !== geracaoVerificacao || props.temporadaAtiva !== numero) return
+
+      episodios.value = resultado.episodios
+      pendentes.value = resultado.pendentes
+
+      if (!resultado.testados.length) break
+    }
+  } catch {
+    // Falha na verificação não derruba o modal: os selos que já vieram valem, e
+    // a fila recomeça quando a temporada for aberta de novo.
+  } finally {
+    if (geracao === geracaoVerificacao) {
+      verificandoEpisodios.value = false
     }
   }
 }
@@ -187,6 +242,10 @@ watch(
       window.addEventListener('keydown', aoTeclar)
     } else {
       window.removeEventListener('keydown', aoTeclar)
+      // Fechar o modal encerra a fila: sem a tela aberta não há onde mostrar o
+      // selo, e a próxima abertura recomeça do que ficou gravado.
+      geracaoVerificacao++
+      verificandoEpisodios.value = false
     }
   },
   { immediate: true }
@@ -231,7 +290,12 @@ watch(
   (numero) => {
     if (numero === null || numero === undefined) return
 
+    // A fila da temporada anterior perde a vez: o que ela devolver daqui em
+    // diante é de outra tela.
+    geracaoVerificacao++
+
     episodios.value = []
+    pendentes.value = 0
     carregarEpisodios(numero)
   }
 )
@@ -248,6 +312,9 @@ watch(temporadas, (lista) => {
 onUnmounted(() => {
   document.body.style.overflow = ''
   window.removeEventListener('keydown', aoTeclar)
+  // Sem tela, não há selo para atualizar: a fila para aqui e volta quando a
+  // série for aberta de novo.
+  geracaoVerificacao++
 })
 </script>
 
@@ -411,6 +478,7 @@ onUnmounted(() => {
                   :episodios="episodios"
                   :carregando="carregandoEpisodios"
                   :capa-serie="arteDaSerie"
+                  :pendentes="verificandoEpisodios ? pendentes : 0"
                   @assistir="assistirEpisodio"
                 />
               </div>

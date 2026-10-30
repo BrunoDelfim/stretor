@@ -1231,13 +1231,42 @@ busca deles achar. Quando o termo de busca perde o título — o caso do origina
 não-latino, em que "兰香如故 S01E01" vira só "S01E01" —, o acervo mundial devolve uma
 página de "S01E01 dublado" de séries aleatórias ("Grimm", "My Wife and Kids"), que
 entravam na lista como se fossem o título pedido. O porteiro
-([`TorrentService::nomeRelevante()`](../backend/app/Services/TorrentService.php:759))
+([`TorrentService::nomeRelevante()`](../backend/app/Services/TorrentService.php:1165))
 recusa o release cujo nome não fala do título buscado, pela mesma régua de
 palavras-chave do stream direto
 ([`PalavrasChave`](../backend/app/Services/Torrents/PalavrasChave.php:1)). O
 julgamento é **por título** (traduzido e original): basta o release casar um deles —
 "The Godfather" passa para "O Poderoso Chefão". O limiar é
 `TORRENTS_MONTAGEM_MIN_PALAVRAS_CHAVE` (padrão `2`); zero desliga o porteiro.
+
+**Falar do título, porém, não basta.** A busca de "Cara de Barro" (*Clayface*,
+2026) no APIBay devolveu três release que citam o nome e não são o filme:
+
+| Release | O que é |
+| --- | --- |
+| `The Batman S01E13 The Clayface of Tragedy 1080p` | episódio do desenho de 2004 |
+| `Batman – One Bad Day - Clayface 1 (2023) (Comic) PDF` | quadrinho |
+| `Joker's Asylum II - Clayface (2010) (GreenGiant-DCP)` | outro quadrinho |
+
+A palavra "clayface" está em todos, e o porteiro de relevância aprovava todos. Com
+seeds e magnet, o primeiro deles ia para a lista — e o player abria **outra obra**
+no lugar da pedida, que foi o relato do usuário ("abriu um filme em vez desse").
+O porteiro novo
+([`fonteServeAoPedido()`](../backend/app/Services/TorrentService.php:1051)) julga
+o que o próprio nome prova, sem baixar nada:
+
+- **material de leitura** (`.pdf`, `.cbz`, `.epub`, `(Comic)`) nunca toca — a
+  extensão de vídeo no nome desempata o pacote compactado (`.mkv.zip`);
+- **numeração de episódio** (`S01E13`, `Season 2`) não responde a pedido de
+  filme; no sentido oposto não vale, porque pack e release de temporada são
+  respostas legítimas para um episódio;
+- **ano declarado** que não bate com o do título (tolerância de um ano) é outra
+  obra. Vários anos no nome passam se qualquer um bater — é o caso de "1917"
+  (2019), em que o primeiro número é o título. A resolução `1920x1080` fica de
+  fora do julgamento pelo lookahead, senão a largura do vídeo viraria ano.
+
+O julgamento é conservador: nome sem ano, sem extensão e sem numeração passa. Só
+se recusa o que dá para provar que é outra coisa.
 
 A ordem dentro de cada pilha vem de uma chave única,
 [`chaveDeOrdem()`](../backend/app/Services/TorrentService.php:643):

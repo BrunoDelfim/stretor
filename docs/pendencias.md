@@ -323,3 +323,33 @@ provedores **sem o `imdb_id`** (a lista de tendências não o traz), e Torrentio
 addon Stremio só procuram por identificador. O mesmo título saía "sem fonte" na
 rotina e com fonte no player. A rotina agora resolve os identificadores em lote
 (`TmdbService::identificadoresEmLote()`, com cache) antes de testar cada página.
+
+## O player abria outra obra no lugar do filme pedido — resolvido no porteiro
+
+**Observado em 2026-10-30, com "Cara de Barro" (Clayface, TMDB 1400940).** O
+usuário abriu o filme e o player tocou **outra obra**. A busca no APIBay
+explicava: para o termo "Clayface" ele devolve, entre outros,
+`The Batman S01E13 The Clayface of Tragedy 1080p` (episódio do desenho de 2004),
+`Batman – One Bad Day - Clayface 1 (2023) (Comic) PDF` (quadrinho) e
+`Joker's Asylum II - Clayface (2010)` (outro quadrinho).
+
+**Diagnóstico.** O porteiro de relevância da montagem
+([`nomeRelevante()`](../backend/app/Services/TorrentService.php:1165)) julgava
+apenas palavras do título. "Clayface" está no nome dos três, então os três
+passavam — e o primeiro com seeds ia para a lista. O player pedia o arquivo ao
+media-service, que escolhe o maior vídeo do torrent: o desenho do Batman. O ano
+não era conferido em lugar nenhum, então nem um release de 2010 era barrado.
+
+**Correção.** O porteiro novo
+([`fonteServeAoPedido()`](../backend/app/Services/TorrentService.php:1051)) julga
+o que o nome prova: material de leitura (PDF/CBZ/EPUB/comic) nunca entra;
+numeração de episódio não responde a pedido de filme; e ano declarado que não
+bate com o do título (tolerância de um ano) é outra obra. A régua é conservadora
+— nome sem ano, sem extensão e sem numeração passa —, e os casos de borda estão
+em `PorteiroDaObraTest` (título "1917", resolução `1920x1080`, `.mkv.zip`,
+"DOC" de documentário).
+
+**O que ficou de fora.** O filme de 2026 só tem release TS/CAM em inglês, e a
+política de idioma (`TORRENTS_SOMENTE_PT_BR_OU_LEGENDADO`) não oferece original
+sem legenda PT-BR. Para esse título a busca devolve zero fontes — o que é
+honesto, mas não é o mesmo problema deste registro.

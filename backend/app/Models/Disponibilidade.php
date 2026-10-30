@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Enums\OrigemVerificacao;
 use App\Enums\TipoMidia;
+use App\Models\Concerns\ProvaDeFonte;
 use Illuminate\Database\Eloquent\Model;
 
 /**
@@ -25,6 +26,8 @@ use Illuminate\Database\Eloquent\Model;
  */
 class Disponibilidade extends Model
 {
+    use ProvaDeFonte;
+
     protected $table = 'disponibilidades';
 
     protected $fillable = [
@@ -47,40 +50,4 @@ class Disponibilidade extends Model
         'deve_retentar' => 'boolean',
         'verificado_em' => 'datetime',
     ];
-
-    /**
-     * A prova ainda vale?
-     *
-     * Título com fonte não é re-testado enquanto a fonte estiver de pé; título sem
-     * fonte volta à fila quando a prova vence. O prazo, porém, não é o mesmo para
-     * todo mundo: quem pediu nova chance (`deve_retentar`) volta na virada do dia,
-     * e o veredito definitivo só é reexaminado depois da janela longa. Sem data de
-     * verificação, a linha nunca é considerada válida — é o caso de um registro
-     * criado e nunca preenchido.
-     */
-    public function expirado(): bool
-    {
-        if ($this->verificado_em === null) {
-            return true;
-        }
-
-        return $this->verificado_em->lte(now()->subHours($this->horasDeValidade()));
-    }
-
-    /**
-     * Quantas horas a prova vale antes de o título voltar à fila.
-     *
-     * A marca decide a janela: curta para quem pediu nova chance, longa para o
-     * veredito definitivo. Um "sem fonte" que perguntou a todos os provedores não
-     * muda de um dia para o outro, e insistir nele todo dia só gastaria o ritmo
-     * furtivo da rotina com o que o acervo já respondeu.
-     */
-    private function horasDeValidade(): int
-    {
-        if ($this->deve_retentar) {
-            return (int) config('services.verificacao.validade_horas', 24);
-        }
-
-        return (int) config('services.verificacao.validade_dias_definitivo', 7) * 24;
-    }
 }

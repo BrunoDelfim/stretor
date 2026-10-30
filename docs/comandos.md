@@ -273,6 +273,44 @@ Parâmetros lidos de `config/services.php` (todos com override em `.env`):
 | `VERIFICACAO_PAUSA_ITENS_MS` | 6000 | Pausa entre um título e o próximo (base, recebe jitter). |
 | `VERIFICACAO_PAUSA_PAGINAS_MS` | 45000 | Pausa entre uma página e a seguinte. |
 
+#### `fontes:episodios` — o selo de cada episódio
+
+```bash
+# Backfill do acervo: 40 episódios por noite, das séries com fonte provada
+docker compose exec backend php artisan fontes:episodios
+
+# Uma série só, e só a primeira temporada
+docker compose exec backend php artisan fontes:episodios --serie=96677 --temporada=1
+```
+
+A rodada acima responde pela **série** pelo primeiro episódio — é o que o card
+mostra. O selo do modal é outra pergunta, e este comando a faz linha a linha:
+cada episódio testado ganha o próprio veredito em `disponibilidades_episodios`,
+com a mesma régua do card (fonte provada e prova dentro do prazo).
+
+| Opção | Para que serve |
+|-------|----------------|
+| `--serie=ID` | Verifica só esta série (id do TMDB). |
+| `--temporada=N` | Limita a uma temporada — útil para conferir uma estreia. |
+| `--limite=N` | Teto de episódios nesta execução (padrão 40). O que sobra volta amanhã. |
+| `--sem-pausa` | Desliga a pausa entre episódios. **Só em teste.** |
+
+O trabalho é incremental de propósito: uma temporada de vinte episódios custa
+vinte buscas completas, e varrer todas as séries de uma vez disputaria a rede com
+a rodada principal. O agendador roda este comando às
+`VERIFICACAO_HORARIO_EPISODIOS` (padrão 02:30), antes da rodada das 04:00. O
+modal não depende dele: quando a temporada é aberta, o próprio frontend pede a
+verificação dos episódios que faltam, dois por requisição
+(`VERIFICACAO_EPISODIOS_POR_REQUISICAO`), e os selos chegam sem prender a tela.
+
+| Chave `.env` | Padrão | O que controla |
+|--------------|--------|----------------|
+| `VERIFICACAO_EPISODIOS_POR_REQUISICAO` | 2 | Episódios testados por requisição do modal. |
+| `VERIFICACAO_ORCAMENTO_EPISODIO` | 20 | Teto (s) de cada episódio na requisição do modal — mais curto que o do título porque o navegador desiste em 60 s. |
+| `VERIFICACAO_ORCAMENTO_REQUISICAO` | 40 | Tempo (s) que a requisição do modal gasta antes de devolver o que já tem. |
+| `VERIFICACAO_HORARIO_EPISODIOS` | 02:30 | Horário do backfill diário. |
+| `VERIFICACAO_EPISODIOS_LIMITE` | 40 | Teto de episódios do backfill diário. |
+
 ## Frontend (Vite / npm)
 
 ```bash

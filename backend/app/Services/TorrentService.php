@@ -43,6 +43,32 @@ use Illuminate\Support\Facades\Log;
 class TorrentService
 {
     /**
+     * Extensões que dizem o que o torrent **é**, mesmo sem baixar nada.
+     *
+     * O acervo devolve, junto dos filmes, revistas, quadrinhos e apostilas com o
+     * nome do título — "Batman – One Bad Day - Clayface 1 (2023) (Comic) PDF" é um
+     * exemplo real que apareceu na busca de "Cara de Barro". Um PDF nunca vai
+     * tocar no player, e oferecê-lo só queima uma tentativa do usuário.
+     *
+     * @var array<int, string>
+     */
+    private const EXTENSOES_NAO_VIDEO = [
+        'pdf', 'cbz', 'cbr', 'epub', 'mobi', 'azw3',
+    ];
+
+    /**
+     * Extensões que provam que o torrent entrega vídeo.
+     *
+     * Serve só para desempatar o julgamento acima: um release compactado
+     * (".zip") que declara o `.mkv` dentro é vídeo, e não material de leitura.
+     *
+     * @var array<int, string>
+     */
+    private const EXTENSOES_VIDEO = [
+        'mkv', 'mp4', 'avi', 'm4v', 'mov', 'wmv', 'm2ts', 'webm', 'flv', 'mpg', 'mpeg', 'vob',
+    ];
+
+    /**
      * Reserva em idioma não-provado da última passagem pelos torrents.
      *
      * `ordenar()` separa a lista em PT-BR provado e reserva (o original e o
@@ -370,7 +396,7 @@ class TorrentService
             }
         }
 
-        return $this->ordenar($fontes, $temporada, $episodio, $titulo, $tituloOriginal);
+        return $this->ordenar($fontes, $temporada, $episodio, $titulo, $tituloOriginal, $ano);
     }
 
     /**
@@ -863,18 +889,24 @@ class TorrentService
         ?int $episodio = null,
         ?string $titulo = null,
         ?string $tituloOriginal = null,
+        ?int $ano = null,
     ): array {
         $ordemProvedores = $this->ordemDeProvedores();
 
         $somentePtBr = (bool) config('services.torrents.somente_pt_br_ou_legendado', true);
         $packsQualquerIdioma = (bool) config('services.torrents.packs_qualquer_idioma', true);
 
+        // A mesma regra do resto da busca: só é episódio quando os dois números
+        // vêm preenchidos. É o que separa "o pedido é um filme" de "o pedido é o
+        // E05" — e o que impede um episódio de série de responder por um filme.
+        $episodioDeSerie = $temporada !== null && $episodio !== null;
+
         // Os dois nomes pelos quais a busca perguntou — o traduzido (fase 1) e o
         // original (fase 2). O porteiro de relevância julga o release contra os
         // dois, aceitando se ele falar de pelo menos um.
         $titulosBuscados = [$titulo, $tituloOriginal];
 
-        $fontes = array_values(array_filter($fontes, function (array $fonte) use ($packsQualquerIdioma, $temporada, $episodio, $titulosBuscados): bool {
+        $fontes = array_values(array_filter($fontes, function (array $fonte) use ($packsQualquerIdioma, $temporada, $episodio, $titulosBuscados, $ano, $episodioDeSerie): bool {
             /*
              * A fonte direta (MP4/HLS) não tem magnet nem malha para medir: o
              * filtro de torrent não se aplica a ela. O que a valida é ter uma URL
@@ -896,6 +928,17 @@ class TorrentService
              * por mais seeds e magnet que tenha.
              */
             if (! $this->nomeRelevante($fonte, $titulosBuscados)) {
+                return false;
+            }
+
+            /*
+             * Falar do título não basta. "The Batman S01E13 The Clayface of
+             * Tragedy" e "Batman – One Bad Day - Clayface (2023) (Comic) PDF"
+             * foram o que o APIBay devolveu para "Cara de Barro": um é episódio
+             * de desenho, o outro é quadrinho. Os dois citam o nome, nenhum dos
+             * dois é o filme — e era assim que o player abria outra obra.
+             */
+            if (! $this->fonteServeAoPedido($fonte, $ano, $episodioDeSerie)) {
                 return false;
             }
 
@@ -979,6 +1022,120 @@ class TorrentService
         }
 
         return array_slice(array_merge($ptBr, $reserva), 0, $limite);
+    }
+
+    /**
+     * O release é da **obra** pedida, e não apenas do nome dela?
+     *
+     * O porteiro de relevância julga palavras, e palavra não distingue uma
+     * adaptação de outra: "Clayface" está no nome de um episódio de "The Batman",
+     * num quadrinho do "One Bad Day" e no filme de 2026. Sem esta segunda régua,
+     * o primeiro que aparecesse com seeds ia para a lista — e o player abria
+     * outra obra no lugar da pedida.
+     *
+     * As três provas saem do próprio nome do release, sem baixar nada:
+     *
+     * - **material que não é vídeo** (PDF, CBZ, EPUB) nunca toca;
+     * - **episódio quando se pediu filme**: o `SxxExx` no nome é inequívoco — um
+     *   filme não tem numeração de episódio. No sentido oposto não vale: pack e
+     *   release de temporada são respostas legítimas para um episódio;
+     * - **ano declarado diferente**: se o nome diz o ano, e nenhum dos anos dele
+     *   bate com o do título (tolerância de um, porque o acervo publica o
+     *   lançamento do ano seguinte antes da virada), é outra obra.
+     *
+     * O julgamento é conservador de propósito: nome sem ano, sem extensão e sem
+     * numeração passa. Só se recusa o que dá para provar que é outra coisa.
+     *
+     * @param  array<string, mixed>  $fonte
+     */
+    private function fonteServeAoPedido(array $fonte, ?int $ano, bool $episodioDeSerie): bool
+    {
+        $nomes = trim(($fonte['titulo'] ?? '').' '.($fonte['release'] ?? ''));
+
+        if ($nomes === '') {
+            return true;
+        }
+
+        $normalizado = PalavrasChave::normalizar($nomes);
+
+        if ($this->pareceMaterialDeLeitura($normalizado)) {
+            return false;
+        }
+
+        if (! $episodioDeSerie && $this->declaraEpisodio($normalizado)) {
+            return false;
+        }
+
+        return $this->anoCombina($normalizado, $ano);
+    }
+
+    /**
+     * O nome aponta para um arquivo que o player não abre?
+     *
+     * A extensão de vídeo desempata: um `.zip` que declara o `.mkv` dentro é
+     * filme compactado, não revista. Só quando não há vídeo nenhum é que o
+     * material de leitura condena a fonte.
+     */
+    private function pareceMaterialDeLeitura(string $nome): bool
+    {
+        foreach (self::EXTENSOES_VIDEO as $extensao) {
+            if (preg_match('/\.'.$extensao.'\b/u', $nome) === 1) {
+                return false;
+            }
+        }
+
+        if (preg_match('/\b(comics?|quadrinhos?|manga)\b/u', $nome) === 1) {
+            return true;
+        }
+
+        foreach (self::EXTENSOES_NAO_VIDEO as $extensao) {
+            if (preg_match('/\.'.$extensao.'\b/u', $nome) === 1) {
+                return true;
+            }
+        }
+
+        // "One Bad Day - Clayface 1 (2023) PDF": extensão solta, sem ponto.
+        // A lista é curta de propósito — "doc", por exemplo, é como o acervo
+        // marca documentário, e barrar isso seria perder filme de verdade.
+        return preg_match('/(^|[\s(])pdf([\s)]|$)|(^|[\s(])c(bz|br)([\s)]|$)|(^|[\s(])epub([\s)]|$)/u', $nome) === 1;
+    }
+
+    /** O nome declara numeração de episódio ou de temporada? */
+    private function declaraEpisodio(string $nome): bool
+    {
+        return preg_match('/\bs\d{1,2}[\s._-]*e\d{1,3}\b/u', $nome) === 1
+            || preg_match('/\b(season|temporada)\s*\d{1,2}\b/u', $nome) === 1;
+    }
+
+    /**
+     * Algum ano declarado no nome bate com o do título?
+     *
+     * Nome sem ano não permite julgar, e passa. Nome com vários anos (`1917`,
+     * que é título e ano, mais o ano real do release) passa se qualquer um
+     * bater. A resolução `1920x1080` fica de fora pelo lookahead — sem ele, a
+     * largura do vídeo seria lida como ano de lançamento.
+     */
+    private function anoCombina(string $nome, ?int $ano): bool
+    {
+        if ($ano === null) {
+            return true;
+        }
+
+        preg_match_all('/\b(19\d{2}|20\d{2})\b(?!\s*x)/u', $nome, $achados);
+
+        $declarados = array_map('intval', $achados[1] ?? []);
+
+        if ($declarados === []) {
+            return true;
+        }
+
+        foreach ($declarados as $declarado) {
+            if (abs($declarado - $ano) <= 1) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

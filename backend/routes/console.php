@@ -41,4 +41,17 @@ if (config('services.verificacao.habilitada') && config('services.verificacao.ag
     Schedule::command('fontes:verificar --se-vencido')
         ->hourlyAt(20)
         ->withoutOverlapping(240);
+
+    /*
+     * Varredura dos episódios das séries que já têm fonte provada.
+     *
+     * Roda antes da rodada principal e em fatias: o `--limite` corta a execução
+     * em 40 episódios, e o que sobra volta no dia seguinte. É o backfill que faz
+     * o selo do modal dizer a verdade linha a linha — o card responde só pelo
+     * primeiro episódio, e uma temporada inteira não cabe numa requisição nem
+     * numa noite do notebook.
+     */
+    Schedule::command('fontes:episodios --limite='.(int) config('services.verificacao.episodios_limite_diario', 40))
+        ->dailyAt(config('services.verificacao.horario_episodios', '02:30'))
+        ->withoutOverlapping(180);
 }

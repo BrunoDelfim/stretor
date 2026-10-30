@@ -74,6 +74,24 @@ provedores (veja [Comandos](comandos.md#fontesverificar--a-carga-de-verdade)). U
 selo verde é a promessa de que existe uma fonte naquele momento — não apenas de que
 alguém respondeu.
 
+### O selo da série é por episódio
+
+Para série, o selo do card responde pelo **primeiro episódio** da primeira
+temporada — é a amostra mais barata de "esta série tem fonte". Isso não vale para
+o modal: uma temporada pode ter o E01 no ar e o resto morto, e repetir o verde do
+card em todas as linhas prometeria o que ninguém testou. Por isso a
+[`ListaEpisodios.vue`](../frontend/src/components/ListaEpisodios.vue:1) exibe o
+selo **de cada linha**, alimentado pelo `verificado` que o backend devolve por
+episódio (veja [API](api.md#episódios-da-temporada)).
+
+Quando a temporada é aberta, o modal chama
+`POST /movies/{id}/temporada/{n}/verificar` enquanto houver `pendentes`: cada
+resposta testa dois episódios e devolve os selos atualizados, sem prender a
+tela. A faixa "Verificando fontes dos episódios — restam N" mostra a fila
+andando, e o que não couber numa abertura volta na próxima — o veredito fica
+gravado. O backfill do acervo é do comando `fontes:episodios`
+(veja [Comandos](comandos.md#fontesepisodios--o-selo-de-cada-episódio)).
+
 ## Modal de série
 
 O clique em um item `tv` abre o

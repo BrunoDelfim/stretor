@@ -76,12 +76,33 @@ export const moviesService = {
   /**
    * Episódios de uma temporada específica.
    *
-   * Cada episódio já vem normalizado (capa, sinopse, título, nota e duração),
-   * então a lista do modal não precisa de nenhum tratamento extra.
+   * Cada episódio já vem normalizado (capa, sinopse, título, nota e duração) e
+   * com o próprio selo (`verificado`). O `pendentes` diz quantos ainda não têm
+   * prova — é o que o modal usa para continuar a verificação em segundo plano.
    */
   async temporada(id, numero) {
     const { data } = await cliente().get(`/${id}/temporada/${numero}`)
 
-    return data.data ?? null
+    return {
+      ...(data.data ?? {}),
+      pendentes: data.meta?.pendentes ?? 0,
+    }
+  },
+
+  /**
+   * Verifica um punhado de episódios da temporada e devolve os selos atualizados.
+   *
+   * O backend fatia o trabalho: cada chamada testa alguns episódios e informa
+   * quantos faltam. A fila é retomada quando o usuário abre a temporada de novo,
+   * porque o que já foi provado fica gravado.
+   */
+  async verificarTemporada(id, numero) {
+    const { data } = await cliente().post(`/${id}/temporada/${numero}/verificar`)
+
+    return {
+      episodios: data.data?.episodios ?? [],
+      testados: data.data?.testados ?? [],
+      pendentes: data.meta?.pendentes ?? 0,
+    }
   },
 }
